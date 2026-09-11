@@ -1,0 +1,71 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    
+    // Catch-all deny
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Helper functions
+    function isValidId(id) {
+      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    // Student Validation Helper
+    function isValidStudent(data) {
+      return data.keys().hasAll(['id', 'name', 'absentNumber', 'studentClass', 'status', 'violationCount', 'answers'])
+        && data.id is string && data.id.size() <= 128
+        && data.name is string && data.name.size() <= 200
+        && data.absentNumber is string && data.absentNumber.size() <= 50
+        && data.studentClass is string && data.studentClass.size() <= 50
+        && data.status is string && (data.status == 'BELUM_MULAI' || data.status == 'SEDANG_MENGERJAKAN' || data.status == 'TERKUNCI' || data.status == 'SELESAI')
+        && data.violationCount is int
+        && data.answers is map;
+    }
+
+    // Question Validation Helper
+    function isValidQuestion(data) {
+      return data.keys().hasAll(['id', 'questionText', 'options'])
+        && data.id is string && data.id.size() <= 128
+        && data.questionText is string && data.questionText.size() <= 2000
+        && data.options is list;
+    }
+
+    // Config Validation Helper
+    function isValidExamConfig(data) {
+      return data.keys().hasAll(['durationMinutes', 'examTitle'])
+        && data.durationMinutes is int
+        && data.examTitle is string && data.examTitle.size() <= 200;
+    }
+
+    // 1. Students collection
+    match /students/{studentId} {
+      allow read: if true;
+      allow create: if isValidId(studentId) && isValidStudent(incoming());
+      allow update: if isValidId(studentId) && isValidStudent(incoming());
+      allow delete: if isValidId(studentId);
+    }
+
+    // 2. Questions collection
+    match /questions/{questionId} {
+      allow read: if true;
+      allow create, update: if isValidId(questionId) && isValidQuestion(incoming());
+      allow delete: if isValidId(questionId);
+    }
+
+    // 3. Config collection
+    match /config/{examConfigId} {
+      allow read: if true;
+      allow write: if isValidId(examConfigId) && isValidExamConfig(incoming());
+    } 
+  }
+}

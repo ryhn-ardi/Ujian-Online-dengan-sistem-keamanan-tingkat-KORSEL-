@@ -1,0 +1,464 @@
+import React, { useState } from 'react';
+import { ShieldCheck, UserCheck, Settings, AlertTriangle, AlertCircle, Info, RefreshCw, BookOpen, Check } from 'lucide-react';
+import { Student, Question, ExamConfig, ExamSubject } from '../types';
+import { getExamSubjects } from '../utils/sync';
+
+interface StudentRegistrationProps {
+  students: Student[];
+  questions?: Question[];
+  config?: ExamConfig;
+  onRegister: (data: { name: string; absentNumber: string; studentClass: string; subjectId: string }) => void;
+  onAdminLogin: () => void;
+  examTitle?: string;
+  durationMinutes?: number;
+  totalQuestions?: number;
+  subject1Name?: string;
+  subject2Name?: string;
+}
+
+export default function StudentRegistration({
+  students,
+  questions = [],
+  config,
+  onRegister,
+  onAdminLogin,
+  examTitle = 'Ujian Digital',
+  durationMinutes = 15,
+  totalQuestions = 0,
+  subject1Name,
+  subject2Name
+}: StudentRegistrationProps) {
+  const [name, setName] = useState('');
+  const [absentNumber, setAbsentNumber] = useState('');
+  const [studentClass, setStudentClass] = useState('');
+  const [agreed, setAgreed] = useState(false);
+  const [error, setError] = useState('');
+
+  // Extract subjects and active subjects
+  const allSubjects: ExamSubject[] = getExamSubjects(config);
+  const activeSubjects = allSubjects.filter(s => s.isActive !== false);
+
+  const [subjectId, setSubjectId] = useState<string>(() => {
+    return activeSubjects[0]?.id || 'sub1';
+  });
+
+  // Calculate question count for a specific subject
+  const getSubjectQuestionCount = (subId: string) => {
+    return questions.filter(q => (!q.subjectId && subId === 'sub1') || q.subjectId === subId).length;
+  };
+
+  // Determine effective subject ID (fallback if current is not in active list)
+  const effectiveSubjectId = activeSubjects.some(s => s.id === subjectId)
+    ? subjectId
+    : (activeSubjects[0]?.id || 'sub1');
+
+  // Admin access state
+  const [showAdminModal, setShowAdminModal] = useState(false);
+  const [adminUsername, setAdminUsername] = useState('');
+  const [adminPassword, setAdminPassword] = useState('');
+  const [adminError, setAdminError] = useState('');
+
+  const handleSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!name.trim()) return setError('Nama lengkap wajib diisi');
+    if (!absentNumber.trim()) return setError('Nomor absen wajib diisi');
+    if (!studentClass.trim()) return setError('Kelas wajib diisi');
+    if (activeSubjects.length === 0) return setError('Belum ada naskah ujian yang diaktifkan oleh proktor.');
+    if (!agreed) return setError('Anda harus menyetujui seluruh pakta integritas ujian');
+
+    // Duplicate string validation and re-connection logic
+    const normalizedNewName = name.trim().toLowerCase().replace(/\s+/g, '');
+    const existingStudentObj = students.find((s) => {
+      const normalizedExisting = s.name.trim().toLowerCase().replace(/\s+/g, '');
+      return normalizedExisting === normalizedNewName;
+    });
+
+    if (existingStudentObj) {
+      if (existingStudentObj.status === 'SELESAI') {
+        return setError(
+          `Nama siswa "${name.trim()}" sudah menyelesaikan ujian ini dan hasil pengerjaan telah dikonfirmasi. Anda tidak dapat melakukan ujian kembali.`
+        );
+      }
+      if (existingStudentObj.status === 'TERKUNCI') {
+        return setError(
+          `Sesi ujian untuk siswa "${name.trim()}" saat ini dibekukan (TERKUNCI) oleh pengawas kelas karena terdeteksi keluar dari layar penuh / split screen. Silakan lapor ke proktor di depan kelas untuk membuka kunci ujian Anda!`
+        );
+      }
+      // If status is 'BELUM_MULAI' or 'SEDANG_MENGERJAKAN', we fall through to let them reconnect seamlessly!
+    }
+
+    setError('');
+    onRegister({
+      name: name.trim(),
+      absentNumber: absentNumber.trim(),
+      studentClass: studentClass.trim().toUpperCase(),
+      subjectId: effectiveSubjectId
+    });
+  };
+
+  const handleAdminVerify = (e: React.FormEvent) => {
+    e.preventDefault();
+    // Specific secure username "admin" and password "monyetlupa"
+    if (adminUsername.trim() === 'admin' && adminPassword === 'monyetlupa') {
+      onAdminLogin();
+    } else {
+      setAdminError('Username atau kata sandi admin salah!');
+    }
+  };
+
+  return (
+    <div className="min-h-screen bg-slate-50 flex flex-col justify-between py-12 px-4 sm:px-6 lg:px-8 font-sans">
+      <div className="max-w-2xl mx-auto w-full">
+        {/* Banner Lembaga / Ujian */}
+        <div className="text-center mb-8">
+          <div className="inline-flex items-center justify-center p-3 bg-red-100 rounded-full text-red-600 mb-4 animate-pulse">
+            <ShieldCheck className="w-10 h-10" />
+          </div>
+          <h1 className="text-3xl font-extrabold text-slate-900 tracking-tight">{examTitle}</h1>
+          <p className="mt-2 text-sm text-slate-500 font-mono">
+            SISTEM PENGAWASAN DIGITAL KETAT (PROKTOR ANTI-CONTEK)
+          </p>
+        </div>
+
+        {/* Info & Regulasi */}
+        <div className="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden mb-8">
+          <div className="bg-slate-900 px-6 py-4 flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <AlertTriangle className="text-amber-400 w-5 h-5" />
+              <span className="text-white font-semibold text-sm tracking-wide font-mono">PAKTA INTEGRITAS & ATURAN PROKTOR</span>
+            </div>
+            <span className="px-2 py-1 text-xs bg-red-600 text-white rounded font-bold font-mono">STRICT MODE ACTIVATED</span>
+          </div>
+          <div className="p-6 space-y-4 text-slate-600 text-sm">
+            <p className="font-semibold text-slate-800">
+              Aplikasi ini memonitor ketat aktivitas pengerjaan Anda. Harap baca dan patuhi aturan berikut:
+            </p>
+            <ul className="space-y-3">
+              <li className="flex items-start gap-2.5">
+                <span className="text-red-500 font-bold font-mono mt-0.5 mt-0.5 shrink-0 bg-red-50 w-5 h-5 flex items-center justify-center rounded-full text-xs">1</span>
+                <div>
+                  <strong className="text-slate-900">Dilarang Meninggalkan Layar Penuh (Fullscreen):</strong> Ujian akan langsung dikunci otomatis jika Anda menekan tombol Esc, memperkecil jendela browser, atau melepaskan mode fullscreen.
+                </div>
+              </li>
+              <li className="flex items-start gap-2.5">
+                <span className="text-red-500 font-bold font-mono mt-0.5 shrink-0 bg-red-50 w-5 h-5 flex items-center justify-center rounded-full text-xs">2</span>
+                <div>
+                  <strong className="text-slate-900">Dilarang Mengalihkan Fokus (Ganti Tab / Buka App Lain):</strong> Sistem akan mendeteksi perpindahan tab, pembukaan aplikasi background, atau penekanan tombol home. Sekali saja Anda beralih layar, sistem ujian Anda langsung <span className="text-red-600 font-semibold underline">TERBLOKIR</span>.
+                </div>
+              </li>
+              <li className="flex items-start gap-2.5">
+                <span className="text-red-500 font-bold font-mono mt-0.5 shrink-0 bg-red-50 w-5 h-5 flex items-center justify-center rounded-full text-xs">3</span>
+                <div>
+                  <strong className="text-slate-900">Dilarang Split Screen & Floating Apps:</strong> Sistem akan memantau ukuran area layar aktif Anda. Pembagian layar (split-screen) atau penempatan aplikasi melayang (floating apps) di atas browser akan terbaca sebagai anomali ilegal dan memicu kunci sistem.
+                </div>
+              </li>
+              <li className="flex items-start gap-2.5 bg-yellow-50/50 p-2.5 border border-yellow-200 rounded-lg">
+                <span className="text-amber-600 font-bold font-mono mt-0.5 shrink-0 bg-yellow-100 w-5 h-5 flex items-center justify-center rounded-full text-xs">!</span>
+                <div>
+                  <strong className="text-amber-800">Konsekuensi Terkunci:</strong> Jika akun Anda terkunci, Anda <span className="text-red-600 font-semibold">TIDAK BISA</span> melanjutkan ujian secara mandiri. Anda harus menghadap ke <strong className="text-slate-900">ADMIN / PROKTOR UTAMA</strong> di depan kelas untuk melakukan reset manual dari panel proktor.
+                </div>
+              </li>
+            </ul>
+          </div>
+        </div>
+
+        {/* Form Pendaftaran Siswa */}
+        <div className="bg-white rounded-2xl shadow-sm border border-slate-200 p-8">
+          <h2 className="text-xl font-bold text-slate-800 mb-6 flex items-center gap-2 border-b border-slate-100 pb-4">
+            <UserCheck className="w-5 h-5 text-indigo-500" />
+            Identitas Peserta Ujian
+          </h2>
+
+          {error && (
+            <div className="mb-6 p-4 bg-red-50 border border-red-200 rounded-xl text-red-700 text-sm flex items-center gap-2">
+              <AlertCircle className="w-5 h-5 shrink-0 text-red-500" />
+              <span>{error}</span>
+            </div>
+          )}
+
+          <form onSubmit={handleSubmit} className="space-y-6">
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+              <div className="md:col-span-2">
+                <label className="block text-xs font-semibold text-slate-500 uppercase font-mono tracking-wider mb-2">Nama Lengkap Siswa</label>
+                <input
+                  type="text"
+                  required
+                  placeholder="Masukkan nama lengkap sesuai absen"
+                  value={name}
+                  onChange={(e) => setName(e.target.value)}
+                  className="w-full px-4 py-3 bg-slate-50 border border-slate-200 focus:border-indigo-500 focus:bg-white rounded-xl text-slate-800 focus:outline-none transition duration-200"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold text-slate-500 uppercase font-mono tracking-wider mb-2">Nomor Absen</label>
+                <input
+                  type="number"
+                  required
+                  min="1"
+                  max="99"
+                  placeholder="Contoh: 14"
+                  value={absentNumber}
+                  onChange={(e) => setAbsentNumber(e.target.value)}
+                  className="w-full px-4 py-3 bg-slate-50 border border-slate-200 focus:border-indigo-500 focus:bg-white rounded-xl text-slate-800 focus:outline-none transition duration-200"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold text-slate-500 uppercase font-mono tracking-wider mb-2">Kelas / Tingkat</label>
+                <select
+                  required
+                  value={studentClass}
+                  onChange={(e) => setStudentClass(e.target.value)}
+                  className="w-full px-4 py-3 bg-slate-50 border border-slate-200 focus:border-indigo-500 focus:bg-white rounded-xl text-slate-800 focus:outline-none transition duration-200 font-semibold"
+                >
+                  <option value="">-- Pilih Kelas --</option>
+                  <optgroup label="Tingkat Kelas 7">
+                    {['7A', '7B', '7C', '7D', '7E', '7F', '7G', '7H', '7I', '7J', '7K'].map((cls) => (
+                      <option key={cls} value={cls}>Kelas {cls}</option>
+                    ))}
+                  </optgroup>
+                  <optgroup label="Tingkat Kelas 8">
+                    {['8A', '8B', '8C', '8D', '8E', '8F', '8G', '8H', '8I', '8J', '8K'].map((cls) => (
+                      <option key={cls} value={cls}>Kelas {cls}</option>
+                    ))}
+                  </optgroup>
+                </select>
+              </div>
+
+              <div className="md:col-span-2">
+                <div className="flex items-center justify-between mb-2">
+                  <label className="block text-xs font-semibold text-slate-500 uppercase font-mono tracking-wider">
+                    Pilih Naskah Ujian (Mata Pelajaran)
+                  </label>
+                  <span className="text-[11px] text-slate-400 font-mono">
+                    {activeSubjects.length} Naskah Aktif
+                  </span>
+                </div>
+
+                {activeSubjects.length === 0 ? (
+                  <div className="p-4 bg-amber-50 border border-amber-200 rounded-xl text-amber-800 text-xs flex items-center gap-2.5">
+                    <AlertTriangle className="w-5 h-5 text-amber-600 shrink-0" />
+                    <span>Belum ada naskah ujian yang diaktifkan oleh proktor. Silakan hubungi pengawas / proktor di depan kelas.</span>
+                  </div>
+                ) : activeSubjects.length === 1 ? (
+                  <div className="p-4 bg-indigo-50/80 border border-indigo-200 rounded-xl flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                    <div className="flex items-center gap-3">
+                      <div className="w-9 h-9 rounded-xl bg-indigo-600 text-white flex items-center justify-center font-bold text-sm shrink-0 shadow-xs">
+                        <Check className="w-5 h-5" />
+                      </div>
+                      <div>
+                        <span className="text-[10px] font-bold uppercase font-mono tracking-wider text-indigo-600 block">
+                          Naskah Ujian Terjadwal Aktif
+                        </span>
+                        <h4 className="font-bold text-sm text-slate-900">{activeSubjects[0].name}</h4>
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-2 self-end sm:self-auto">
+                      <span className="px-3 py-1 bg-white border border-indigo-100 rounded-lg text-xs font-mono font-bold text-indigo-700 shadow-xs">
+                        {getSubjectQuestionCount(activeSubjects[0].id)} Butir Soal
+                      </span>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    {activeSubjects.map((sub, idx) => {
+                      const isSelected = effectiveSubjectId === sub.id;
+                      const qCount = getSubjectQuestionCount(sub.id);
+
+                      return (
+                        <button
+                          key={sub.id}
+                          type="button"
+                          id={`btn-select-subject-${sub.id}`}
+                          onClick={() => setSubjectId(sub.id)}
+                          className={`flex flex-col items-start p-4 rounded-xl border text-left transition-all duration-200 cursor-pointer relative ${
+                            isSelected
+                              ? 'border-indigo-600 bg-indigo-50/60 ring-2 ring-indigo-500/20 shadow-xs'
+                              : 'border-slate-200 hover:border-slate-300 hover:bg-slate-50 bg-white'
+                          }`}
+                        >
+                          <div className="flex items-center justify-between w-full mb-1.5">
+                            <span className={`text-[10px] font-bold uppercase font-mono tracking-wider ${
+                              isSelected ? 'text-indigo-600' : 'text-slate-400'
+                            }`}>
+                              Naskah {sub.code || `Paket ${String.fromCharCode(65 + idx)}`}
+                            </span>
+                            <span className={`text-[10px] px-2 py-0.5 rounded-md font-mono font-bold ${
+                              isSelected ? 'bg-indigo-100 text-indigo-800' : 'bg-slate-100 text-slate-500'
+                            }`}>
+                              {qCount} Soal
+                            </span>
+                          </div>
+                          <span className="font-bold text-sm text-slate-800 leading-snug">{sub.name}</span>
+                          {isSelected && (
+                            <span className="mt-2 text-[11px] font-bold text-indigo-600 flex items-center gap-1 font-mono">
+                              <Check className="w-3.5 h-3.5" /> Terpilih
+                            </span>
+                          )}
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            </div>
+
+            {/* Checkbox Persetujuan */}
+            <div className="bg-slate-50 p-4 rounded-xl border border-slate-100 flex items-start gap-3">
+              <input
+                id="integrity-box"
+                type="checkbox"
+                checked={agreed}
+                onChange={(e) => setAgreed(e.target.checked)}
+                className="w-5 h-5 text-indigo-600 focus:ring-indigo-500 border-slate-300 rounded mt-0.5 cursor-pointer"
+              />
+              <label htmlFor="integrity-box" className="text-xs text-slate-600 leading-relaxed cursor-pointer select-none">
+                Saya memahami konsekuensi berat ini. Saya siap melakukan ujian dengan layar penuh tanpa menutup jendela browser. Jika saya terbukti melanggar, saya rela status saya dibekukan dan harus menghadap pengawas untuk mereset ujian saya.
+              </label>
+            </div>
+
+            {/* Submit Button */}
+            <button
+              id="btn-register-sudent"
+              type="submit"
+              className="w-full bg-slate-900 hover:bg-slate-800 text-white font-bold py-4 px-6 rounded-xl border-b-4 border-slate-950 focus:outline-none active:scale-[0.98] transition-all flex items-center justify-center gap-2"
+            >
+              <ShieldCheck className="w-5 h-5 text-green-400" />
+              Mulai Ujian & Masuk Layar Penuh
+            </button>
+          </form>
+        </div>
+
+        {/* Status Sinkronisasi Real-time Database Cloud */}
+        <div 
+          id="realtime-sync-status-container" 
+          className="mt-6 bg-white rounded-2xl p-5 border border-slate-200 shadow-xs text-xs font-mono flex flex-col md:flex-row items-center justify-between gap-4"
+        >
+          <div className="flex items-center gap-3 w-full md:w-auto">
+            <span className="relative flex h-3 w-3 shrink-0">
+              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-405 bg-emerald-450 bg-emerald-400 opacity-75"></span>
+              <span className="relative inline-flex rounded-full h-3 w-3 bg-emerald-500"></span>
+            </span>
+            <div className="text-left">
+              <div className="flex items-center gap-1.5 font-bold text-slate-800">
+                <span>TERHUBUNG KE CLOUD</span>
+                <span className="text-[10px] bg-emerald-100 text-emerald-800 px-1.5 py-0.5 rounded font-bold uppercase tracking-wider font-mono">LIVE</span>
+              </div>
+              <div className="text-[10px] text-slate-400 mt-0.5 tracking-tight font-sans">
+                Sinkronisasi: <strong className="text-indigo-600 font-mono font-semibold">{totalQuestions} Butir Soal Aktif</strong> • {students.length} Siswa Terdaftar
+              </div>
+            </div>
+          </div>
+          <button
+            type="button"
+            id="btn-force-reload-sync"
+            onClick={() => {
+              // Clear cache keys to guarantee absolute clean fetch
+              localStorage.removeItem('proktor_questions');
+              localStorage.removeItem('proktor_config');
+              localStorage.removeItem('proktor_students');
+              // Soft feedback then reload
+              const btn = document.getElementById('btn-force-reload-sync');
+              if (btn) btn.innerText = "MEMBERSIHKAN CACHE...";
+              setTimeout(() => {
+                window.location.reload();
+              }, 500);
+            }}
+            className="w-full md:w-auto inline-flex items-center justify-center gap-1.5 text-[10px] bg-indigo-50 hover:bg-indigo-100 text-indigo-700 hover:text-indigo-800 px-3.5 py-2 rounded-xl border border-indigo-100 transition-all cursor-pointer font-bold shrink-0 uppercase active:scale-[0.98]"
+          >
+            <RefreshCw className="w-3.5 h-3.5 animate-spin" style={{ animationDuration: '3s' }} />
+            Bersihkan Cache & Sinkron Ulang
+          </button>
+        </div>
+
+      </div>
+
+      {/* Footer & Mode Admin */}
+      <div className="max-w-2xl mx-auto w-full text-center mt-12 border-t border-slate-200 pt-6">
+        <button
+          id="btn-login-admin-modal"
+          onClick={() => {
+            setShowAdminModal(true);
+            setAdminError('');
+            setAdminUsername('');
+            setAdminPassword('');
+          }}
+          className="inline-flex items-center gap-2 text-xs font-semibold text-slate-400 hover:text-indigo-600 hover:bg-white hover:shadow-xs px-4 py-2 rounded-lg border border-slate-200 transition-all font-mono"
+        >
+          <Settings className="w-4 h-4" />
+          MASUK MODE PROKTOR / ADMIN
+        </button>
+      </div>
+
+      {/* Admin Passcode Modal */}
+      {showAdminModal && (
+        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4 z-50 animate-fade-in">
+          <div className="bg-white rounded-2xl border border-slate-200 shadow-xl max-w-sm w-full p-6 relative">
+            <h3 className="text-lg font-bold text-slate-800 flex items-center gap-2 mb-2">
+              <Settings className="w-5 h-5 text-slate-700" />
+              Verifikasi Admin / Proktor
+            </h3>
+            <p className="text-xs text-slate-500 mb-4 font-mono">
+              MASUKKAN USERNAME & SANDI UNTUK AKSES KONTROL
+            </p>
+
+            {adminError && (
+              <div className="mb-4 p-2.5 bg-red-50 border border-red-100 rounded-lg text-red-600 text-xs text-center font-semibold">
+                {adminError}
+              </div>
+            )}
+
+            <form onSubmit={handleAdminVerify} className="space-y-4">
+              <div>
+                <label className="block text-xs font-semibold text-slate-500 font-mono tracking-wider uppercase mb-1">
+                  Username
+                </label>
+                <input
+                  type="text"
+                  required
+                  placeholder="admin"
+                  value={adminUsername}
+                  onChange={(e) => setAdminUsername(e.target.value)}
+                  className="w-full px-3 py-2 bg-slate-50 border border-slate-200 focus:border-slate-800 rounded-lg text-slate-800 focus:outline-none focus:bg-white font-mono text-sm"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold text-slate-500 font-mono tracking-wider uppercase mb-1">
+                  Kata Sandi
+                </label>
+                <input
+                  type="password"
+                  required
+                  placeholder="••••••••"
+                  value={adminPassword}
+                  onChange={(e) => setAdminPassword(e.target.value)}
+                  className="w-full px-3 py-2 bg-slate-50 border border-slate-200 focus:border-slate-800 rounded-lg text-slate-800 focus:outline-none focus:bg-white text-center text-lg tracking-widest font-serif"
+                />
+              </div>
+
+              <div className="flex gap-2 pt-2">
+                <button
+                  type="button"
+                  id="btn-admin-cancel"
+                  onClick={() => setShowAdminModal(false)}
+                  className="flex-1 py-2 text-sm font-semibold text-slate-500 hover:bg-slate-50 border border-slate-200 rounded-lg transition"
+                >
+                  Batal
+                </button>
+                <button
+                  type="submit"
+                  id="btn-admin-submit-verify"
+                  className="flex-1 py-2 text-sm font-semibold text-white bg-slate-900 hover:bg-slate-800 rounded-lg transition"
+                >
+                  Verifikasi
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}

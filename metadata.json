@@ -1,0 +1,6 @@
+{
+  "name": "Proktor Ujian Ketat",
+  "description": "Aplikasi ujian digital dengan sistem pengawasan (proktor) sangat ketat untuk mencegah ganti tab, keluar aplikasi, split-screen, dan floating apps.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

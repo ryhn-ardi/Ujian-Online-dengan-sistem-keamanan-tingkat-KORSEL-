@@ -1,0 +1,65 @@
+{
+  "entities": {
+    "student": {
+      "title": "Student",
+      "description": "Registered exam student",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "absentNumber": { "type": "string" },
+        "studentClass": { "type": "string" },
+        "status": { "type": "string", "enum": ["BELUM_MULAI", "SEDANG_MENGERJAKAN", "TERKUNCI", "SELESAI"] },
+        "violationCount": { "type": "integer" },
+        "lockedReason": { "type": "string" },
+        "score": { "type": "number" },
+        "correctAnswersCount": { "type": "integer" },
+        "totalQuestions": { "type": "integer" },
+        "answers": { "type": "object" },
+        "startTime": { "type": "string" },
+        "endTime": { "type": "string" },
+        "lastActive": { "type": "string" }
+      },
+      "required": ["id", "name", "absentNumber", "studentClass", "status", "violationCount", "answers"]
+    },
+    "question": {
+      "title": "Question",
+      "description": "An exam question",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "questionText": { "type": "string" },
+        "options": { "type": "array" },
+        "correctAnswerIndex": { "type": "integer" },
+        "correctAnswerIndices": { "type": "array" },
+        "type": { "type": "string", "enum": ["MC", "MR"] },
+        "score": { "type": "integer" }
+      },
+      "required": ["id", "questionText", "options"]
+    },
+    "examConfig": {
+      "title": "ExamConfig",
+      "description": "Exam parameters configuration",
+      "type": "object",
+      "properties": {
+        "durationMinutes": { "type": "integer" },
+        "examTitle": { "type": "string" }
+      },
+      "required": ["durationMinutes", "examTitle"]
+    }
+  },
+  "firestore": {
+    "students/{studentId}": {
+      "schema": "student",
+      "description": "Collection of students taking exams"
+    },
+    "questions/{questionId}": {
+      "schema": "question",
+      "description": "Collection of questions for the exam"
+    },
+    "config/examConfig": {
+      "schema": "examConfig",
+      "description": "Single configuration document for global parameters"
+    }
+  }
+}
