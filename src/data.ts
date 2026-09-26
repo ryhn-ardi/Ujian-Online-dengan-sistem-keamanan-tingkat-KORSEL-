@@ -131,5 +131,9 @@ export const INITIAL_CONFIG: ExamConfig = {
   maxAllowedViolations: 3,
   clearAnswersOnViolation: false,
   sirenAlarmEnabled: true,
-  unlockTokens: ['TOKEN-1', 'TOKEN-2']
+  unlockTokens: ['TOKEN-1', 'TOKEN-2'],
+  usedGlobalTokens: [],
+  enableRandomSampling: false,
+  sampleQuestionCount: 50,
+  requireStudentLogin: true
 };

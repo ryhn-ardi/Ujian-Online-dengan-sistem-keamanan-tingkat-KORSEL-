@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
-import { Users, FileSpreadsheet, RefreshCw, KeyRound, Edit, Trash2, Plus, Save, BookOpen, Clock, X, ChevronRight, Check, AlertTriangle, ShieldCheck, Search, Eye, EyeOff, Layers, Settings2, Sparkles, Ticket } from 'lucide-react';
-import { Student, Question, ExamConfig, ExamSubject } from '../types';
+import { Users, FileSpreadsheet, RefreshCw, KeyRound, Edit, Trash2, Plus, Save, BookOpen, Clock, X, ChevronRight, Check, AlertTriangle, ShieldCheck, Search, Eye, EyeOff, Layers, Settings2, Sparkles, Ticket, Download, Upload, Shuffle, UserCheck, Lock, CheckCircle2, ChevronLeft } from 'lucide-react';
+import * as XLSX from 'xlsx';
+import { Student, Question, ExamConfig, ExamSubject, StudentUser } from '../types';
 import { getExamSubjects, saveSingleStudent } from '../utils/sync';
 
 // Helper to calculate actual subject metrics for a student
@@ -67,9 +68,11 @@ interface AdminPanelProps {
   students: Student[];
   questions: Question[];
   config: ExamConfig;
+  studentUsers?: StudentUser[];
   onUpdateStudents: (updated: Student[]) => void;
   onUpdateQuestions: (updated: Question[]) => void;
   onUpdateConfig: (updated: ExamConfig) => void;
+  onUpdateStudentUsers?: (updated: StudentUser[]) => void;
   onExit: () => void;
 }
 
@@ -77,13 +80,15 @@ export default function AdminPanel({
   students,
   questions,
   config,
+  studentUsers = [],
   onUpdateStudents,
   onUpdateQuestions,
   onUpdateConfig,
+  onUpdateStudentUsers,
   onExit
 }: AdminPanelProps) {
   // Tabs for the Admin Control Panel
-  const [activeTab, setActiveTab] = useState<'MONITOR' | 'QUESTIONS' | 'CONFIG'>('MONITOR');
+  const [activeTab, setActiveTab] = useState<'MONITOR' | 'QUESTIONS' | 'CONFIG' | 'ACCOUNTS'>('MONITOR');
 
   // Search filter query
   const [studentSearch, setStudentSearch] = useState('');
@@ -137,6 +142,23 @@ export default function AdminPanel({
   const [importSuccess, setImportSuccess] = useState('');
   const [showImportArea, setShowImportArea] = useState(false);
   const [importSubjectTarget, setImportSubjectTarget] = useState<string>('current');
+
+  // States for Student Accounts Management (1,200+ users)
+  const [accountSearch, setAccountSearch] = useState('');
+  const [selectedAccountClass, setSelectedAccountClass] = useState('all');
+  const [accountPage, setAccountPage] = useState(1);
+  const [accountPageSize, setAccountPageSize] = useState(50);
+  const [showAddAccountModal, setShowAddAccountModal] = useState(false);
+  const [newAccUsername, setNewAccUsername] = useState('');
+  const [newAccPassword, setNewAccPassword] = useState('123');
+  const [newAccName, setNewAccName] = useState('');
+  const [newAccClass, setNewAccClass] = useState('8A');
+  const [newAccAbsen, setNewAccAbsen] = useState('');
+  const [accError, setAccError] = useState('');
+  const [showAccountImportArea, setShowAccountImportArea] = useState(false);
+  const [importAccountMode, setImportAccountMode] = useState<'APPEND' | 'OVERWRITE'>('OVERWRITE');
+  const [importAccountLoading, setImportAccountLoading] = useState(false);
+  const [importAccountMsg, setImportAccountMsg] = useState<{ text: string; success: boolean } | null>(null);
 
   // --- ACTIONS: SUBJECT SLOT MANAGEMENT (MAX 20 SLOTS) ---
   const handleAddSubjectSlot = (e: React.FormEvent) => {
@@ -291,6 +313,203 @@ export default function AdminPanel({
     }
   };
 
+  const handleWipeAllQuestionsEntirely = () => {
+    if (questions.length === 0) {
+      alert('Bank soal saat ini sudah kosong (0 butir soal).');
+      return;
+    }
+    if (window.confirm(`⚠️ PERINGATAN KERAS:\n\nYakin ingin MENGOSONGKAN SELURUH BANK SOAL (${questions.length} butir) di SEMUA mata pelajaran?\n\nSetelah dikosongkan, bank soal akan benar-benar menjadi 0 soal dan tidak akan memunculkan 5 soal bawaan secara otomatis.`)) {
+      onUpdateQuestions([]);
+      alert('Seluruh bank soal telah berhasil dikosongkan (0 butir soal tersisa).');
+    }
+  };
+
+  // Student accounts helper methods
+  const handleDownloadStudentAccountsTemplateXlsx = () => {
+    const sampleData = [
+      { username: 'siswa_001', password: '123', nama: 'Ahmad Fauzan', kelas: '8A', no_absen: '01' },
+      { username: 'siswa_002', password: '123', nama: 'Bella Safitri', kelas: '8A', no_absen: '02' },
+      { username: 'siswa_003', password: '123', nama: 'Cahyo Wibowo', kelas: '8B', no_absen: '01' },
+      { username: 'siswa_004', password: '123', nama: 'Dewi Lestari', kelas: '8B', no_absen: '02' },
+      { username: 'siswa_005', password: '123', nama: 'Eko Prasetyo', kelas: '8C', no_absen: '01' }
+    ];
+
+    const ws = XLSX.utils.json_to_sheet(sampleData, {
+      header: ['username', 'password', 'nama', 'kelas', 'no_absen']
+    });
+    ws['!cols'] = [
+      { wch: 18 },
+      { wch: 14 },
+      { wch: 28 },
+      { wch: 12 },
+      { wch: 12 }
+    ];
+
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, 'Data_Akun_Siswa');
+    XLSX.writeFile(wb, 'template_data_1200_akun_siswa.xlsx');
+  };
+
+  const handleDownloadStudentAccountsTemplateCsv = () => {
+    const csvContent =
+      "username,password,nama,kelas,no_absen\n" +
+      "siswa_001,123,Ahmad Fauzan,8A,01\n" +
+      "siswa_002,123,Bella Safitri,8A,02\n" +
+      "siswa_003,123,Cahyo Wibowo,8B,01\n" +
+      "siswa_004,123,Dewi Lestari,8B,02\n" +
+      "siswa_005,123,Eko Prasetyo,8C,01\n";
+
+    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.setAttribute('download', 'template_data_1200_akun_siswa.csv');
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  };
+
+  const handleImportStudentAccountsFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    setImportAccountLoading(true);
+    setImportAccountMsg(null);
+
+    try {
+      const data = await file.arrayBuffer();
+      const workbook = XLSX.read(data, { type: 'array' });
+      const sheetName = workbook.SheetNames[0];
+      const sheet = workbook.Sheets[sheetName];
+      const rawRows: any[] = XLSX.utils.sheet_to_json(sheet, { defval: '' });
+
+      if (rawRows.length === 0) {
+        setImportAccountMsg({ text: 'File kosong atau tidak terbaca format barisnya.', success: false });
+        setImportAccountLoading(false);
+        return;
+      }
+
+      const importedUsers: StudentUser[] = [];
+      const seenUsernames = new Set<string>();
+
+      rawRows.forEach((row, index) => {
+        const username = String(row.username || row.Username || row.USER || row.User || row.nis || row.nisn || row.id || '').trim();
+        const password = String(row.password || row.Password || row.PASSWORD || row.pass || row.sandi || '123').trim();
+        const name = String(row.nama || row.Nama || row.NAMA || row.name || row.Name || row['nama lengkap'] || `Siswa ${index + 1}`).trim();
+        const studentClass = String(row.kelas || row.Kelas || row.KELAS || row.class || row.rombel || '-').trim().toUpperCase();
+        const absentNumber = String(row.no_absen || row['no absen'] || row.absen || row.Absen || row.no || row.nomor || '').trim();
+
+        if (username) {
+          const lowerUser = username.toLowerCase();
+          if (!seenUsernames.has(lowerUser)) {
+            seenUsernames.add(lowerUser);
+            importedUsers.push({
+              id: `usr_${Date.now()}_${index}_${Math.random().toString(36).substr(2, 4)}`,
+              username,
+              password: password || '123',
+              name,
+              studentClass,
+              absentNumber: absentNumber || undefined,
+              createdAt: new Date().toISOString()
+            });
+          }
+        }
+      });
+
+      if (importedUsers.length === 0) {
+        setImportAccountMsg({
+          text: 'Tidak ada baris data siswa yang valid dengan kolom "username" yang terisi.',
+          success: false
+        });
+        setImportAccountLoading(false);
+        return;
+      }
+
+      let finalUsers: StudentUser[] = [];
+      if (importAccountMode === 'APPEND') {
+        const existingMap = new Map((studentUsers || []).map(u => [u.username.toLowerCase(), u]));
+        importedUsers.forEach(u => existingMap.set(u.username.toLowerCase(), u));
+        finalUsers = Array.from(existingMap.values());
+      } else {
+        finalUsers = importedUsers;
+      }
+
+      if (onUpdateStudentUsers) {
+        onUpdateStudentUsers(finalUsers);
+      }
+      setImportAccountMsg({
+        text: `Berhasil mengimpor ${importedUsers.length} akun siswa! Total akun di database sekarang: ${finalUsers.length} pengguna.`,
+        success: true
+      });
+      setShowAccountImportArea(false);
+    } catch (err: any) {
+      console.error('Import accounts error:', err);
+      setImportAccountMsg({ text: `Gagal membaca file: ${err.message || 'Format tidak valid'}`, success: false });
+    } finally {
+      setImportAccountLoading(false);
+      e.target.value = '';
+    }
+  };
+
+  const handleAddSingleStudentAccount = (e: React.FormEvent) => {
+    e.preventDefault();
+    setAccError('');
+
+    if (!newAccUsername.trim()) return setAccError('Username wajib diisi');
+    if (!newAccPassword.trim()) return setAccError('Password wajib diisi');
+    if (!newAccName.trim()) return setAccError('Nama lengkap siswa wajib diisi');
+    if (!newAccClass.trim()) return setAccError('Kelas wajib diisi');
+
+    const cleanUsername = newAccUsername.trim();
+    if ((studentUsers || []).some(u => u.username.toLowerCase() === cleanUsername.toLowerCase())) {
+      return setAccError(`Username "${cleanUsername}" sudah digunakan oleh siswa lain.`);
+    }
+
+    const newAcc: StudentUser = {
+      id: `usr_${Date.now()}_${Math.random().toString(36).substr(2, 4)}`,
+      username: cleanUsername,
+      password: newAccPassword.trim(),
+      name: newAccName.trim(),
+      studentClass: newAccClass.trim().toUpperCase(),
+      absentNumber: newAccAbsen.trim() || undefined,
+      createdAt: new Date().toISOString()
+    };
+
+    const updated = [...(studentUsers || []), newAcc];
+    if (onUpdateStudentUsers) {
+      onUpdateStudentUsers(updated);
+    }
+    setShowAddAccountModal(false);
+    setNewAccUsername('');
+    setNewAccPassword('123');
+    setNewAccName('');
+    setNewAccAbsen('');
+  };
+
+  const handleDeleteSingleStudentAccount = (userId: string) => {
+    const target = (studentUsers || []).find(u => u.id === userId);
+    if (!target) return;
+    if (window.confirm(`Hapus akun siswa "${target.name}" (@${target.username})?`)) {
+      const updated = (studentUsers || []).filter(u => u.id !== userId);
+      if (onUpdateStudentUsers) {
+        onUpdateStudentUsers(updated);
+      }
+    }
+  };
+
+  const handleClearAllStudentAccounts = () => {
+    if ((studentUsers || []).length === 0) {
+      alert('Database akun siswa sudah kosong.');
+      return;
+    }
+    if (window.confirm(`⚠️ PERINGATAN:\nYakin ingin MENGHAPUS SEMUA (${(studentUsers || []).length}) akun siswa dari database?\n\nSiswa tidak akan bisa login lagi sampai akun baru diunggah.`)) {
+      if (onUpdateStudentUsers) {
+        onUpdateStudentUsers([]);
+      }
+      alert('Seluruh data akun siswa berhasil dihapus.');
+    }
+  };
+
   const filteredStudents = students.filter(s => {
     const q = studentSearch.toLowerCase().trim();
     const matchesSearch = !q || (
@@ -332,7 +551,53 @@ export default function AdminPanel({
     minScoreFilter.trim() !== '' ||
     maxScoreFilter.trim() !== '';
 
-  const handleDownloadTemplate = (subId?: string) => {
+  // Download Template as Real Excel (.xlsx)
+  const handleDownloadTemplateXlsx = (subId?: string) => {
+    const targetSub = subId ? (subjects.find(s => s.id === subId) || effectiveActiveSubject) : effectiveActiveSubject;
+    const subCode = targetSub.id || 'sub1';
+    const subName = targetSub.name || 'Mata Pelajaran';
+
+    const headers = [
+      'jenis_soal (MC/MR)',
+      'soal',
+      'opsi a',
+      'opsi b',
+      'opsi c',
+      'opsi d',
+      'skor tiap soal',
+      'kode_naskah'
+    ];
+    
+    const sampleRows = [
+      ['MC', `Contoh soal pilihan ganda 1 untuk ${subName}`, 'Opsi A', '*Opsi B Benar', 'Opsi C', 'Opsi D', 20, subCode],
+      ['MR', `Contoh soal respon ganda 2 (pilih 2) untuk ${subName}`, '**Opsi A Benar', '**Opsi B Benar', 'Opsi C', 'Opsi D', 20, subCode],
+      ['MC', `Siapakah bapak pramuka sedunia?`, '*Lord Baden Powell', 'Ir. Soekarno', 'Ki Hajar Dewantara', 'Jenderal Sudirman', 20, subCode]
+    ];
+
+    const data = [headers, ...sampleRows];
+    const ws = XLSX.utils.aoa_to_sheet(data);
+
+    // Set column widths for readability in Excel
+    ws['!cols'] = [
+      { wch: 20 }, // jenis_soal
+      { wch: 45 }, // soal
+      { wch: 22 }, // opsi a
+      { wch: 22 }, // opsi b
+      { wch: 22 }, // opsi c
+      { wch: 22 }, // opsi d
+      { wch: 15 }, // skor
+      { wch: 16 }  // kode_naskah
+    ];
+
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, 'Template_Bank_Soal');
+
+    const safeName = subName.replace(/[^a-zA-Z0-9]/g, '_').toLowerCase();
+    XLSX.writeFile(wb, `template_soal_${subCode}_${safeName}.xlsx`);
+  };
+
+  // Download Template as CSV
+  const handleDownloadTemplateCsv = (subId?: string) => {
     const targetSub = subId ? (subjects.find(s => s.id === subId) || effectiveActiveSubject) : effectiveActiveSubject;
     const subCode = targetSub.id || 'sub1';
     const subName = targetSub.name || 'Mata Pelajaran';
@@ -371,16 +636,81 @@ export default function AdminPanel({
     document.body.removeChild(link);
   };
 
+  // Default download template (XLSX)
+  const handleDownloadTemplate = (subId?: string) => {
+    handleDownloadTemplateXlsx(subId);
+  };
+
+  // Universal File Upload Handler (.xlsx, .xls, .csv)
   const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
 
-    const reader = new FileReader();
-    reader.onload = (event) => {
-      const content = event.target?.result as string;
-      setImportText(content || '');
-    };
-    reader.readAsText(file, 'UTF-8');
+    setImportError('');
+    setImportSuccess('');
+
+    const fileName = file.name.toLowerCase();
+    const isExcelBinary = fileName.endsWith('.xlsx') || fileName.endsWith('.xls');
+
+    if (isExcelBinary) {
+      // Parse real Excel file using SheetJS / XLSX
+      const reader = new FileReader();
+      reader.onload = (event) => {
+        try {
+          const buffer = event.target?.result as ArrayBuffer;
+          const workbook = XLSX.read(buffer, { type: 'array' });
+          const firstSheetName = workbook.SheetNames[0];
+          if (!firstSheetName) {
+            setImportError('File Excel tidak memiliki lembar kerja (worksheet).');
+            return;
+          }
+          const worksheet = workbook.Sheets[firstSheetName];
+          // Convert sheet directly to CSV text without binary corruption
+          const csvContent = XLSX.utils.sheet_to_csv(worksheet);
+          if (!csvContent || !csvContent.trim()) {
+            setImportError('Lembar kerja Excel kosong atau tidak memiliki data.');
+            return;
+          }
+          setImportText(csvContent.trim());
+          setImportSuccess(`File Excel "${file.name}" berhasil dibaca! Data soal telah dimuat ke kolom di bawah. Silakan klik tombol "Tambah ke Soal Mapel Terpilih" untuk menyimpan.`);
+        } catch (err: any) {
+          setImportError(`Gagal membaca berkas Excel: ${err?.message || 'Format tidak valid'}`);
+        }
+      };
+      reader.readAsArrayBuffer(file);
+    } else {
+      // File CSV or Text
+      const reader = new FileReader();
+      reader.onload = (event) => {
+        const content = event.target?.result as string;
+        // Safeguard: Check if user uploaded a .xlsx renamed to .csv (binary zip header PK)
+        if (content && content.startsWith('PK\x03\x04')) {
+          const innerReader = new FileReader();
+          innerReader.onload = (innerEvt) => {
+            try {
+              const buffer = innerEvt.target?.result as ArrayBuffer;
+              const workbook = XLSX.read(buffer, { type: 'array' });
+              const firstSheetName = workbook.SheetNames[0];
+              const worksheet = workbook.Sheets[firstSheetName];
+              const csvContent = XLSX.utils.sheet_to_csv(worksheet);
+              setImportText(csvContent.trim());
+              setImportSuccess(`File Excel "${file.name}" berhasil diproses! Data soal telah dimuat.`);
+            } catch {
+              setImportError('Berkas terdeteksi berformat Excel biner (.xlsx). Silakan gunakan tombol "Pilih Berkas" untuk mengunggah ulang.');
+            }
+          };
+          innerReader.readAsArrayBuffer(file);
+          return;
+        }
+
+        setImportText(content || '');
+        setImportSuccess(`File "${file.name}" berhasil dimuat! Silakan periksa teks soal di bawah.`);
+      };
+      reader.readAsText(file, 'UTF-8');
+    }
+
+    // Reset input so user can pick the same file again if desired
+    e.target.value = '';
   };
 
   const parseCSVData = (text: string, mode: 'APPEND' | 'OVERWRITE') => {
@@ -928,23 +1258,30 @@ export default function AdminPanel({
       ];
     });
 
-    // We use a semicolon ';' as separator because it is highly compatible with Indonesian localized computers.
-    // By adding the 'sep=;' line, Microsoft Excel is hard-forced to recognize the semicolon layout automatically!
-    const separator = ';';
-    const csvContent = '\uFEFF' + `sep=${separator}\n` + [
-      headers.map(escapeCsvCell).join(separator), 
-      ...rows.map(row => row.map(escapeCsvCell).join(separator))
-    ].join('\n');
-    
-    // Download chemical reaction
-    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    link.href = url;
-    link.setAttribute('download', `rekap_nilai_proktor_${config.examTitle.replace(/\s+/g, '_').toLowerCase()}.csv`);
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
+    // Generate native Excel workbook (.xlsx)
+    const wb = XLSX.utils.book_new();
+    const wsData = [headers, ...rows];
+    const ws = XLSX.utils.aoa_to_sheet(wsData);
+
+    // Optimize column widths in Excel
+    ws['!cols'] = [
+      { wch: 6 },  // No
+      { wch: 28 }, // Nama
+      { wch: 12 }, // No Absen
+      { wch: 14 }, // Kelas
+      { wch: 24 }, // Naskah Soal
+      { wch: 24 }, // Status
+      { wch: 16 }, // Pelanggaran
+      { wch: 12 }, // Total Benar
+      { wch: 12 }, // Jumlah Soal
+      { wch: 15 }, // Nilai Akhir
+      { wch: 20 }, // Mulai
+      { wch: 20 }  // Selesai
+    ];
+
+    XLSX.utils.book_append_sheet(wb, ws, 'Rekap_Nilai_Ujian');
+    const safeTitle = config.examTitle.replace(/[^a-zA-Z0-9]/g, '_').toLowerCase();
+    XLSX.writeFile(wb, `rekap_nilai_proktor_${safeTitle}.xlsx`);
   };
 
   // --- ACTIONS: BANK SOAL CRUD ---
@@ -1080,6 +1417,17 @@ export default function AdminPanel({
           >
             <Clock className="w-4 h-4" />
             Konfigurasi Ujian
+          </button>
+          <button
+            onClick={() => setActiveTab('ACCOUNTS')}
+            className={`px-6 py-4 font-bold text-sm border-b-2 flex items-center gap-2 transition ${
+              activeTab === 'ACCOUNTS'
+                ? 'border-indigo-600 text-indigo-600'
+                : 'border-transparent text-slate-500 hover:text-slate-800'
+            }`}
+          >
+            <UserCheck className="w-4 h-4" />
+            Data Akun Siswa ({(studentUsers || []).length})
           </button>
         </div>
       </div>
@@ -1558,12 +1906,21 @@ export default function AdminPanel({
               <div className="flex flex-wrap items-center gap-2">
                 <button
                   id="btn-download-excel-template"
-                  onClick={handleDownloadTemplate}
-                  className="px-3.5 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold text-xs rounded-xl transition flex items-center justify-center gap-1.5"
-                  title="Unduh file template Excel CSV untuk diisi"
+                  onClick={() => handleDownloadTemplateXlsx()}
+                  className="px-3.5 py-2 bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border border-emerald-200 font-bold text-xs rounded-xl transition flex items-center justify-center gap-1.5 cursor-pointer shadow-xs"
+                  title="Unduh file template asli Microsoft Excel (.xlsx)"
                 >
                   <FileSpreadsheet className="w-4 h-4 text-emerald-600" />
-                  Template Excel
+                  Template Excel (.xlsx)
+                </button>
+                <button
+                  id="btn-download-csv-template"
+                  onClick={() => handleDownloadTemplateCsv()}
+                  className="px-3 py-2 bg-slate-100 hover:bg-slate-200 text-slate-600 font-bold text-xs rounded-xl transition flex items-center justify-center gap-1 cursor-pointer"
+                  title="Unduh file template versi teks CSV (.csv)"
+                >
+                  <Download className="w-3.5 h-3.5 text-slate-500" />
+                  Versi CSV
                 </button>
                 <button
                   id="btn-toggle-import-panel"
@@ -1755,6 +2112,15 @@ export default function AdminPanel({
                     <Trash2 className="w-3.5 h-3.5" />
                     Kosongkan Soal Mapel Ini
                   </button>
+                  <button
+                    type="button"
+                    onClick={handleWipeAllQuestionsEntirely}
+                    className="px-3 py-1.5 bg-rose-100 hover:bg-rose-200 text-rose-700 font-extrabold text-xs rounded-xl transition flex items-center gap-1 shadow-2xs cursor-pointer"
+                    title="Hapus bersih seluruh bank soal di SEMUA mata pelajaran (0 soal)"
+                  >
+                    <Trash2 className="w-3.5 h-3.5" />
+                    Kosongkan Semua Soal ({questions.length})
+                  </button>
                   {subjects.length > 1 && (
                     <button
                       type="button"
@@ -1781,10 +2147,19 @@ export default function AdminPanel({
             {showImportArea && (
               <div className="bg-white rounded-2xl border-2 border-emerald-500 p-6 shadow-md space-y-4 animate-fade-in">
                 <div className="flex items-center justify-between border-b border-slate-100 pb-3">
-                  <h4 className="font-extrabold text-slate-800 flex items-center gap-2 text-base">
-                    <FileSpreadsheet className="w-5 h-5 text-emerald-600" />
-                    Panel Import Soal dari Excel (.csv)
-                  </h4>
+                  <div className="flex items-center gap-2">
+                    <div className="p-2 bg-emerald-100 text-emerald-800 rounded-lg">
+                      <FileSpreadsheet className="w-5 h-5" />
+                    </div>
+                    <div>
+                      <h4 className="font-extrabold text-slate-800 text-base">
+                        Panel Import Soal dari Excel (.xlsx / .xls) & CSV
+                      </h4>
+                      <p className="text-[11px] text-slate-500">
+                        Unggah file asli Microsoft Excel (.xlsx) atau file teks CSV tanpa khawatir teks rusak atau berkarakter aneh.
+                      </p>
+                    </div>
+                  </div>
                   <button
                     onClick={() => setShowImportArea(false)}
                     className="p-1 hover:bg-slate-100 rounded-full transition text-slate-400"
@@ -1793,21 +2168,44 @@ export default function AdminPanel({
                   </button>
                 </div>
 
-                <div className="p-4 bg-emerald-50/50 border border-emerald-100 rounded-xl space-y-2.5 text-xs text-slate-600">
-                  <p className="font-bold text-emerald-950">Aturan Penulisan Template Excel / CSV:</p>
-                  <ol className="list-decimal list-inside space-y-1.5">
-                    <li>Gunakan file template Excel berformat CSV yang didownload di atas agar urutan & pemisah kolom otomatis rapi di Excel.</li>
-                    <li>Satu baris setelah baris header mewakili 1 butir soal.</li>
-                    <li>Kolomnya terdiri atas 8 kolom:
+                <div className="p-4 bg-emerald-50/70 border border-emerald-200 rounded-xl space-y-2.5 text-xs text-slate-700">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <p className="font-bold text-emerald-950 flex items-center gap-1.5">
+                      <Sparkles className="w-4 h-4 text-emerald-600" />
+                      Panduan Format Pengisian Template Excel:
+                    </p>
+                    <div className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() => handleDownloadTemplateXlsx()}
+                        className="px-2.5 py-1 bg-emerald-600 hover:bg-emerald-700 text-white font-bold rounded-lg text-[11px] transition flex items-center gap-1 shadow-2xs"
+                      >
+                        <Download className="w-3 h-3" />
+                        Unduh Template (.xlsx)
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleDownloadTemplateCsv()}
+                        className="px-2.5 py-1 bg-white hover:bg-slate-100 text-slate-700 border border-slate-200 font-bold rounded-lg text-[11px] transition flex items-center gap-1"
+                      >
+                        <Download className="w-3 h-3" />
+                        Unduh CSV
+                      </button>
+                    </div>
+                  </div>
+                  <ol className="list-decimal list-inside space-y-1.5 text-slate-600">
+                    <li>Gunakan file template <strong>.xlsx</strong> di atas, buka langsung di Microsoft Excel atau Google Spreadsheet.</li>
+                    <li>Satu baris mewakili 1 butir soal (baris pertama adalah baris judul kolom).</li>
+                    <li>Kolomnya terdiri atas 8 urutan kolom:
                       <ul className="list-disc list-inside pl-4 my-1 font-mono text-[11px] text-emerald-900 font-semibold space-y-0.5">
-                        <li>Kolom 1: Jenis soal (<code className="bg-emerald-100/80 px-1 rounded">MC</code> atau <code className="bg-emerald-100/80 px-1 rounded">MR</code>)</li>
-                        <li>Kolom 2: Teks Pertanyaan</li>
-                        <li>Kolom 3-6: Opsi A, B, C, dan D</li>
-                        <li>Kolom 7: Bobot Nilai (misal: 10 atau 20)</li>
+                        <li>Kolom 1: Jenis soal (<code className="bg-emerald-100/80 px-1 rounded">MC</code> untuk Pilihan Ganda biasa, <code className="bg-emerald-100/80 px-1 rounded">MR</code> untuk Respon Ganda)</li>
+                        <li>Kolom 2: Teks Soal / Pertanyaan</li>
+                        <li>Kolom 3 - 6: Opsi Jawaban A, B, C, dan D</li>
+                        <li>Kolom 7: Bobot Nilai per soal (contoh: 10 atau 20)</li>
                         <li>Kolom 8 (Opsional): Kode/Nama Mapel sasaran</li>
                       </ul>
                     </li>
-                    <li>Tanda bintang <code className="font-mono text-red-600 font-bold">*</code> di depan opsi menandai kunci jawaban benar (cth: <code className="bg-slate-100 px-1 py-0.5 rounded text-indigo-700 font-mono">*Opsi Benar</code>).</li>
+                    <li>Berikan tanda bintang <code className="font-mono text-red-600 font-bold">*</code> di depan opsi jawaban yang benar (contoh: <code className="bg-white px-1.5 py-0.5 rounded border border-emerald-200 text-emerald-800 font-mono">*Opsi Jawaban Benar</code>).</li>
                   </ol>
                 </div>
 
@@ -1875,22 +2273,27 @@ export default function AdminPanel({
 
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                   {/* File Upload Zone */}
-                  <div className="border-2 border-dashed border-slate-200 hover:border-emerald-500 rounded-xl p-5 text-center transition flex flex-col justify-center items-center bg-slate-50/50">
-                    <FileSpreadsheet className="w-10 h-10 text-slate-400 mb-2" />
-                    <span className="text-xs font-semibold text-slate-700 block mb-1">Pilih File CSV Hasil Ekspor Excel</span>
-                    <span className="text-[10px] text-slate-400 block mb-4">Pastikan encoding UTF-8</span>
+                  <div className="border-2 border-dashed border-emerald-300 hover:border-emerald-600 rounded-xl p-5 text-center transition flex flex-col justify-center items-center bg-emerald-50/30">
+                    <div className="w-12 h-12 bg-emerald-100 text-emerald-700 rounded-full flex items-center justify-center mb-2 shadow-2xs">
+                      <FileSpreadsheet className="w-6 h-6" />
+                    </div>
+                    <span className="text-xs font-extrabold text-slate-800 block mb-0.5">Unggah Berkas Excel (.xlsx) atau CSV</span>
+                    <span className="text-[11px] text-emerald-700 font-medium block mb-3">
+                      Otomatis membedah soal tanpa simbol aneh
+                    </span>
                     <input
                       type="file"
-                      accept=".csv"
+                      accept=".xlsx, .xls, .csv"
                       onChange={handleFileUpload}
                       className="hidden"
-                      id="csv-file-picker"
+                      id="excel-csv-file-picker"
                     />
                     <label
-                      htmlFor="csv-file-picker"
-                      className="px-4 py-2 bg-white hover:bg-slate-50 border border-slate-200 hover:border-slate-800 text-slate-700 font-bold text-xs rounded-lg cursor-pointer transition inline-block"
+                      htmlFor="excel-csv-file-picker"
+                      className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs rounded-xl cursor-pointer transition inline-flex items-center gap-1.5 shadow-sm active:scale-95"
                     >
-                      Pilih Berkas (.csv)
+                      <Upload className="w-3.5 h-3.5" />
+                      Pilih Berkas (.xlsx / .csv)
                     </label>
                   </div>
 
@@ -2714,6 +3117,118 @@ export default function AdminPanel({
                     </ul>
                   </div>
                 </div>
+                {/* 6. PENGAMBILAN BUTIR SOAL SECARA ACAK (RANDOM QUESTION SAMPLING) */}
+                <div className="p-5 bg-gradient-to-br from-indigo-50/70 via-white to-purple-50/40 rounded-2xl border border-indigo-200/80 space-y-4 shadow-xs">
+                  <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-3 border-b border-indigo-100 pb-3">
+                    <div>
+                      <div className="flex items-center gap-2">
+                        <div className="w-8 h-8 rounded-xl bg-indigo-600 text-white flex items-center justify-center shadow-xs">
+                          <Shuffle className="w-4 h-4" />
+                        </div>
+                        <div>
+                          <h4 className="font-extrabold text-sm text-slate-800 tracking-wide font-sans">
+                            Pengambilan Butir Soal Acak (Random Question Sampling)
+                          </h4>
+                          <span className="text-[10px] font-mono text-indigo-700 font-bold uppercase tracking-wider">
+                            Ambil N Butir Soal Acak dari Bank Soal per Siswa
+                          </span>
+                        </div>
+                      </div>
+                      <p className="text-xs text-slate-650 mt-2 leading-relaxed max-w-xl">
+                        Aktifkan opsi ini jika Anda memiliki banyak butir soal (misal 100 butir) dan ingin setiap siswa hanya mengerjakan sebagian (misal 50 butir acak). Pemilihan soal disimpan di sesi siswa sehingga nomor soal tetap konsisten dan tidak berganti saat siswa me-refresh halaman.
+                      </p>
+                    </div>
+
+                    <div className="shrink-0 self-start sm:self-auto">
+                      <button
+                        type="button"
+                        onClick={() => onUpdateConfig({
+                          ...config,
+                          enableRandomSampling: !config.enableRandomSampling
+                        })}
+                        className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none ${
+                          config.enableRandomSampling ? 'bg-indigo-600' : 'bg-slate-200'
+                        }`}
+                      >
+                        <span
+                          className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow-sm ring-0 transition duration-200 ease-in-out ${
+                            config.enableRandomSampling ? 'translate-x-5' : 'translate-x-0'
+                          }`}
+                        />
+                      </button>
+                    </div>
+                  </div>
+
+                  {config.enableRandomSampling && (
+                    <div className="p-4 bg-white rounded-xl border border-indigo-200 space-y-3">
+                      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                        <div>
+                          <label className="block text-xs font-bold text-slate-800 uppercase font-mono">
+                            Jumlah Butir Soal Acak yang Diambil:
+                          </label>
+                          <span className="text-[11px] text-slate-500">
+                            Total soal saat ini di bank soal: <strong>{questions.length} butir</strong>
+                          </span>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <input
+                            type="number"
+                            min="1"
+                            max={Math.max(1, questions.length)}
+                            value={config.sampleQuestionCount || 50}
+                            onChange={(e) => {
+                              const val = parseInt(e.target.value) || 1;
+                              onUpdateConfig({
+                                ...config,
+                                sampleQuestionCount: Math.max(1, val)
+                              });
+                            }}
+                            className="w-24 px-3 py-2 bg-indigo-50/50 border border-indigo-300 rounded-xl text-indigo-950 text-sm font-mono text-center font-bold"
+                          />
+                          <span className="text-xs font-bold text-slate-600">Butir Soal</span>
+                        </div>
+                      </div>
+
+                      <div className="p-3 bg-indigo-50/60 rounded-lg text-xs text-indigo-900 border border-indigo-100 flex items-center gap-2">
+                        <Check className="w-4 h-4 text-indigo-600 shrink-0" />
+                        <span>
+                          Setiap siswa akan mendapatkan <strong>{config.sampleQuestionCount || 50} butir soal acak</strong> yang diambil dari seluruh bank soal yang tersedia.
+                        </span>
+                      </div>
+                    </div>
+                  )}
+                </div>
+
+                {/* 7. WAJIBKAN SISWA LOGIN MENGGUNAKAN AKUN (1200+ DATABASE) */}
+                <div className="flex items-center justify-between p-4 bg-slate-50 rounded-2xl border border-slate-200">
+                  <div className="space-y-1 pr-4">
+                    <div className="flex items-center gap-2">
+                      <UserCheck className="w-4 h-4 text-indigo-600" />
+                      <span className="text-xs font-bold text-slate-800 font-sans block">
+                        Wajibkan Siswa Login dengan Username & Password Terdaftar
+                      </span>
+                    </div>
+                    <span className="text-[11px] text-slate-500 leading-tight block">
+                      Siswa harus memasukkan username & password yang sudah diimpor ke tab "Data Akun Siswa" ({(studentUsers || []).length} akun). Data nama, kelas, dan absen siswa otomatis terisi.
+                    </span>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => onUpdateConfig({
+                      ...config,
+                      requireStudentLogin: config.requireStudentLogin !== false ? false : true
+                    })}
+                    className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none ${
+                      config.requireStudentLogin !== false ? 'bg-indigo-600' : 'bg-slate-200'
+                    }`}
+                  >
+                    <span
+                      className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow-sm ring-0 transition duration-200 ease-in-out ${
+                        config.requireStudentLogin !== false ? 'translate-x-5' : 'translate-x-0'
+                      }`}
+                    />
+                  </button>
+                </div>
               </div>
 
               <div className="p-4 bg-teal-55 bg-teal-50 border border-teal-200 rounded-xl text-xs text-teal-800 space-y-2">
@@ -2729,7 +3244,434 @@ export default function AdminPanel({
           </div>
         </div>
       )}
+
+      {/* TAB 4: DATA AKUN SISWA (1,200+ DATABASE) */}
+      {activeTab === 'ACCOUNTS' && (() => {
+        const classList = Array.from(new Set((studentUsers || []).map(u => u.studentClass).filter(Boolean))).sort();
+        const filteredAccounts = (studentUsers || []).filter(u => {
+          const q = accountSearch.toLowerCase().trim();
+          const matchesSearch = !q || (
+            (u.username || '').toLowerCase().includes(q) ||
+            (u.name || '').toLowerCase().includes(q) ||
+            (u.studentClass || '').toLowerCase().includes(q) ||
+            (u.absentNumber || '').toLowerCase().includes(q)
+          );
+          const matchesClass = selectedAccountClass === 'all' || u.studentClass === selectedAccountClass;
+          return matchesSearch && matchesClass;
+        });
+
+        const totalPages = Math.max(1, Math.ceil(filteredAccounts.length / accountPageSize));
+        const currentPage = Math.min(accountPage, totalPages);
+        const startIndex = (currentPage - 1) * accountPageSize;
+        const pageAccounts = filteredAccounts.slice(startIndex, startIndex + accountPageSize);
+
+        return (
+          <div className="space-y-6">
+            {/* Header Akun Siswa */}
+            <div className="flex flex-col md:flex-row items-start md:items-center justify-between gap-4 bg-white p-6 rounded-2xl border border-slate-200 shadow-xs">
+              <div>
+                <div className="flex items-center gap-2 mb-1">
+                  <div className="w-8 h-8 rounded-xl bg-indigo-600 text-white flex items-center justify-center shadow-xs">
+                    <UserCheck className="w-4 h-4" />
+                  </div>
+                  <h3 className="text-lg font-black text-slate-900 tracking-tight">
+                    Database Akun Login Siswa ({ (studentUsers || []).length } Akun)
+                  </h3>
+                </div>
+                <p className="text-xs text-slate-500">
+                  Kelola username dan password siswa untuk login ujian (Mendukung hingga 1.200+ pengguna).
+                </p>
+              </div>
+
+              {/* Action Buttons */}
+              <div className="flex flex-wrap items-center gap-2">
+                <button
+                  type="button"
+                  onClick={handleDownloadStudentAccountsTemplateXlsx}
+                  className="px-3 py-2 bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs rounded-xl transition flex items-center gap-1.5 shadow-2xs cursor-pointer"
+                >
+                  <Download className="w-3.5 h-3.5" />
+                  Unduh Template (.xlsx)
+                </button>
+                <button
+                  type="button"
+                  onClick={handleDownloadStudentAccountsTemplateCsv}
+                  className="px-3 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold text-xs rounded-xl transition flex items-center gap-1.5 cursor-pointer"
+                >
+                  <Download className="w-3.5 h-3.5" />
+                  Unduh Template (.csv)
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setShowAccountImportArea(!showAccountImportArea)}
+                  className="px-3 py-2 bg-indigo-600 hover:bg-indigo-500 text-white font-bold text-xs rounded-xl transition flex items-center gap-1.5 shadow-2xs cursor-pointer"
+                >
+                  <Upload className="w-3.5 h-3.5" />
+                  Unggah File Siswa (Excel/CSV)
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setShowAddAccountModal(true)}
+                  className="px-3 py-2 bg-white hover:bg-slate-50 text-slate-800 border border-slate-200 font-bold text-xs rounded-xl transition flex items-center gap-1.5 cursor-pointer"
+                >
+                  <Plus className="w-3.5 h-3.5" />
+                  Tambah Akun Manual
+                </button>
+                {(studentUsers || []).length > 0 && (
+                  <button
+                    type="button"
+                    onClick={handleClearAllStudentAccounts}
+                    className="px-3 py-2 bg-rose-50 hover:bg-rose-100 text-rose-700 font-bold text-xs rounded-xl transition flex items-center gap-1.5 cursor-pointer"
+                    title="Kosongkan seluruh database akun siswa"
+                  >
+                    <Trash2 className="w-3.5 h-3.5" />
+                    Kosongkan Akun
+                  </button>
+                )}
+              </div>
+            </div>
+
+            {/* Notification alert */}
+            {importAccountMsg && (
+              <div className={`p-4 rounded-xl text-xs flex items-center justify-between gap-2 border ${
+                importAccountMsg.success
+                  ? 'bg-emerald-50 text-emerald-800 border-emerald-200'
+                  : 'bg-rose-50 text-rose-800 border-rose-200'
+              }`}>
+                <span>{importAccountMsg.text}</span>
+                <button onClick={() => setImportAccountMsg(null)} className="p-1 text-slate-400 hover:text-slate-600">
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+            )}
+
+            {/* Upload Zone */}
+            {showAccountImportArea && (
+              <div className="bg-white rounded-2xl border-2 border-indigo-500 p-6 shadow-md space-y-4 animate-fade-in">
+                <div className="flex items-center justify-between border-b border-slate-100 pb-3">
+                  <div className="flex items-center gap-2">
+                    <div className="p-2 bg-indigo-100 text-indigo-700 rounded-lg">
+                      <FileSpreadsheet className="w-5 h-5" />
+                    </div>
+                    <div>
+                      <h4 className="font-extrabold text-slate-800 text-base">
+                        Unggah Database 1.200+ Akun Siswa (Excel .xlsx / CSV)
+                      </h4>
+                      <p className="text-[11px] text-slate-500">
+                        Format kolom template: <strong>username, password, nama, kelas, no_absen</strong>
+                      </p>
+                    </div>
+                  </div>
+                  <button
+                    onClick={() => setShowAccountImportArea(false)}
+                    className="p-1 hover:bg-slate-100 rounded-full transition text-slate-400"
+                  >
+                    <X className="w-5 h-5" />
+                  </button>
+                </div>
+
+                <div className="flex flex-wrap items-center gap-4 text-xs">
+                  <span className="font-bold text-slate-700">Metode Impor:</span>
+                  <label className="flex items-center gap-1.5 cursor-pointer">
+                    <input
+                      type="radio"
+                      name="importAccountMode"
+                      checked={importAccountMode === 'OVERWRITE'}
+                      onChange={() => setImportAccountMode('OVERWRITE')}
+                    />
+                    <span className="font-semibold text-slate-800">Gantikan Seluruh Data (Overwrite)</span>
+                  </label>
+                  <label className="flex items-center gap-1.5 cursor-pointer">
+                    <input
+                      type="radio"
+                      name="importAccountMode"
+                      checked={importAccountMode === 'APPEND'}
+                      onChange={() => setImportAccountMode('APPEND')}
+                    />
+                    <span className="font-semibold text-slate-800">Tambahkan ke Data yang Ada (Append)</span>
+                  </label>
+                </div>
+
+                <div className="border-2 border-dashed border-slate-300 rounded-xl p-8 text-center bg-slate-50/50 hover:bg-indigo-50/30 transition">
+                  <input
+                    type="file"
+                    id="input-file-student-accounts"
+                    accept=".xlsx, .xls, .csv"
+                    onChange={handleImportStudentAccountsFile}
+                    className="hidden"
+                  />
+                  <label
+                    htmlFor="input-file-student-accounts"
+                    className="cursor-pointer flex flex-col items-center justify-center space-y-2"
+                  >
+                    <div className="w-12 h-12 rounded-2xl bg-indigo-100 text-indigo-600 flex items-center justify-center shadow-xs">
+                      <Upload className="w-6 h-6" />
+                    </div>
+                    <span className="text-sm font-extrabold text-slate-800">
+                      {importAccountLoading ? 'Sedang memproses & menyinkronkan data...' : 'Klik untuk Memilih File Excel (.xlsx / .xls) atau CSV'}
+                    </span>
+                    <span className="text-xs text-slate-500">
+                      Bisa langsung mengunggah 1.200 baris akun sekaligus
+                    </span>
+                  </label>
+                </div>
+              </div>
+            )}
+
+            {/* Filter and Search Bar */}
+            <div className="bg-white p-4 rounded-2xl border border-slate-200 flex flex-col sm:flex-row items-center justify-between gap-3 shadow-xs">
+              <div className="relative w-full sm:w-80">
+                <Search className="w-4 h-4 text-slate-400 absolute left-3.5 top-3" />
+                <input
+                  type="text"
+                  placeholder="Cari username, nama, atau kelas..."
+                  value={accountSearch}
+                  onChange={(e) => {
+                    setAccountSearch(e.target.value);
+                    setAccountPage(1);
+                  }}
+                  className="w-full pl-9 pr-4 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs focus:outline-none focus:border-indigo-500 transition font-medium"
+                />
+              </div>
+
+              <div className="flex items-center gap-3 w-full sm:w-auto justify-end">
+                {/* Filter Kelas */}
+                <div className="flex items-center gap-1.5">
+                  <span className="text-xs font-bold text-slate-500">Kelas:</span>
+                  <select
+                    value={selectedAccountClass}
+                    onChange={(e) => {
+                      setSelectedAccountClass(e.target.value);
+                      setAccountPage(1);
+                    }}
+                    className="px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-bold text-slate-700 focus:outline-none focus:border-indigo-500 transition"
+                  >
+                    <option value="all">Semua Kelas ({classList.length})</option>
+                    {classList.map(cls => (
+                      <option key={cls} value={cls}>Kelas {cls}</option>
+                    ))}
+                  </select>
+                </div>
+
+                {/* Per Page */}
+                <div className="flex items-center gap-1.5">
+                  <span className="text-xs font-bold text-slate-500">Tampil:</span>
+                  <select
+                    value={accountPageSize}
+                    onChange={(e) => {
+                      setAccountPageSize(Number(e.target.value));
+                      setAccountPage(1);
+                    }}
+                    className="px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-bold text-slate-700 focus:outline-none focus:border-indigo-500 transition"
+                  >
+                    <option value={25}>25</option>
+                    <option value={50}>50</option>
+                    <option value={100}>100</option>
+                  </select>
+                </div>
+              </div>
+            </div>
+
+            {/* Table of Accounts */}
+            <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden shadow-xs">
+              <div className="overflow-x-auto">
+                <table className="w-full text-left text-xs">
+                  <thead className="bg-slate-50 text-slate-500 font-mono uppercase text-[10px] tracking-wider border-b border-slate-200">
+                    <tr>
+                      <th className="py-3 px-4 w-12 text-center">#</th>
+                      <th className="py-3 px-4">Username</th>
+                      <th className="py-3 px-4">Password</th>
+                      <th className="py-3 px-4">Nama Lengkap Siswa</th>
+                      <th className="py-3 px-4">Kelas</th>
+                      <th className="py-3 px-4 text-center">No. Absen</th>
+                      <th className="py-3 px-4 text-center w-24">Aksi</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100">
+                    {pageAccounts.length === 0 ? (
+                      <tr>
+                        <td colSpan={7} className="py-12 text-center text-slate-400">
+                          Tidak ada data akun siswa yang cocok dengan filter.
+                        </td>
+                      </tr>
+                    ) : (
+                      pageAccounts.map((user, idx) => (
+                        <tr key={user.id} className="hover:bg-slate-50/70 transition">
+                          <td className="py-3 px-4 text-center text-slate-400 font-mono">
+                            {startIndex + idx + 1}
+                          </td>
+                          <td className="py-3 px-4 font-mono font-bold text-indigo-700">
+                            @{user.username}
+                          </td>
+                          <td className="py-3 px-4 font-mono text-slate-700 font-semibold">
+                            {user.password}
+                          </td>
+                          <td className="py-3 px-4 font-extrabold text-slate-900">
+                            {user.name}
+                          </td>
+                          <td className="py-3 px-4">
+                            <span className="px-2 py-0.5 bg-slate-100 text-slate-700 font-bold rounded-md font-mono text-[11px]">
+                              {user.studentClass}
+                            </span>
+                          </td>
+                          <td className="py-3 px-4 text-center font-mono font-bold text-slate-600">
+                            {user.absentNumber || '-'}
+                          </td>
+                          <td className="py-3 px-4 text-center">
+                            <button
+                              type="button"
+                              onClick={() => handleDeleteSingleStudentAccount(user.id)}
+                              className="p-1.5 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition"
+                              title="Hapus akun"
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                            </button>
+                          </td>
+                        </tr>
+                      ))
+                    )}
+                  </tbody>
+                </table>
+              </div>
+
+              {/* Pagination Footer */}
+              <div className="bg-slate-50 px-4 py-3 border-t border-slate-200 flex flex-col sm:flex-row items-center justify-between gap-3 text-xs text-slate-600">
+                <div>
+                  Menampilkan <strong>{pageAccounts.length > 0 ? startIndex + 1 : 0}</strong> - <strong>{startIndex + pageAccounts.length}</strong> dari <strong>{filteredAccounts.length}</strong> akun terdaftar
+                </div>
+
+                <div className="flex items-center gap-1.5">
+                  <button
+                    type="button"
+                    disabled={currentPage <= 1}
+                    onClick={() => setAccountPage(p => Math.max(1, p - 1))}
+                    className="p-1.5 rounded-lg bg-white border border-slate-200 hover:bg-slate-100 disabled:opacity-30 disabled:cursor-not-allowed transition"
+                  >
+                    <ChevronLeft className="w-4 h-4" />
+                  </button>
+                  <span className="px-3 py-1 font-mono font-bold text-slate-700">
+                    Halaman {currentPage} / {totalPages}
+                  </span>
+                  <button
+                    type="button"
+                    disabled={currentPage >= totalPages}
+                    onClick={() => setAccountPage(p => Math.min(totalPages, p + 1))}
+                    className="p-1.5 rounded-lg bg-white border border-slate-200 hover:bg-slate-100 disabled:opacity-30 disabled:cursor-not-allowed transition"
+                  >
+                    <ChevronRight className="w-4 h-4" />
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
     </main>
+
+    {/* Add Single Student Account Modal */}
+    {showAddAccountModal && (
+      <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4 z-50 animate-fade-in">
+        <div className="bg-white rounded-2xl border border-slate-200 shadow-2xl max-w-md w-full p-6 space-y-4">
+          <div className="flex items-center justify-between border-b border-slate-100 pb-3">
+            <h3 className="text-base font-extrabold text-slate-900 flex items-center gap-2">
+              <UserCheck className="w-5 h-5 text-indigo-600" />
+              Tambah Akun Siswa Baru
+            </h3>
+            <button
+              onClick={() => setShowAddAccountModal(false)}
+              className="p-1 text-slate-400 hover:bg-slate-100 rounded-full"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          </div>
+
+          {accError && (
+            <div className="p-3 bg-rose-50 border border-rose-200 rounded-xl text-rose-700 text-xs font-semibold">
+              {accError}
+            </div>
+          )}
+
+          <form onSubmit={handleAddSingleStudentAccount} className="space-y-3 text-xs">
+            <div>
+              <label className="block font-bold text-slate-700 mb-1">Username Siswa (Harus Unik)</label>
+              <input
+                type="text"
+                required
+                placeholder="Contoh: siswa_001"
+                value={newAccUsername}
+                onChange={(e) => setNewAccUsername(e.target.value)}
+                className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-slate-800 font-mono focus:outline-none focus:border-indigo-500"
+              />
+            </div>
+
+            <div>
+              <label className="block font-bold text-slate-700 mb-1">Password / Sandi</label>
+              <input
+                type="text"
+                required
+                placeholder="Default: 123"
+                value={newAccPassword}
+                onChange={(e) => setNewAccPassword(e.target.value)}
+                className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-slate-800 font-mono focus:outline-none focus:border-indigo-500"
+              />
+            </div>
+
+            <div>
+              <label className="block font-bold text-slate-700 mb-1">Nama Lengkap Siswa</label>
+              <input
+                type="text"
+                required
+                placeholder="Contoh: Ahmad Fauzan"
+                value={newAccName}
+                onChange={(e) => setNewAccName(e.target.value)}
+                className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-slate-800 focus:outline-none focus:border-indigo-500"
+              />
+            </div>
+
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="block font-bold text-slate-700 mb-1">Kelas</label>
+                <input
+                  type="text"
+                  required
+                  placeholder="Contoh: 8A"
+                  value={newAccClass}
+                  onChange={(e) => setNewAccClass(e.target.value)}
+                  className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-slate-800 uppercase font-mono focus:outline-none focus:border-indigo-500"
+                />
+              </div>
+
+              <div>
+                <label className="block font-bold text-slate-700 mb-1">No. Absen (Opsional)</label>
+                <input
+                  type="text"
+                  placeholder="Contoh: 01"
+                  value={newAccAbsen}
+                  onChange={(e) => setNewAccAbsen(e.target.value)}
+                  className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-slate-800 font-mono focus:outline-none focus:border-indigo-500"
+                />
+              </div>
+            </div>
+
+            <div className="flex items-center justify-end gap-2 pt-3 border-t border-slate-100">
+              <button
+                type="button"
+                onClick={() => setShowAddAccountModal(false)}
+                className="px-4 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold rounded-xl transition"
+              >
+                Batal
+              </button>
+              <button
+                type="submit"
+                className="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white font-extrabold rounded-xl transition shadow-xs"
+              >
+                Simpan Akun
+              </button>
+            </div>
+          </form>
+        </div>
+      </div>
+    )}
 
       {/* Editing Student Detail Modal */}
       {editingStudent && (

@@ -1,4 +1,4 @@
-import { Student, Question, ExamConfig, ExamSubject } from '../types';
+import { Student, Question, ExamConfig, ExamSubject, StudentUser } from '../types';
 import { INITIAL_QUESTIONS, INITIAL_CONFIG } from '../data';
 import {
   collection,
@@ -7,6 +7,7 @@ import {
   deleteDoc,
   onSnapshot,
   getDocs,
+  getDoc,
   writeBatch,
   doc as fsDoc,
   getDocFromServer
@@ -16,12 +17,22 @@ import { db } from '../lib/firebase';
 const STUDENTS_KEY = 'proktor_students';
 const QUESTIONS_KEY = 'proktor_questions';
 const CONFIG_KEY = 'proktor_config';
+const STUDENT_USERS_KEY = 'proktor_student_users';
+
+export const DEFAULT_STUDENT_USERS: StudentUser[] = [
+  { id: 'usr_1', username: 'siswa1', password: '123', name: 'Ahmad Fauzan', studentClass: '8A', absentNumber: '01' },
+  { id: 'usr_2', username: 'siswa2', password: '123', name: 'Bella Safitri', studentClass: '8A', absentNumber: '02' },
+  { id: 'usr_3', username: 'siswa3', password: '123', name: 'Dimas Pratama', studentClass: '8B', absentNumber: '01' },
+  { id: 'usr_4', username: 'siswa4', password: '123', name: 'Eka Rahmawati', studentClass: '8B', absentNumber: '02' },
+  { id: 'usr_5', username: 'siswa5', password: '123', name: 'Fikri Ramadhan', studentClass: '8C', absentNumber: '01' },
+];
 
 // Automatically clear potential stale or outdated caches on application initialization
 try {
   localStorage.removeItem(STUDENTS_KEY);
   localStorage.removeItem(QUESTIONS_KEY);
   localStorage.removeItem(CONFIG_KEY);
+  localStorage.removeItem(STUDENT_USERS_KEY);
 } catch (e) {
   console.error('Failed to prune local storage:', e);
 }
@@ -29,22 +40,28 @@ try {
 // 1. Clean in-memory states populated dynamically directly from Live Firestore docs
 let localStudents: Student[] = [];
 let localQuestions: Question[] = [];
+let localStudentUsers: StudentUser[] = [];
 let localConfig: ExamConfig = {
   durationMinutes: 15,
-  examTitle: '',
+  examTitle: 'ujian berbasis keamanan tingkat korea utara + NASA',
   subject1Name: 'Seni Budaya dan P kelas 8',
   subject2Name: 'Informatika kelas 7',
   subjects: [
     { id: 'sub1', name: 'Seni Budaya dan P kelas 8', code: 'SB-8', isActive: true },
     { id: 'sub2', name: 'Informatika kelas 7', code: 'INF-7', isActive: true },
   ],
-  unlockTokens: ['TOKEN-1', 'TOKEN-2']
+  unlockTokens: ['TOKEN-1', 'TOKEN-2'],
+  usedGlobalTokens: [],
+  enableRandomSampling: false,
+  sampleQuestionCount: 50,
+  requireStudentLogin: true
 };
 
 const initialSyncCompleted = {
   config: false,
   questions: false,
-  students: false
+  students: false,
+  studentUsers: false
 };
 
 export function isInitialSyncCompleted(): boolean {
@@ -62,6 +79,10 @@ export function getQuestions(): Question[] {
 
 export function getExamConfig(): ExamConfig {
   return localConfig;
+}
+
+export function getStudentUsers(): StudentUser[] {
+  return localStudentUsers;
 }
 
 export function getExamSubjects(config?: ExamConfig): ExamSubject[] {
@@ -189,6 +210,9 @@ onSnapshot(
       }
       localConfig = data;
       localStorage.setItem(CONFIG_KEY, JSON.stringify(data));
+      if (typeof document !== 'undefined' && data.examTitle) {
+        document.title = data.examTitle;
+      }
       initialSyncCompleted.config = true;
       notifySubscribers('SYNC_CONFIG');
     } else {
@@ -224,18 +248,32 @@ onSnapshot(
       initialSyncCompleted.questions = true;
       notifySubscribers('SYNC_QUESTIONS');
     } else {
-      // Questions bank is empty on cloud instance, batch write original questions
+      // Questions bank is empty on cloud instance
       try {
+        const seedStatusSnap = await getDoc(doc(db, 'config', 'seedMeta'));
+        if (seedStatusSnap.exists() && seedStatusSnap.data()?.questionsInitialized) {
+          // PROCTOR INTENTIONALLY EMPTIED THE BANK - DO NOT RE-SEED!
+          localQuestions = [];
+          localStorage.setItem(QUESTIONS_KEY, JSON.stringify([]));
+          initialSyncCompleted.questions = true;
+          notifySubscribers('SYNC_QUESTIONS');
+          return;
+        }
+
+        // Only on fresh first-ever project installation seed sample questions once
         const batch = writeBatch(db);
         INITIAL_QUESTIONS.forEach((q) => {
           const ref = doc(db, 'questions', q.id);
           batch.set(ref, q);
         });
+        batch.set(doc(db, 'config', 'seedMeta'), { questionsInitialized: true });
         await batch.commit();
         initialSyncCompleted.questions = true;
         notifySubscribers('SYNC_QUESTIONS');
       } catch (err) {
-        handleFirestoreError(err, OperationType.WRITE, 'questions');
+        localQuestions = [];
+        initialSyncCompleted.questions = true;
+        notifySubscribers('SYNC_QUESTIONS');
       }
     }
   },
@@ -265,11 +303,61 @@ onSnapshot(
   }
 );
 
+// D. Real-time Student Accounts Sync (Pre-registered users database for 1,200+ students)
+onSnapshot(
+  collection(db, 'studentAccounts'),
+  async (snapshot) => {
+    if (!snapshot.empty) {
+      const allUsers: StudentUser[] = [];
+      snapshot.forEach((doc) => {
+        const data = doc.data();
+        if (Array.isArray(data.users)) {
+          allUsers.push(...(data.users as StudentUser[]));
+        }
+      });
+      // Sort users by class then name
+      allUsers.sort((a, b) => (a.studentClass || '').localeCompare(b.studentClass || '') || (a.name || '').localeCompare(b.name || ''));
+      localStudentUsers = allUsers;
+      localStorage.setItem(STUDENT_USERS_KEY, JSON.stringify(allUsers));
+      initialSyncCompleted.studentUsers = true;
+      notifySubscribers('SYNC_STUDENT_USERS');
+    } else {
+      // If collection empty, check if we should populate with initial default demo users
+      try {
+        const userMetaSnap = await getDoc(doc(db, 'config', 'userMeta'));
+        if (userMetaSnap.exists()) {
+          // Admin intentionally emptied users
+          localStudentUsers = [];
+          localStorage.setItem(STUDENT_USERS_KEY, JSON.stringify([]));
+          initialSyncCompleted.studentUsers = true;
+          notifySubscribers('SYNC_STUDENT_USERS');
+          return;
+        }
+
+        // Seed initial default demo users once
+        await saveStudentUsers(DEFAULT_STUDENT_USERS);
+        await setDoc(doc(db, 'config', 'userMeta'), { usersInitialized: true });
+        initialSyncCompleted.studentUsers = true;
+      } catch (err) {
+        localStudentUsers = [...DEFAULT_STUDENT_USERS];
+        initialSyncCompleted.studentUsers = true;
+        notifySubscribers('SYNC_STUDENT_USERS');
+      }
+    }
+  },
+  (error) => {
+    console.warn('Student accounts snapshot warning:', error);
+  }
+);
+
 // 5. CLOUD PROPAGATION API EXPORTS
 // Save global config parameters
 export async function saveExamConfig(config: ExamConfig, broadcast = true): Promise<void> {
   localConfig = config;
   localStorage.setItem(CONFIG_KEY, JSON.stringify(config));
+  if (typeof document !== 'undefined' && config.examTitle) {
+    document.title = config.examTitle;
+  }
   if (broadcast) notifySubscribers('SYNC_CONFIG');
 
   try {
@@ -305,9 +393,59 @@ export async function saveQuestions(questions: Question[], broadcast = true): Pr
       batch.delete(ref);
     });
 
+    // Mark seedMeta so empty questions are NEVER re-seeded
+    batch.set(doc(db, 'config', 'seedMeta'), {
+      questionsInitialized: true,
+      lastUpdated: new Date().toISOString(),
+      count: questions.length
+    });
+
     await batch.commit();
   } catch (err) {
     handleFirestoreError(err, OperationType.WRITE, 'questions');
+  }
+}
+
+// Save/Synchronize student user database in chunks of 200 users (handles 1,200+ accounts in ~6 fast doc writes)
+export async function saveStudentUsers(users: StudentUser[], broadcast = true): Promise<void> {
+  localStudentUsers = users;
+  localStorage.setItem(STUDENT_USERS_KEY, JSON.stringify(users));
+  if (broadcast) notifySubscribers('SYNC_STUDENT_USERS');
+
+  try {
+    const existingSnap = await getDocs(collection(db, 'studentAccounts'));
+    const existingIds = new Set<string>();
+    existingSnap.forEach((doc) => existingIds.add(doc.id));
+
+    const batch = writeBatch(db);
+    const CHUNK_SIZE = 200;
+    const chunkCount = Math.ceil(users.length / CHUNK_SIZE);
+
+    if (users.length === 0) {
+      existingIds.forEach((id) => {
+        batch.delete(doc(db, 'studentAccounts', id));
+      });
+      batch.set(doc(db, 'config', 'userMeta'), { usersInitialized: true, count: 0 });
+      await batch.commit();
+      return;
+    }
+
+    for (let i = 0; i < chunkCount; i++) {
+      const chunkId = `chunk_${i}`;
+      const chunkUsers = users.slice(i * CHUNK_SIZE, (i + 1) * CHUNK_SIZE);
+      const chunkRef = doc(db, 'studentAccounts', chunkId);
+      batch.set(chunkRef, { chunkIndex: i, users: chunkUsers, updatedAt: new Date().toISOString() });
+      existingIds.delete(chunkId);
+    }
+
+    existingIds.forEach((id) => {
+      batch.delete(doc(db, 'studentAccounts', id));
+    });
+
+    batch.set(doc(db, 'config', 'userMeta'), { usersInitialized: true, count: users.length, updatedAt: new Date().toISOString() });
+    await batch.commit();
+  } catch (err) {
+    handleFirestoreError(err, OperationType.WRITE, 'studentAccounts');
   }
 }
 
@@ -396,5 +534,25 @@ export async function getStudentFromServer(studentId: string): Promise<Student |
     console.error('Error fetching student directly from server:', err);
   }
   return null;
+}
+
+export async function saveSingleStudentUser(user: StudentUser): Promise<void> {
+  const current = [...localStudentUsers];
+  const idx = current.findIndex(u => u.id === user.id || u.username.toLowerCase() === user.username.toLowerCase());
+  if (idx !== -1) {
+    current[idx] = user;
+  } else {
+    current.push(user);
+  }
+  await saveStudentUsers(current);
+}
+
+export async function deleteSingleStudentUser(userId: string): Promise<void> {
+  const updated = localStudentUsers.filter(u => u.id !== userId && u.username !== userId);
+  await saveStudentUsers(updated);
+}
+
+export async function clearAllStudentUsers(): Promise<void> {
+  await saveStudentUsers([]);
 }
 

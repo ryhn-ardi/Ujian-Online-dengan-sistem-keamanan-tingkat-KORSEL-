@@ -65,7 +65,17 @@ service cloud.firestore {
     // 3. Config collection
     match /config/{examConfigId} {
       allow read: if true;
-      allow write: if isValidId(examConfigId) && isValidExamConfig(incoming());
+      allow write: if isValidId(examConfigId);
     } 
+
+    // 4. Student Users (pre-registered accounts for login authentication)
+    match /studentUsers/{userId} {
+      allow read, write: if isValidId(userId);
+    }
+
+    // 5. Student Accounts Chunks (for high-performance storage of 1200+ student accounts)
+    match /studentAccounts/{chunkId} {
+      allow read, write: if isValidId(chunkId);
+    }
   }
 }

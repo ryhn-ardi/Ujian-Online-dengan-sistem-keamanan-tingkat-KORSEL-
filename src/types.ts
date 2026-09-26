@@ -9,10 +9,21 @@ export interface Question {
   subjectId?: string; // ID of the subject this question belongs to (e.g. 'sub1' or 'sub2')
 }
 
+export interface StudentUser {
+  id: string;
+  username: string;
+  password: string;
+  name: string;
+  studentClass: string;
+  absentNumber?: string;
+  createdAt?: string;
+}
+
 export type StudentStatus = 'BELUM_MULAI' | 'SEDANG_MENGERJAKAN' | 'TERKUNCI' | 'SELESAI';
 
 export interface Student {
   id: string; // Generated id
+  username?: string; // Predefined login username
   name: string;
   absentNumber: string;
   studentClass: string;
@@ -29,6 +40,7 @@ export interface Student {
   subjectId?: string; // Selected subject ID ('sub1' or 'sub2')
   usedTokens?: string[]; // Array of token strings already used by this student
   tokenUnlockCount?: number; // Total token unlocks used by this student
+  assignedQuestionIds?: string[]; // Preserved list of randomized question IDs for this student
 }
 
 export interface ExamSubject {
@@ -49,4 +61,8 @@ export interface ExamConfig {
   clearAnswersOnViolation?: boolean; // Whether to completely clear student answers on violation
   sirenAlarmEnabled?: boolean; // Whether to play a loud siren alarm on violation
   unlockTokens?: string[]; // Customizable unlock tokens configured by Admin (determines student token attempts)
+  usedGlobalTokens?: string[]; // List of tokens that have been consumed/burned
+  enableRandomSampling?: boolean; // Randomly sample questions from bank
+  sampleQuestionCount?: number; // Number of questions to randomly pick (e.g. 50 out of 100)
+  requireStudentLogin?: boolean; // Require username & password from database
 }

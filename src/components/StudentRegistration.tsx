@@ -1,13 +1,14 @@
 import React, { useState } from 'react';
-import { ShieldCheck, UserCheck, Settings, AlertTriangle, AlertCircle, Info, RefreshCw, BookOpen, Check } from 'lucide-react';
-import { Student, Question, ExamConfig, ExamSubject } from '../types';
+import { ShieldCheck, UserCheck, Settings, AlertTriangle, AlertCircle, Info, RefreshCw, BookOpen, Check, Eye, EyeOff, KeyRound } from 'lucide-react';
+import { Student, Question, ExamConfig, ExamSubject, StudentUser } from '../types';
 import { getExamSubjects } from '../utils/sync';
 
 interface StudentRegistrationProps {
   students: Student[];
   questions?: Question[];
   config?: ExamConfig;
-  onRegister: (data: { name: string; absentNumber: string; studentClass: string; subjectId: string }) => void;
+  studentUsers?: StudentUser[];
+  onRegister: (data: { name: string; absentNumber: string; studentClass: string; subjectId: string; username?: string }) => void;
   onAdminLogin: () => void;
   examTitle?: string;
   durationMinutes?: number;
@@ -20,6 +21,7 @@ export default function StudentRegistration({
   students,
   questions = [],
   config,
+  studentUsers = [],
   onRegister,
   onAdminLogin,
   examTitle = 'Ujian Digital',
@@ -28,11 +30,20 @@ export default function StudentRegistration({
   subject1Name,
   subject2Name
 }: StudentRegistrationProps) {
+  // Student Login with Username & Password states
+  const [usernameInput, setUsernameInput] = useState('');
+  const [passwordInput, setPasswordInput] = useState('');
+  const [showPassword, setShowPassword] = useState(false);
+  const [authenticatedUser, setAuthenticatedUser] = useState<StudentUser | null>(null);
+  const [loginError, setLoginError] = useState('');
+
+  // Form states
   const [name, setName] = useState('');
   const [absentNumber, setAbsentNumber] = useState('');
   const [studentClass, setStudentClass] = useState('');
   const [agreed, setAgreed] = useState(false);
   const [error, setError] = useState('');
+  const [manualEntryMode, setManualEntryMode] = useState(false);
 
   // Extract subjects and active subjects
   const allSubjects: ExamSubject[] = getExamSubjects(config);
@@ -58,17 +69,55 @@ export default function StudentRegistration({
   const [adminPassword, setAdminPassword] = useState('');
   const [adminError, setAdminError] = useState('');
 
+  // Handle student login verification
+  const handleVerifyStudentAccount = (e: React.FormEvent) => {
+    e.preventDefault();
+    setLoginError('');
+
+    if (!usernameInput.trim()) {
+      return setLoginError('Silakan masukkan Username siswa.');
+    }
+    if (!passwordInput.trim()) {
+      return setLoginError('Silakan masukkan Password / Kata Sandi.');
+    }
+
+    const cleanUsername = usernameInput.trim().toLowerCase();
+    const cleanPassword = passwordInput.trim();
+
+    const matchedUser = studentUsers.find(
+      (u) => u.username.trim().toLowerCase() === cleanUsername && u.password.trim() === cleanPassword
+    );
+
+    if (matchedUser) {
+      setAuthenticatedUser(matchedUser);
+      setName(matchedUser.name);
+      setStudentClass(matchedUser.studentClass);
+      setAbsentNumber(matchedUser.absentNumber || '');
+      setLoginError('');
+    } else {
+      setLoginError('Username atau Password siswa salah! Silakan tanyakan ke Proktor atau periksa kembali kartu ujian Anda.');
+    }
+  };
+
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!name.trim()) return setError('Nama lengkap wajib diisi');
-    if (!absentNumber.trim()) return setError('Nomor absen wajib diisi');
-    if (!studentClass.trim()) return setError('Kelas wajib diisi');
+    const finalName = authenticatedUser ? authenticatedUser.name : name.trim();
+    const finalClass = authenticatedUser ? authenticatedUser.studentClass : studentClass.trim().toUpperCase();
+    const finalAbsent = authenticatedUser ? (authenticatedUser.absentNumber || '-') : absentNumber.trim();
+    const finalUsername = authenticatedUser ? authenticatedUser.username : undefined;
+
+    if (!finalName) return setError('Nama lengkap siswa belum terisi');
+    if (!finalAbsent) return setError('Nomor absen belum terisi');
+    if (!finalClass) return setError('Kelas belum terisi');
     if (activeSubjects.length === 0) return setError('Belum ada naskah ujian yang diaktifkan oleh proktor.');
     if (!agreed) return setError('Anda harus menyetujui seluruh pakta integritas ujian');
 
     // Duplicate string validation and re-connection logic
-    const normalizedNewName = name.trim().toLowerCase().replace(/\s+/g, '');
+    const normalizedNewName = finalName.trim().toLowerCase().replace(/\s+/g, '');
     const existingStudentObj = students.find((s) => {
+      if (finalUsername && s.username && s.username.toLowerCase() === finalUsername.toLowerCase()) {
+        return true;
+      }
       const normalizedExisting = s.name.trim().toLowerCase().replace(/\s+/g, '');
       return normalizedExisting === normalizedNewName;
     });
@@ -76,23 +125,23 @@ export default function StudentRegistration({
     if (existingStudentObj) {
       if (existingStudentObj.status === 'SELESAI') {
         return setError(
-          `Nama siswa "${name.trim()}" sudah menyelesaikan ujian ini dan hasil pengerjaan telah dikonfirmasi. Anda tidak dapat melakukan ujian kembali.`
+          `Nama siswa "${finalName}" sudah menyelesaikan ujian ini dan hasil pengerjaan telah dikonfirmasi. Anda tidak dapat melakukan ujian kembali.`
         );
       }
       if (existingStudentObj.status === 'TERKUNCI') {
         return setError(
-          `Sesi ujian untuk siswa "${name.trim()}" saat ini dibekukan (TERKUNCI) oleh pengawas kelas karena terdeteksi keluar dari layar penuh / split screen. Silakan lapor ke proktor di depan kelas untuk membuka kunci ujian Anda!`
+          `Sesi ujian untuk siswa "${finalName}" saat ini dibekukan (TERKUNCI) oleh pengawas kelas karena terdeteksi keluar dari layar penuh / split screen. Silakan lapor ke proktor di depan kelas untuk membuka kunci ujian Anda!`
         );
       }
-      // If status is 'BELUM_MULAI' or 'SEDANG_MENGERJAKAN', we fall through to let them reconnect seamlessly!
     }
 
     setError('');
     onRegister({
-      name: name.trim(),
-      absentNumber: absentNumber.trim(),
-      studentClass: studentClass.trim().toUpperCase(),
-      subjectId: effectiveSubjectId
+      name: finalName,
+      absentNumber: finalAbsent,
+      studentClass: finalClass,
+      subjectId: effectiveSubjectId,
+      username: finalUsername
     });
   };
 
@@ -163,70 +212,152 @@ export default function StudentRegistration({
         </div>
 
         {/* Form Pendaftaran Siswa */}
-        <div className="bg-white rounded-2xl shadow-sm border border-slate-200 p-8">
-          <h2 className="text-xl font-bold text-slate-800 mb-6 flex items-center gap-2 border-b border-slate-100 pb-4">
-            <UserCheck className="w-5 h-5 text-indigo-500" />
-            Identitas Peserta Ujian
-          </h2>
+        <div className="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden">
+          <div className="bg-indigo-600 px-6 py-4 flex items-center justify-between text-white">
+            <h2 className="text-base font-bold flex items-center gap-2">
+              <UserCheck className="w-5 h-5 text-indigo-200" />
+              {authenticatedUser ? 'Identitas Peserta Ujian Terverifikasi' : 'Login Akun Peserta Ujian'}
+            </h2>
+            <span className="text-xs font-mono bg-indigo-700/80 px-2.5 py-1 rounded font-semibold">
+              {authenticatedUser ? 'TERVERIFIKASI' : `${studentUsers.length} Akun Terdaftar`}
+            </span>
+          </div>
 
-          {error && (
-            <div className="mb-6 p-4 bg-red-50 border border-red-200 rounded-xl text-red-700 text-sm flex items-center gap-2">
-              <AlertCircle className="w-5 h-5 shrink-0 text-red-500" />
-              <span>{error}</span>
-            </div>
-          )}
+          <div className="p-6 sm:p-8 space-y-6">
+            {/* 1. Account Login Form (If not verified) */}
+            {!authenticatedUser && (
+              <form onSubmit={handleVerifyStudentAccount} className="space-y-4">
+                <div className="p-4 bg-indigo-50/70 border border-indigo-100 rounded-2xl space-y-1">
+                  <div className="flex items-center gap-2 text-indigo-900 font-bold text-xs font-mono uppercase">
+                    <UserCheck className="w-4 h-4 text-indigo-600" />
+                    Silakan Masuk Menggunakan Username & Password Anda
+                  </div>
+                  <p className="text-xs text-indigo-800/80 leading-relaxed">
+                    Setiap siswa telah didaftarkan dalam database ujian oleh Proktor. Masukkan kredensial yang tercantum pada kartu peserta ujian Anda.
+                  </p>
+                </div>
 
-          <form onSubmit={handleSubmit} className="space-y-6">
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-              <div className="md:col-span-2">
-                <label className="block text-xs font-semibold text-slate-500 uppercase font-mono tracking-wider mb-2">Nama Lengkap Siswa</label>
-                <input
-                  type="text"
-                  required
-                  placeholder="Masukkan nama lengkap sesuai absen"
-                  value={name}
-                  onChange={(e) => setName(e.target.value)}
-                  className="w-full px-4 py-3 bg-slate-50 border border-slate-200 focus:border-indigo-500 focus:bg-white rounded-xl text-slate-800 focus:outline-none transition duration-200"
-                />
-              </div>
+                {loginError && (
+                  <div className="p-3.5 bg-red-50 border border-red-200 rounded-xl text-red-600 text-xs flex items-center gap-2">
+                    <AlertCircle className="w-4 h-4 shrink-0" />
+                    <span>{loginError}</span>
+                  </div>
+                )}
 
-              <div>
-                <label className="block text-xs font-semibold text-slate-500 uppercase font-mono tracking-wider mb-2">Nomor Absen</label>
-                <input
-                  type="number"
-                  required
-                  min="1"
-                  max="99"
-                  placeholder="Contoh: 14"
-                  value={absentNumber}
-                  onChange={(e) => setAbsentNumber(e.target.value)}
-                  className="w-full px-4 py-3 bg-slate-50 border border-slate-200 focus:border-indigo-500 focus:bg-white rounded-xl text-slate-800 focus:outline-none transition duration-200"
-                />
-              </div>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                  <div>
+                    <label className="block text-xs font-bold text-slate-700 uppercase font-mono tracking-wider mb-1.5">
+                      Username / NISN
+                    </label>
+                    <input
+                      type="text"
+                      required
+                      id="input-student-username"
+                      placeholder="Contoh: siswa1"
+                      value={usernameInput}
+                      onChange={(e) => setUsernameInput(e.target.value)}
+                      className="w-full px-3.5 py-2.5 bg-slate-50 border border-slate-200 focus:border-indigo-500 focus:bg-white rounded-xl text-slate-800 text-sm focus:outline-none transition font-medium"
+                    />
+                  </div>
 
-              <div>
-                <label className="block text-xs font-semibold text-slate-500 uppercase font-mono tracking-wider mb-2">Kelas / Tingkat</label>
-                <select
-                  required
-                  value={studentClass}
-                  onChange={(e) => setStudentClass(e.target.value)}
-                  className="w-full px-4 py-3 bg-slate-50 border border-slate-200 focus:border-indigo-500 focus:bg-white rounded-xl text-slate-800 focus:outline-none transition duration-200 font-semibold"
+                  <div>
+                    <label className="block text-xs font-bold text-slate-700 uppercase font-mono tracking-wider mb-1.5">
+                      Password / Sandi
+                    </label>
+                    <div className="relative">
+                      <input
+                        type={showPassword ? 'text' : 'password'}
+                        required
+                        id="input-student-password"
+                        placeholder="Ketik password Anda"
+                        value={passwordInput}
+                        onChange={(e) => setPasswordInput(e.target.value)}
+                        className="w-full px-3.5 pr-10 py-2.5 bg-slate-50 border border-slate-200 focus:border-indigo-500 focus:bg-white rounded-xl text-slate-800 text-sm focus:outline-none transition font-mono"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => setShowPassword(!showPassword)}
+                        className="absolute inset-y-0 right-0 pr-3 flex items-center text-slate-400 hover:text-slate-600 cursor-pointer"
+                      >
+                        {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                      </button>
+                    </div>
+                  </div>
+                </div>
+
+                <button
+                  type="submit"
+                  id="btn-verify-student-login"
+                  className="w-full bg-indigo-600 hover:bg-indigo-500 text-white font-black py-3 px-6 rounded-xl transition flex items-center justify-center gap-2 shadow-sm cursor-pointer"
                 >
-                  <option value="">-- Pilih Kelas --</option>
-                  <optgroup label="Tingkat Kelas 7">
-                    {['7A', '7B', '7C', '7D', '7E', '7F', '7G', '7H', '7I', '7J', '7K'].map((cls) => (
-                      <option key={cls} value={cls}>Kelas {cls}</option>
-                    ))}
-                  </optgroup>
-                  <optgroup label="Tingkat Kelas 8">
-                    {['8A', '8B', '8C', '8D', '8E', '8F', '8G', '8H', '8I', '8J', '8K'].map((cls) => (
-                      <option key={cls} value={cls}>Kelas {cls}</option>
-                    ))}
-                  </optgroup>
-                </select>
-              </div>
+                  <KeyRound className="w-4 h-4" />
+                  Verifikasi Akun Saya
+                </button>
 
-              <div className="md:col-span-2">
+                {studentUsers.length > 0 && studentUsers.length <= 10 && (
+                  <p className="text-[11px] text-center text-slate-400 font-mono pt-1">
+                    Demo Akun: <span className="text-indigo-600 font-bold">{studentUsers[0]?.username}</span> (pass: <span className="text-indigo-600 font-bold">{studentUsers[0]?.password}</span>)
+                  </p>
+                )}
+              </form>
+            )}
+
+            {/* 2. Verified Student Identity Card & Exam Form */}
+            {authenticatedUser && (
+              <form onSubmit={handleSubmit} className="space-y-6">
+                {error && (
+                  <div className="p-3.5 bg-red-50 border border-red-200 rounded-xl text-red-600 text-xs flex items-center gap-2">
+                    <AlertCircle className="w-4 h-4 shrink-0" />
+                    <span>{error}</span>
+                  </div>
+                )}
+
+                <div className="p-4 bg-gradient-to-br from-indigo-50/90 via-white to-emerald-50/60 border border-indigo-200 rounded-2xl shadow-xs space-y-3">
+                  <div className="flex items-center justify-between border-b border-indigo-100 pb-2.5">
+                    <div className="flex items-center gap-2">
+                      <div className="w-7 h-7 rounded-lg bg-emerald-500 text-white flex items-center justify-center shadow-xs">
+                        <Check className="w-4 h-4" />
+                      </div>
+                      <div>
+                        <span className="text-[10px] font-mono font-bold text-emerald-700 uppercase tracking-wider block">
+                          Akun Terverifikasi
+                        </span>
+                        <span className="text-xs font-mono text-slate-500 font-bold">
+                          @{authenticatedUser.username}
+                        </span>
+                      </div>
+                    </div>
+
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setAuthenticatedUser(null);
+                        setUsernameInput('');
+                        setPasswordInput('');
+                      }}
+                      className="text-xs font-bold text-slate-500 hover:text-indigo-600 cursor-pointer"
+                    >
+                      Ganti Akun
+                    </button>
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                    <div className="bg-white/80 p-2.5 rounded-xl border border-slate-200">
+                      <span className="text-[10px] text-slate-400 font-mono uppercase block">Nama Lengkap</span>
+                      <strong className="text-sm font-extrabold text-slate-900 block truncate">{authenticatedUser.name}</strong>
+                    </div>
+                    <div className="bg-white/80 p-2.5 rounded-xl border border-slate-200">
+                      <span className="text-[10px] text-slate-400 font-mono uppercase block">Kelas</span>
+                      <strong className="text-sm font-extrabold text-indigo-700 block">{authenticatedUser.studentClass}</strong>
+                    </div>
+                    <div className="bg-white/80 p-2.5 rounded-xl border border-slate-200">
+                      <span className="text-[10px] text-slate-400 font-mono uppercase block">No. Absen</span>
+                      <strong className="text-sm font-extrabold text-slate-900 block">{authenticatedUser.absentNumber || '-'}</strong>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="md:col-span-2">
                 <div className="flex items-center justify-between mb-2">
                   <label className="block text-xs font-semibold text-slate-500 uppercase font-mono tracking-wider">
                     Pilih Naskah Ujian (Mata Pelajaran)
@@ -302,7 +433,6 @@ export default function StudentRegistration({
                   </div>
                 )}
               </div>
-            </div>
 
             {/* Checkbox Persetujuan */}
             <div className="bg-slate-50 p-4 rounded-xl border border-slate-100 flex items-start gap-3">
@@ -328,7 +458,9 @@ export default function StudentRegistration({
               Mulai Ujian & Masuk Layar Penuh
             </button>
           </form>
-        </div>
+        )}
+      </div>
+    </div>
 
         {/* Status Sinkronisasi Real-time Database Cloud */}
         <div 

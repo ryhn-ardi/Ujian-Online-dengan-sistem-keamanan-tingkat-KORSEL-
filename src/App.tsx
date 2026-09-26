@@ -6,12 +6,14 @@ import {
   saveQuestions,
   getExamConfig,
   saveExamConfig,
+  getStudentUsers,
+  saveStudentUsers,
   subscribeToSync,
   isInitialSyncCompleted,
   saveSingleStudent,
   deleteSingleStudent
 } from './utils/sync';
-import { Student, Question, ExamConfig, StudentStatus } from './types';
+import { Student, Question, ExamConfig, StudentStatus, StudentUser } from './types';
 import StudentRegistration from './components/StudentRegistration';
 import StudentExam from './components/StudentExam';
 import AdminPanel from './components/AdminPanel';
@@ -19,9 +21,23 @@ import { ShieldCheck, GraduationCap, Award, RefreshCw, XCircle, ArrowRight, Chec
 
 // Shared helper to calculate actual slot/subject questions, score, and correct count for a student
 export function getStudentMetrics(s: Student, questionsList: Question[]) {
-  const studentQuestions = questionsList.filter(
+  let studentQuestions = questionsList.filter(
     (q) => (!q.subjectId && (!s.subjectId || s.subjectId === 'sub1')) || q.subjectId === s.subjectId
   );
+
+  // If student has randomized assigned question subset, respect and use exact assigned questions
+  if (s.assignedQuestionIds && s.assignedQuestionIds.length > 0) {
+    const map = new Map(studentQuestions.map(q => [q.id, q]));
+    const ordered: Question[] = [];
+    s.assignedQuestionIds.forEach(id => {
+      const found = map.get(id);
+      if (found) ordered.push(found);
+    });
+    if (ordered.length > 0) {
+      studentQuestions = ordered;
+    }
+  }
+
   const totalQuestions = studentQuestions.length;
 
   let correctAnswersCount = 0;
@@ -68,6 +84,7 @@ export default function App() {
   const [role, setRole] = useState<'SETUP' | 'STUDENT_EXAM' | 'STUDENT_FINISHED' | 'ADMIN'>('SETUP');
   const [students, setStudents] = useState<Student[]>([]);
   const [questions, setQuestions] = useState<Question[]>([]);
+  const [studentUsers, setStudentUsers] = useState<StudentUser[]>([]);
   const [config, setConfig] = useState<ExamConfig>({ durationMinutes: 15, examTitle: '' });
   const [currentStudentId, setCurrentStudentId] = useState<string>(() => {
     try {
@@ -82,7 +99,12 @@ export default function App() {
   useEffect(() => {
     setStudents([...getStudents()]);
     setQuestions([...getQuestions()]);
-    setConfig({ ...getExamConfig() });
+    setStudentUsers([...getStudentUsers()]);
+    const cfg = getExamConfig();
+    setConfig({ ...cfg });
+    if (typeof document !== 'undefined' && cfg.examTitle) {
+      document.title = cfg.examTitle;
+    }
     setIsDbSynced(isInitialSyncCompleted());
 
     // 2. Subscribe to real-time tab updates
@@ -93,7 +115,13 @@ export default function App() {
       } else if (syncType === 'SYNC_QUESTIONS') {
         setQuestions([...getQuestions()]);
       } else if (syncType === 'SYNC_CONFIG') {
-        setConfig({ ...getExamConfig() });
+        const freshCfg = getExamConfig();
+        setConfig({ ...freshCfg });
+        if (typeof document !== 'undefined' && freshCfg.examTitle) {
+          document.title = freshCfg.examTitle;
+        }
+      } else if (syncType === 'SYNC_STUDENT_USERS') {
+        setStudentUsers([...getStudentUsers()]);
       }
       setIsDbSynced(isInitialSyncCompleted());
     });
@@ -136,24 +164,49 @@ export default function App() {
     saveExamConfig(updatedConfig);
   };
 
-  // 3. STUDENT FLOW: Registration Action (Supports Reconnection after reset / reload)
-  const handleRegisterStudent = (data: { name: string; absentNumber: string; studentClass: string; subjectId: string }) => {
+  // 3. STUDENT FLOW: Registration Action (Supports Reconnection after reset / reload & Randomized question sampling)
+  const handleRegisterStudent = (data: { name: string; absentNumber: string; studentClass: string; subjectId: string; username?: string }) => {
     const existingStudents = getStudents();
     
-    // Check if there's an existing registered student with matching name
+    // Check if there's an existing registered student with matching username or name
     const normalizedNewName = data.name.trim().toLowerCase().replace(/\s+/g, '');
+    const normalizedUsername = data.username ? data.username.trim().toLowerCase() : '';
+
     const existing = existingStudents.find((s) => {
+      if (normalizedUsername && s.username && s.username.toLowerCase() === normalizedUsername) {
+        return true;
+      }
       const normalizedExisting = s.name.trim().toLowerCase().replace(/\s+/g, '');
       return normalizedExisting === normalizedNewName;
     });
+
+    const sampleQuestionsForSubject = (subId: string): string[] | undefined => {
+      if (!config.enableRandomSampling) return undefined;
+      const subQuestions = questions.filter(
+        (q) => (!q.subjectId && (!subId || subId === 'sub1')) || q.subjectId === subId
+      );
+      if (subQuestions.length === 0) return undefined;
+      const targetCount = config.sampleQuestionCount && config.sampleQuestionCount > 0
+        ? Math.min(config.sampleQuestionCount, subQuestions.length)
+        : subQuestions.length;
+
+      const shuffled = [...subQuestions];
+      for (let i = shuffled.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
+      }
+      return shuffled.slice(0, targetCount).map(q => q.id);
+    };
 
     if (existing) {
       // Reconnect to existing session, updating basic parameters if they changed
       const updatedStudent: Student = {
         ...existing,
+        username: data.username || existing.username,
         studentClass: data.studentClass,
         absentNumber: data.absentNumber,
         subjectId: data.subjectId,
+        assignedQuestionIds: existing.assignedQuestionIds || sampleQuestionsForSubject(data.subjectId),
         lastActive: new Date().toISOString()
       };
       
@@ -168,6 +221,7 @@ export default function App() {
     const newStudentId = `siswa_${Date.now()}_${Math.random().toString(36).substr(2, 5)}`;
     const newStudent: Student = {
       id: newStudentId,
+      username: data.username,
       name: data.name,
       absentNumber: data.absentNumber,
       studentClass: data.studentClass,
@@ -175,7 +229,8 @@ export default function App() {
       violationCount: 0,
       answers: {},
       lastActive: new Date().toISOString(),
-      subjectId: data.subjectId
+      subjectId: data.subjectId,
+      assignedQuestionIds: sampleQuestionsForSubject(data.subjectId)
     };
 
     saveSingleStudent(newStudent);
@@ -230,7 +285,8 @@ export default function App() {
         return;
       }
 
-      const maxAllowed = config.maxAllowedViolations !== undefined ? config.maxAllowedViolations : 3;
+      const tolerance = config.maxAllowedViolations !== undefined ? config.maxAllowedViolations : 3;
+      const maxAllowed = (active.tokenUnlockCount && active.tokenUnlockCount > 0) ? 1 : tolerance;
       const nextViolationCount = (active.violationCount || 0) + 1;
 
       if (nextViolationCount >= maxAllowed) {
@@ -256,7 +312,7 @@ export default function App() {
     }
   };
 
-  // 4b. STUDENT FLOW: Token-based Self Unlock (Channel 2)
+  // 4b. STUDENT FLOW: Token-based Self Unlock (Channel 2: Single-use burned token)
   const handleStudentTokenUnlock = async (tokenCode: string): Promise<{ success: boolean; message: string }> => {
     const freshStudents = getStudents();
     const active = freshStudents.find((s) => s.id === currentStudentId);
@@ -273,20 +329,19 @@ export default function App() {
       return { success: false, message: 'Kode token tidak valid. Silakan minta token yang benar kepada Pengawas/Proktor.' };
     }
 
-    // 2. Verify student has not already used this specific token
+    // 2. Strict Check: Has this token been burned globally or by this student?
     const currentUsedTokens = (active.usedTokens || []).map(t => t.trim().toUpperCase());
-    const maxAllowedTokens = availableTokens.length;
+    const currentGlobalTokens = (config.usedGlobalTokens || []).map(t => t.trim().toUpperCase());
 
-    if (currentUsedTokens.includes(normalizedInput)) {
-      const nextTokenIndex = currentUsedTokens.length + 1;
-      const nextTokenHint = nextTokenIndex <= maxAllowedTokens ? ` (Token ke-${nextTokenIndex})` : '';
+    if (currentUsedTokens.includes(normalizedInput) || currentGlobalTokens.includes(normalizedInput)) {
       return {
         success: false,
-        message: `Token "${tokenCode.trim()}" sudah pernah Anda gunakan sebelumnya! Anda tidak dapat memakai token yang sama lagi di akun ini. Harap gunakan token giliran berikutnya${nextTokenHint}.`
+        message: `Token "${tokenCode.trim()}" sudah TERPAKAI dan hangus! Setiap token hanya dapat digunakan 1 kali. Harap minta kode token lain yang belum terpakai kepada Pengawas/Proktor.`
       };
     }
 
     // 3. Verify student has not exceeded the total number of allowed token uses
+    const maxAllowedTokens = availableTokens.length;
     if (currentUsedTokens.length >= maxAllowedTokens) {
       return {
         success: false,
@@ -294,8 +349,9 @@ export default function App() {
       };
     }
 
-    // 4. Update student state: reset violationCount to 0, record token, and set status to SEDANG_MENGERJAKAN
-    const nextUsedTokens = [...(active.usedTokens || []), tokenCode.trim().toUpperCase()];
+    // 4. Update student state & burn token globally in exam config
+    const nextUsedTokens = [...(active.usedTokens || []), normalizedInput];
+    const nextGlobalTokens = [...(config.usedGlobalTokens || []), normalizedInput];
     const nextUnlockCount = (active.tokenUnlockCount || 0) + 1;
     const remainingAttempts = Math.max(0, maxAllowedTokens - nextUsedTokens.length);
 
@@ -310,8 +366,15 @@ export default function App() {
       lastActive: new Date().toISOString()
     };
 
+    const updatedConfig: ExamConfig = {
+      ...config,
+      usedGlobalTokens: nextGlobalTokens
+    };
+
     await saveSingleStudent(updatedActive);
+    await saveExamConfig(updatedConfig);
     setStudents(prev => prev.map(s => s.id === updatedActive.id ? updatedActive : s));
+    setConfig(updatedConfig);
 
     return {
       success: true,
@@ -400,6 +463,7 @@ export default function App() {
           students={students}
           questions={questions}
           config={config}
+          studentUsers={studentUsers}
           onRegister={handleRegisterStudent}
           onAdminLogin={() => setRole('ADMIN')}
           examTitle={config.examTitle || 'Ujian Digital'}
@@ -414,7 +478,19 @@ export default function App() {
       {role === 'STUDENT_EXAM' && activeStudent && (
         <StudentExam
           student={activeStudent}
-          questions={questions.filter(q => (!q.subjectId && (!activeStudent.subjectId || activeStudent.subjectId === 'sub1')) || q.subjectId === activeStudent.subjectId)}
+          questions={(() => {
+            const pool = questions.filter(q => (!q.subjectId && (!activeStudent.subjectId || activeStudent.subjectId === 'sub1')) || q.subjectId === activeStudent.subjectId);
+            if (activeStudent.assignedQuestionIds && activeStudent.assignedQuestionIds.length > 0) {
+              const map = new Map<string, Question>(pool.map(q => [q.id, q]));
+              const ordered: Question[] = [];
+              activeStudent.assignedQuestionIds.forEach(id => {
+                const found = map.get(id);
+                if (found) ordered.push(found);
+              });
+              if (ordered.length > 0) return ordered;
+            }
+            return pool;
+          })()}
           config={config}
           onViolation={handleStudentViolation}
           onTokenUnlock={handleStudentTokenUnlock}
@@ -497,9 +573,14 @@ export default function App() {
           students={students}
           questions={questions}
           config={config}
+          studentUsers={studentUsers}
           onUpdateStudents={handleUpdateStudents}
           onUpdateQuestions={handleUpdateQuestions}
           onUpdateConfig={handleUpdateConfig}
+          onUpdateStudentUsers={(users) => {
+            setStudentUsers(users);
+            saveStudentUsers(users);
+          }}
           onExit={() => setRole('SETUP')}
         />
       )}

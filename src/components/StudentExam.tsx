@@ -107,6 +107,7 @@ export default function StudentExam({
   const [isCurrentlyFullscreen, setIsCurrentlyFullscreen] = useState(!!document.fullscreenElement);
   const [examStatus, setExamStatus] = useState(student.status);
   const [isGraceActive, setIsGraceActive] = useState(false);
+  const [violationToast, setViolationToast] = useState<{ message: string; count: number; max: number } | null>(null);
   const isUnlockingRef = useRef(false);
 
   const isFullscreenSupported = typeof document !== 'undefined' && !!(
@@ -122,8 +123,7 @@ export default function StudentExam({
     isUnlockingRef.current = true;
 
     setStatusMessage(customNotice);
-    setIsGraceActive(true); // Lock down focus/window sensors immediately
-    setIsCurrentlyFullscreen(true); // Preemptively bypass any warning screens
+    setIsGraceActive(true); // Temporary grace for screen transition
     setUnlockProgress(100);
 
     setTimeout(() => {
@@ -131,27 +131,28 @@ export default function StudentExam({
       setStatusMessage('');
       setUnlockProgress(0);
       isUnlockingRef.current = false;
+      setIsCurrentlyFullscreen(!!document.fullscreenElement);
 
-      // Attempt to auto-restore full screen
-      if (document.documentElement.requestFullscreen) {
-        document.documentElement.requestFullscreen().catch(() => {});
-      }
-
-      // Extended grace period (30s) so focus shifts or window checks don't re-lock immediately
+      // Brief grace period (2.5 seconds) so animations complete without accidental trigger
       setTimeout(() => {
         setIsGraceActive(false);
-      }, 30000);
-    }, 1000);
+        setIsCurrentlyFullscreen(!!document.fullscreenElement);
+      }, 2500);
+    }, 600);
   };
+
+  const prevStudentStatusRef = useRef(student.status);
 
   // Keep local exam status synchronized with student.status prop from Firestore
   useEffect(() => {
-    if (examStatus === 'TERKUNCI' && student.status === 'SEDANG_MENGERJAKAN') {
-      performAutoUnlock();
+    // Only auto-unlock if the server student status transitioned from TERKUNCI to SEDANG_MENGERJAKAN (Proctor remote action)
+    if (prevStudentStatusRef.current === 'TERKUNCI' && student.status === 'SEDANG_MENGERJAKAN') {
+      performAutoUnlock('KUNCI TELAH DIBUKA OLEH PENGAWAS!');
     } else if (!isUnlockingRef.current) {
       setExamStatus(student.status);
     }
-  }, [student.status, examStatus]);
+    prevStudentStatusRef.current = student.status;
+  }, [student.status]);
 
   // Periodic fallback status checks every 1s when locked (detects admin unlock even if WebSocket/background tab suspended)
   useEffect(() => {
@@ -161,8 +162,8 @@ export default function StudentExam({
       if (isUnlockingRef.current) return;
       try {
         const serverStudent = await getStudentFromServer(student.id);
-        if (serverStudent && serverStudent.status !== 'TERKUNCI') {
-          performAutoUnlock();
+        if (serverStudent && serverStudent.status === 'SEDANG_MENGERJAKAN' && prevStudentStatusRef.current === 'TERKUNCI') {
+          performAutoUnlock('KUNCI TELAH DIBUKA OLEH PENGAWAS!');
         }
       } catch (err) {
         console.error('Background check status failed:', err);
@@ -235,15 +236,29 @@ export default function StudentExam({
 
   const triggerViolation = (reason: string) => {
     if (config.strictSecurityEnabled === false) return; // Ignore if security is off
-    if (isGraceActive) return; // Skip if proctor just unlocked student (grace period active)
+    if (isGraceActive) return; // Skip if in brief grace period
 
     const now = Date.now();
-    if (now - lastViolationTime.current < 2500) return; // Prevent double trigger
+    if (now - lastViolationTime.current < 1500) return; // Prevent double trigger
     lastViolationTime.current = now;
 
     // Siren alarm if enabled in config
     if (config.sirenAlarmEnabled !== false) {
       playSirenAlarm();
+    }
+
+    const tolerance = config.maxAllowedViolations !== undefined ? config.maxAllowedViolations : 3;
+    const maxAllowed = (student.tokenUnlockCount && student.tokenUnlockCount > 0) ? 1 : tolerance;
+    const nextCount = (student.violationCount || 0) + 1;
+
+    setViolationToast({
+      message: reason,
+      count: nextCount,
+      max: maxAllowed
+    });
+
+    if (nextCount >= maxAllowed) {
+      setExamStatus('TERKUNCI');
     }
 
     onViolation(reason);
@@ -259,26 +274,25 @@ export default function StudentExam({
     const handleFullscreenChange = () => {
       const isFs = !!document.fullscreenElement;
       setIsCurrentlyFullscreen(isFs);
-      if (!isFs) {
+      if (!isFs && !isGraceActive) {
         triggerViolation('Mencoba Keluar dari Layar Penuh (Fullscreen)');
       }
     };
 
     const handleVisibilityChange = () => {
-      if (document.hidden) {
+      if (document.hidden && !isGraceActive) {
         triggerViolation('Berpindah Tab / Meminimalkan Jendela Browser');
       }
     };
 
     const handleWindowBlur = () => {
-      // iOS silent mode toggle physical switch causes transient focus blur because of system HUD.
-      // We introduce a brief grace check: only trigger if focus doesn't return or is actually hidden after 2 seconds.
+      if (isGraceActive) return;
       if (blurTimeout) clearTimeout(blurTimeout);
       blurTimeout = setTimeout(() => {
-        if (!document.hasFocus() || document.hidden) {
-          triggerViolation('Membuka Aplikasi Lain / Melakukan Split Screen / Floating Apps');
+        if ((!document.hasFocus() || document.hidden) && !isGraceActive) {
+          triggerViolation('Membuka Aplikasi Lain / Keluar dari Fokus Layar');
         }
-      }, 2000);
+      }, 500);
     };
 
     const handleWindowFocus = () => {
@@ -289,6 +303,7 @@ export default function StudentExam({
     };
 
     const handleResize = () => {
+      if (isGraceActive) return;
       const parsedWidthDiff = Math.abs(window.innerWidth - initialWidth.current);
       const parsedHeightDiff = Math.abs(window.innerHeight - initialHeight.current);
       
@@ -298,26 +313,51 @@ export default function StudentExam({
       }
     };
 
-    // Delay listeners slightly to allow user to enter fullscreen without immediate triggers
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (isGraceActive) return;
+      if (
+        e.key === 'Escape' ||
+        e.key === 'F11' ||
+        e.key === 'F12' ||
+        (e.altKey && e.key === 'Tab') ||
+        (e.ctrlKey && ['c', 'v', 'u', 'p', 's', 'a'].includes(e.key.toLowerCase())) ||
+        (e.metaKey && ['c', 'v', 'u', 'p', 's', 'a'].includes(e.key.toLowerCase()))
+      ) {
+        e.preventDefault();
+        triggerViolation(`Menekan Tombol Terlarang (${e.key})`);
+      }
+    };
+
+    const handleContextMenu = (e: MouseEvent) => {
+      if (isGraceActive) return;
+      e.preventDefault();
+      triggerViolation('Klik Kanan Terlarang');
+    };
+
+    // Quick delay listeners to allow user to enter fullscreen without immediate triggers
     const setupTimer = setTimeout(() => {
       document.addEventListener('fullscreenchange', handleFullscreenChange);
       document.addEventListener('visibilitychange', handleVisibilityChange);
+      document.addEventListener('contextmenu', handleContextMenu);
       window.addEventListener('blur', handleWindowBlur);
       window.addEventListener('focus', handleWindowFocus);
       window.addEventListener('resize', handleResize);
+      window.addEventListener('keydown', handleKeyDown);
       examStartedRef.current = true;
-    }, 1500);
+    }, 800);
 
     return () => {
       clearTimeout(setupTimer);
       if (blurTimeout) clearTimeout(blurTimeout);
       document.removeEventListener('fullscreenchange', handleFullscreenChange);
       document.removeEventListener('visibilitychange', handleVisibilityChange);
+      document.removeEventListener('contextmenu', handleContextMenu);
       window.removeEventListener('blur', handleWindowBlur);
       window.removeEventListener('focus', handleWindowFocus);
       window.removeEventListener('resize', handleResize);
+      window.removeEventListener('keydown', handleKeyDown);
     };
-  }, [examStatus, config.strictSecurityEnabled]);
+  }, [examStatus, config.strictSecurityEnabled, isGraceActive]);
 
   const handleSelectOption = (questionId: string, optionIndex: number) => {
     const questionObj = questions.find(q => q.id === questionId);
@@ -374,6 +414,7 @@ export default function StudentExam({
     : ['TOKEN-1', 'TOKEN-2'];
   const maxTokens = activeTokens.length;
   const usedTokensList = student.usedTokens || [];
+  const globalBurnedTokens = config.usedGlobalTokens || [];
   const usedCount = usedTokensList.length;
   const remainingAttempts = Math.max(0, maxTokens - usedCount);
   const isTokenExhausted = remainingAttempts <= 0;
@@ -390,13 +431,13 @@ export default function StudentExam({
       return;
     }
 
-    // Instant check: if this specific token was already used on this account
+    // Instant check: if this specific token was already used globally or on this account
     const normalized = tokenInput.trim().toUpperCase();
     const usedUpper = (student.usedTokens || []).map(t => t.trim().toUpperCase());
-    if (usedUpper.includes(normalized)) {
-      const nextTokenIndex = usedCount + 1;
-      const nextHint = nextTokenIndex <= maxTokens ? ` (Token ke-${nextTokenIndex})` : '';
-      setTokenError(`Token "${tokenInput.trim()}" sudah pernah Anda gunakan di ujian ini! Anda wajib memasukkan token giliran berikutnya${nextHint}.`);
+    const globalUpper = (config.usedGlobalTokens || []).map(t => t.trim().toUpperCase());
+    
+    if (usedUpper.includes(normalized) || globalUpper.includes(normalized)) {
+      setTokenError(`Token "${tokenInput.trim()}" sudah TERPAKAI dan tidak bisa digunakan lagi! Harap minta token berikutnya dari Pengawas.`);
       return;
     }
 
@@ -406,6 +447,15 @@ export default function StudentExam({
 
     try {
       if (onTokenUnlock) {
+        // Direct fullscreen request immediately inside the click handler
+        if (document.documentElement.requestFullscreen) {
+          try {
+            await document.documentElement.requestFullscreen();
+            setIsCurrentlyFullscreen(true);
+          } catch (e) {
+            console.warn('Direct requestFullscreen error:', e);
+          }
+        }
         const res = await onTokenUnlock(tokenInput.trim());
         if (res.success) {
           performAutoUnlock(res.message);
@@ -415,6 +465,12 @@ export default function StudentExam({
         }
       } else {
         if (activeTokens.map(t => t.toUpperCase()).includes(normalized)) {
+          if (document.documentElement.requestFullscreen) {
+            try {
+              await document.documentElement.requestFullscreen();
+              setIsCurrentlyFullscreen(true);
+            } catch (e) {}
+          }
           performAutoUnlock('Token Valid! Membuka halaman ujian...');
           setTokenInput('');
           onViolation('unlocked_locally');
@@ -745,6 +801,31 @@ export default function StudentExam({
 
   return (
     <div className="min-h-screen bg-slate-50 flex flex-col justify-between font-sans relative select-none">
+      {/* Real-time Violation Alert Toast */}
+      {violationToast && (
+        <div className="fixed top-20 inset-x-4 max-w-lg mx-auto z-50 animate-bounce">
+          <div className="p-4 bg-red-600 text-white rounded-2xl shadow-2xl border-2 border-white flex items-center justify-between gap-3">
+            <div className="flex items-center gap-2.5">
+              <ShieldAlert className="w-6 h-6 text-white shrink-0 animate-pulse" />
+              <div className="text-left">
+                <p className="font-extrabold text-sm uppercase tracking-wide">
+                  Pelanggaran Terdeteksi! ({violationToast.count}/{violationToast.max} Kali)
+                </p>
+                <p className="text-xs text-red-100 font-mono">
+                  {violationToast.message}
+                </p>
+              </div>
+            </div>
+            <button
+              onClick={() => setViolationToast(null)}
+              className="px-2.5 py-1 bg-black/20 hover:bg-black/40 text-white rounded-lg text-xs font-bold cursor-pointer"
+            >
+              OK
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* Header Panel */}
       <header className="bg-slate-900 text-white shadow-sm border-b border-slate-800 px-6 py-4 sticky top-0 z-40">
         <div className="max-w-5xl mx-auto flex flex-col sm:flex-row sm:items-center justify-between gap-4">
