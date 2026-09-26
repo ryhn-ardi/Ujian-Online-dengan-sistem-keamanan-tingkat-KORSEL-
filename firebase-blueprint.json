@@ -46,6 +46,31 @@
         "examTitle": { "type": "string" }
       },
       "required": ["durationMinutes", "examTitle"]
+    },
+    "studentUser": {
+      "title": "StudentUser",
+      "description": "Pre-registered student credentials for exam login",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "username": { "type": "string" },
+        "password": { "type": "string" },
+        "name": { "type": "string" },
+        "studentClass": { "type": "string" },
+        "absentNumber": { "type": "string" }
+      },
+      "required": ["id", "username", "password", "name", "studentClass", "absentNumber"]
+    },
+    "studentAccountChunk": {
+      "title": "StudentAccountChunk",
+      "description": "Chunked pre-registered student user records",
+      "type": "object",
+      "properties": {
+        "chunkIndex": { "type": "integer" },
+        "users": { "type": "array" },
+        "updatedAt": { "type": "string" }
+      },
+      "required": ["chunkIndex", "users"]
     }
   },
   "firestore": {
@@ -57,9 +82,17 @@
       "schema": "question",
       "description": "Collection of questions for the exam"
     },
-    "config/examConfig": {
+    "config/{configDocId}": {
       "schema": "examConfig",
-      "description": "Single configuration document for global parameters"
+      "description": "Configuration documents for global exam parameters and seed metadata"
+    },
+    "studentUsers/{userId}": {
+      "schema": "studentUser",
+      "description": "Pre-registered student user authentication records"
+    },
+    "studentAccounts/{chunkId}": {
+      "schema": "studentAccountChunk",
+      "description": "Chunked storage for large batches of student users"
     }
   }
 }

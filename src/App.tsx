@@ -181,14 +181,27 @@ export default function App() {
     });
 
     const sampleQuestionsForSubject = (subId: string): string[] | undefined => {
-      if (!config.enableRandomSampling) return undefined;
+      // Find the specific subject configuration
+      const subjects = config.subjects || [];
+      const targetSub = subjects.find(s => s.id === subId) || (subId === 'sub1' ? subjects[0] : undefined);
+
+      // Check per-subject random sampling first, then fall back to global config if set
+      const isRandomSamplingEnabled = targetSub?.enableRandomSampling !== undefined
+        ? targetSub.enableRandomSampling
+        : !!config.enableRandomSampling;
+
+      if (!isRandomSamplingEnabled) return undefined;
+
       const subQuestions = questions.filter(
         (q) => (!q.subjectId && (!subId || subId === 'sub1')) || q.subjectId === subId
       );
       if (subQuestions.length === 0) return undefined;
-      const targetCount = config.sampleQuestionCount && config.sampleQuestionCount > 0
-        ? Math.min(config.sampleQuestionCount, subQuestions.length)
-        : subQuestions.length;
+
+      const desiredCount = (targetSub?.sampleQuestionCount && targetSub.sampleQuestionCount > 0)
+        ? targetSub.sampleQuestionCount
+        : (config.sampleQuestionCount && config.sampleQuestionCount > 0 ? config.sampleQuestionCount : subQuestions.length);
+
+      const targetCount = Math.min(desiredCount, subQuestions.length);
 
       const shuffled = [...subQuestions];
       for (let i = shuffled.length - 1; i > 0; i--) {
@@ -202,9 +215,9 @@ export default function App() {
       // Reconnect to existing session, updating basic parameters if they changed
       const updatedStudent: Student = {
         ...existing,
-        username: data.username || existing.username,
-        studentClass: data.studentClass,
-        absentNumber: data.absentNumber,
+        username: data.username || existing.username || '',
+        studentClass: data.studentClass.trim(),
+        absentNumber: data.absentNumber.trim(),
         subjectId: data.subjectId,
         assignedQuestionIds: existing.assignedQuestionIds || sampleQuestionsForSubject(data.subjectId),
         lastActive: new Date().toISOString()
@@ -219,18 +232,19 @@ export default function App() {
 
     // Create new student session object for first-time registration
     const newStudentId = `siswa_${Date.now()}_${Math.random().toString(36).substr(2, 5)}`;
+    const sampledQuestionIds = sampleQuestionsForSubject(data.subjectId);
     const newStudent: Student = {
       id: newStudentId,
-      username: data.username,
-      name: data.name,
-      absentNumber: data.absentNumber,
-      studentClass: data.studentClass,
+      username: data.username || '',
+      name: data.name.trim(),
+      absentNumber: data.absentNumber.trim(),
+      studentClass: data.studentClass.trim(),
       status: 'BELUM_MULAI',
       violationCount: 0,
       answers: {},
       lastActive: new Date().toISOString(),
       subjectId: data.subjectId,
-      assignedQuestionIds: sampleQuestionsForSubject(data.subjectId)
+      assignedQuestionIds: sampledQuestionIds && sampledQuestionIds.length > 0 ? sampledQuestionIds : undefined
     };
 
     saveSingleStudent(newStudent);

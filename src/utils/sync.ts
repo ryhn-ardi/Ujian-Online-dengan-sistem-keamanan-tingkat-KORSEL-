@@ -27,35 +27,95 @@ export const DEFAULT_STUDENT_USERS: StudentUser[] = [
   { id: 'usr_5', username: 'siswa5', password: '123', name: 'Fikri Ramadhan', studentClass: '8C', absentNumber: '01' },
 ];
 
-// Automatically clear potential stale or outdated caches on application initialization
-try {
-  localStorage.removeItem(STUDENTS_KEY);
-  localStorage.removeItem(QUESTIONS_KEY);
-  localStorage.removeItem(CONFIG_KEY);
-  localStorage.removeItem(STUDENT_USERS_KEY);
-} catch (e) {
-  console.error('Failed to prune local storage:', e);
+// Helpers to safely load and cache data across page reloads
+function getStored<T>(key: string, fallback: T): T {
+  try {
+    const item = localStorage.getItem(key);
+    if (!item) return fallback;
+    return JSON.parse(item) as T;
+  } catch {
+    return fallback;
+  }
 }
 
-// 1. Clean in-memory states populated dynamically directly from Live Firestore docs
-let localStudents: Student[] = [];
-let localQuestions: Question[] = [];
-let localStudentUsers: StudentUser[] = [];
-let localConfig: ExamConfig = {
+// Clean and sanitize data before saving to Firestore (removes undefined values and ensures valid structures)
+export function sanitizeForFirestore<T>(data: T): any {
+  if (data === null || data === undefined) return null;
+  if (Array.isArray(data)) {
+    return data
+      .filter((item) => item !== undefined)
+      .map((item) => sanitizeForFirestore(item));
+  }
+  if (typeof data === 'object') {
+    const cleaned: Record<string, any> = {};
+    for (const [key, val] of Object.entries(data)) {
+      if (val !== undefined) {
+        cleaned[key] = sanitizeForFirestore(val);
+      }
+    }
+    return cleaned;
+  }
+  return data;
+}
+
+export function cleanStudent(s: Student): Student {
+  const cleaned: Student = {
+    id: String(s.id || '').trim(),
+    name: String(s.name || '').trim(),
+    absentNumber: String(s.absentNumber !== undefined && s.absentNumber !== null ? s.absentNumber : '').trim(),
+    studentClass: String(s.studentClass || '').trim(),
+    status: s.status || 'BELUM_MULAI',
+    violationCount: typeof s.violationCount === 'number' ? s.violationCount : 0,
+    answers: s.answers || {},
+    lastActive: s.lastActive || new Date().toISOString()
+  };
+  if (s.username && String(s.username).trim()) cleaned.username = String(s.username).trim();
+  if (s.subjectId && String(s.subjectId).trim()) cleaned.subjectId = String(s.subjectId).trim();
+  if (s.lockedReason) cleaned.lockedReason = String(s.lockedReason);
+  if (typeof s.score === 'number' && !isNaN(s.score)) cleaned.score = s.score;
+  if (typeof s.correctAnswersCount === 'number') cleaned.correctAnswersCount = s.correctAnswersCount;
+  if (typeof s.totalQuestions === 'number') cleaned.totalQuestions = s.totalQuestions;
+  if (s.startTime) cleaned.startTime = s.startTime;
+  if (s.endTime) cleaned.endTime = s.endTime;
+  if (Array.isArray(s.usedTokens)) cleaned.usedTokens = s.usedTokens;
+  if (typeof s.tokenUnlockCount === 'number') cleaned.tokenUnlockCount = s.tokenUnlockCount;
+  if (Array.isArray(s.assignedQuestionIds) && s.assignedQuestionIds.length > 0) {
+    cleaned.assignedQuestionIds = s.assignedQuestionIds;
+  }
+  return cleaned;
+}
+
+export function cleanStudentUser(u: StudentUser, idx = 0): StudentUser {
+  return {
+    id: String(u.id || `usr_${Date.now()}_${idx}_${Math.random().toString(36).substr(2, 4)}`).trim(),
+    username: String(u.username || '').trim(),
+    password: String(u.password || '123').trim(),
+    name: String(u.name || '').trim(),
+    studentClass: String(u.studentClass || 'UMUM').trim().toUpperCase(),
+    absentNumber: String(u.absentNumber !== undefined && u.absentNumber !== null ? u.absentNumber : '').trim(),
+    createdAt: u.createdAt || new Date().toISOString()
+  };
+}
+
+// 1. In-memory states initialized from local storage then kept live via Firestore
+let localStudents: Student[] = getStored<Student[]>(STUDENTS_KEY, []);
+let localQuestions: Question[] = getStored<Question[]>(QUESTIONS_KEY, []);
+let localStudentUsers: StudentUser[] = getStored<StudentUser[]>(STUDENT_USERS_KEY, DEFAULT_STUDENT_USERS);
+let localConfig: ExamConfig = getStored<ExamConfig>(CONFIG_KEY, {
   durationMinutes: 15,
   examTitle: 'ujian berbasis keamanan tingkat korea utara + NASA',
   subject1Name: 'Seni Budaya dan P kelas 8',
   subject2Name: 'Informatika kelas 7',
   subjects: [
-    { id: 'sub1', name: 'Seni Budaya dan P kelas 8', code: 'SB-8', isActive: true },
-    { id: 'sub2', name: 'Informatika kelas 7', code: 'INF-7', isActive: true },
+    { id: 'sub1', name: 'Seni Budaya dan P kelas 8', code: 'SB-8', isActive: true, enableRandomSampling: false, sampleQuestionCount: 50 },
+    { id: 'sub2', name: 'Informatika kelas 7', code: 'INF-7', isActive: true, enableRandomSampling: false, sampleQuestionCount: 50 },
   ],
   unlockTokens: ['TOKEN-1', 'TOKEN-2'],
   usedGlobalTokens: [],
   enableRandomSampling: false,
   sampleQuestionCount: 50,
   requireStudentLogin: true
-};
+});
 
 const initialSyncCompleted = {
   config: false,
@@ -285,21 +345,43 @@ onSnapshot(
 // C. Real-time Students List Sync
 onSnapshot(
   collection(db, 'students'),
-  (snapshot) => {
-    const list: Student[] = [];
-    snapshot.forEach((doc) => {
-      list.push(doc.data() as Student);
-    });
-    // Sort alphabetially by student name
-    list.sort((a, b) => a.name.localeCompare(b.name));
+  async (snapshot) => {
+    if (!snapshot.empty) {
+      const list: Student[] = [];
+      snapshot.forEach((doc) => {
+        list.push(doc.data() as Student);
+      });
+      // Sort alphabetically by student name
+      list.sort((a, b) => a.name.localeCompare(b.name));
 
-    localStudents = list;
-    localStorage.setItem(STUDENTS_KEY, JSON.stringify(list));
-    initialSyncCompleted.students = true;
-    notifySubscribers('SYNC_STUDENTS');
+      localStudents = list;
+      localStorage.setItem(STUDENTS_KEY, JSON.stringify(list));
+      initialSyncCompleted.students = true;
+      notifySubscribers('SYNC_STUDENTS');
+    } else {
+      // Snapshot is empty in Firestore. Check if we have cached local students
+      const cached = getStored<Student[]>(STUDENTS_KEY, []);
+      if (cached.length > 0) {
+        localStudents = cached;
+        initialSyncCompleted.students = true;
+        notifySubscribers('SYNC_STUDENTS');
+        // Persist local students to Firestore so they are never lost on reload
+        try {
+          await saveStudents(cached, false);
+        } catch (e) {
+          console.warn('Silent sync of cached students to cloud:', e);
+        }
+      } else {
+        localStudents = [];
+        localStorage.setItem(STUDENTS_KEY, JSON.stringify([]));
+        initialSyncCompleted.students = true;
+        notifySubscribers('SYNC_STUDENTS');
+      }
+    }
   },
   (error) => {
-    handleFirestoreError(error, OperationType.GET, 'students');
+    console.warn('Students collection snapshot warning:', error);
+    initialSyncCompleted.students = true;
   }
 );
 
@@ -322,7 +404,20 @@ onSnapshot(
       initialSyncCompleted.studentUsers = true;
       notifySubscribers('SYNC_STUDENT_USERS');
     } else {
-      // If collection empty, check if we should populate with initial default demo users
+      // If collection empty in Firestore, check if we have cached student users
+      const cachedUsers = getStored<StudentUser[]>(STUDENT_USERS_KEY, []);
+      if (cachedUsers.length > 0) {
+        localStudentUsers = cachedUsers;
+        initialSyncCompleted.studentUsers = true;
+        notifySubscribers('SYNC_STUDENT_USERS');
+        try {
+          await saveStudentUsers(cachedUsers, false);
+        } catch (e) {
+          console.warn('Silent sync of cached student accounts to cloud:', e);
+        }
+        return;
+      }
+
       try {
         const userMetaSnap = await getDoc(doc(db, 'config', 'userMeta'));
         if (userMetaSnap.exists()) {
@@ -334,10 +429,11 @@ onSnapshot(
           return;
         }
 
-        // Seed initial default demo users once
-        await saveStudentUsers(DEFAULT_STUDENT_USERS);
+        // Seed initial default demo users once if brand new installation
+        await saveStudentUsers(DEFAULT_STUDENT_USERS, false);
         await setDoc(doc(db, 'config', 'userMeta'), { usersInitialized: true });
         initialSyncCompleted.studentUsers = true;
+        notifySubscribers('SYNC_STUDENT_USERS');
       } catch (err) {
         localStudentUsers = [...DEFAULT_STUDENT_USERS];
         initialSyncCompleted.studentUsers = true;
@@ -347,6 +443,7 @@ onSnapshot(
   },
   (error) => {
     console.warn('Student accounts snapshot warning:', error);
+    initialSyncCompleted.studentUsers = true;
   }
 );
 
@@ -361,7 +458,7 @@ export async function saveExamConfig(config: ExamConfig, broadcast = true): Prom
   if (broadcast) notifySubscribers('SYNC_CONFIG');
 
   try {
-    await setDoc(doc(db, 'config', 'examConfig'), config);
+    await setDoc(doc(db, 'config', 'examConfig'), sanitizeForFirestore(config));
   } catch (err) {
     handleFirestoreError(err, OperationType.WRITE, 'config/examConfig');
   }
@@ -383,7 +480,7 @@ export async function saveQuestions(questions: Question[], broadcast = true): Pr
     // Save/update questions
     questions.forEach((q) => {
       const ref = doc(db, 'questions', q.id);
-      batch.set(ref, q);
+      batch.set(ref, sanitizeForFirestore(q));
       existingIds.delete(q.id);
     });
 
@@ -408,8 +505,9 @@ export async function saveQuestions(questions: Question[], broadcast = true): Pr
 
 // Save/Synchronize student user database in chunks of 200 users (handles 1,200+ accounts in ~6 fast doc writes)
 export async function saveStudentUsers(users: StudentUser[], broadcast = true): Promise<void> {
-  localStudentUsers = users;
-  localStorage.setItem(STUDENT_USERS_KEY, JSON.stringify(users));
+  const sanitizedUsers = users.map((u, i) => cleanStudentUser(u, i));
+  localStudentUsers = sanitizedUsers;
+  localStorage.setItem(STUDENT_USERS_KEY, JSON.stringify(sanitizedUsers));
   if (broadcast) notifySubscribers('SYNC_STUDENT_USERS');
 
   try {
@@ -419,9 +517,9 @@ export async function saveStudentUsers(users: StudentUser[], broadcast = true): 
 
     const batch = writeBatch(db);
     const CHUNK_SIZE = 200;
-    const chunkCount = Math.ceil(users.length / CHUNK_SIZE);
+    const chunkCount = Math.ceil(sanitizedUsers.length / CHUNK_SIZE);
 
-    if (users.length === 0) {
+    if (sanitizedUsers.length === 0) {
       existingIds.forEach((id) => {
         batch.delete(doc(db, 'studentAccounts', id));
       });
@@ -432,9 +530,9 @@ export async function saveStudentUsers(users: StudentUser[], broadcast = true): 
 
     for (let i = 0; i < chunkCount; i++) {
       const chunkId = `chunk_${i}`;
-      const chunkUsers = users.slice(i * CHUNK_SIZE, (i + 1) * CHUNK_SIZE);
+      const chunkUsers = sanitizedUsers.slice(i * CHUNK_SIZE, (i + 1) * CHUNK_SIZE);
       const chunkRef = doc(db, 'studentAccounts', chunkId);
-      batch.set(chunkRef, { chunkIndex: i, users: chunkUsers, updatedAt: new Date().toISOString() });
+      batch.set(chunkRef, sanitizeForFirestore({ chunkIndex: i, users: chunkUsers, updatedAt: new Date().toISOString() }));
       existingIds.delete(chunkId);
     }
 
@@ -442,7 +540,7 @@ export async function saveStudentUsers(users: StudentUser[], broadcast = true): 
       batch.delete(doc(db, 'studentAccounts', id));
     });
 
-    batch.set(doc(db, 'config', 'userMeta'), { usersInitialized: true, count: users.length, updatedAt: new Date().toISOString() });
+    batch.set(doc(db, 'config', 'userMeta'), { usersInitialized: true, count: sanitizedUsers.length, updatedAt: new Date().toISOString() });
     await batch.commit();
   } catch (err) {
     handleFirestoreError(err, OperationType.WRITE, 'studentAccounts');
@@ -451,8 +549,9 @@ export async function saveStudentUsers(users: StudentUser[], broadcast = true): 
 
 // Save/Synchronize student registry list
 export async function saveStudents(students: Student[], broadcast = true): Promise<void> {
-  localStudents = students;
-  localStorage.setItem(STUDENTS_KEY, JSON.stringify(students));
+  const cleanedList = students.map(s => cleanStudent(s));
+  localStudents = cleanedList;
+  localStorage.setItem(STUDENTS_KEY, JSON.stringify(cleanedList));
   if (broadcast) notifySubscribers('SYNC_STUDENTS');
 
   try {
@@ -460,42 +559,50 @@ export async function saveStudents(students: Student[], broadcast = true): Promi
     const existingIds = new Set<string>();
     existingSnap.forEach((doc) => existingIds.add(doc.id));
 
-    const batch = writeBatch(db);
+    // Save/update students in batches of 300 (well within Firestore 500 limit)
+    const CHUNK_SIZE = 300;
+    for (let i = 0; i < cleanedList.length; i += CHUNK_SIZE) {
+      const chunk = cleanedList.slice(i, i + CHUNK_SIZE);
+      const batch = writeBatch(db);
+      chunk.forEach((s) => {
+        const ref = doc(db, 'students', s.id);
+        batch.set(ref, sanitizeForFirestore(s));
+        existingIds.delete(s.id);
+      });
+      await batch.commit();
+    }
 
-    // Synchronize documents
-    students.forEach((s) => {
-      const ref = doc(db, 'students', s.id);
-      batch.set(ref, s);
-      existingIds.delete(s.id);
-    });
-
-    // Remove any student records deleted from local administration panels
-    existingIds.forEach((id) => {
-      const ref = doc(db, 'students', id);
-      batch.delete(ref);
-    });
-
-    await batch.commit();
+    // Clean up deleted ones
+    const deleteList = Array.from(existingIds);
+    for (let i = 0; i < deleteList.length; i += CHUNK_SIZE) {
+      const chunk = deleteList.slice(i, i + CHUNK_SIZE);
+      const batch = writeBatch(db);
+      chunk.forEach((id) => {
+        batch.delete(doc(db, 'students', id));
+      });
+      await batch.commit();
+    }
   } catch (err) {
-    handleFirestoreError(err, OperationType.WRITE, 'students');
+    console.error('Error saving students to cloud:', err);
   }
 }
 
 // Save/Update a single student session document in Firestore
 export async function saveSingleStudent(student: Student, broadcast = true): Promise<void> {
-  const index = localStudents.findIndex((s) => s.id === student.id);
+  const cleaned = cleanStudent(student);
+  const index = localStudents.findIndex((s) => s.id === cleaned.id);
   if (index !== -1) {
-    localStudents[index] = student;
+    localStudents[index] = cleaned;
   } else {
-    localStudents.push(student);
+    localStudents.push(cleaned);
   }
   localStorage.setItem(STUDENTS_KEY, JSON.stringify(localStudents));
   if (broadcast) notifySubscribers('SYNC_STUDENTS');
 
   try {
-    await setDoc(doc(db, 'students', student.id), student);
+    await setDoc(doc(db, 'students', cleaned.id), sanitizeForFirestore(cleaned));
   } catch (err) {
-    handleFirestoreError(err, OperationType.WRITE, `students/${student.id}`);
+    handleFirestoreError(err, OperationType.WRITE, `students/${cleaned.id}`);
   }
 }
 
