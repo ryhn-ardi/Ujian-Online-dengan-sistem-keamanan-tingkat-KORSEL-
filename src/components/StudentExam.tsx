@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { Play, AlertTriangle, ShieldAlert, KeyRound, Clock, ChevronLeft, ChevronRight, CheckSquare, Send, CheckCircle, RefreshCw, Check, Radio, Ticket, Lock, Unlock } from 'lucide-react';
 import { Student, Question, ExamConfig } from '../types';
 import { getStudentFromServer } from '../utils/sync';
+import { RichExamContent } from './RichExamContent';
 
 // Synthesizer Siren Alarm (Emergency high-frequency sweeping pitch)
 function playSirenAlarm() {
@@ -909,10 +910,15 @@ export default function StudentExam({
               </div>
             )}
 
-            {/* Question Text */}
-            <h3 className="text-lg font-bold text-slate-800 leading-relaxed mb-8">
-              {currentQuestion.questionText}
-            </h3>
+            {/* Question Text & Media */}
+            <div className="mb-6">
+              <RichExamContent
+                text={currentQuestion.questionText}
+                imageUrl={currentQuestion.imageUrl}
+                isReadingPassage={currentQuestion.isReadingPassage}
+                className="text-base sm:text-lg font-medium text-slate-900"
+              />
+            </div>
 
             {/* Multiple Choice Options */}
             <div className="space-y-4">
@@ -920,6 +926,7 @@ export default function StudentExam({
                 const labelLetter = String.fromCharCode(65 + idx); // A, B, C, D
                 const qAns = selectedAnswers[currentQuestion.id];
                 const isSelected = Array.isArray(qAns) ? qAns.includes(idx) : qAns === idx;
+                const optImage = currentQuestion.optionImages?.[idx];
                 
                 return (
                   <button
@@ -932,7 +939,7 @@ export default function StudentExam({
                         : 'bg-slate-50 hover:bg-slate-100 border-slate-200 text-slate-700'
                     }`}
                   >
-                    <div className="flex items-center gap-4">
+                    <div className="flex items-center gap-4 flex-1">
                       <span className={`w-8 h-8 rounded-lg flex items-center justify-center font-bold font-mono text-sm border shrink-0 ${
                         isSelected
                           ? 'bg-indigo-600 border-indigo-700 text-white'
@@ -940,7 +947,16 @@ export default function StudentExam({
                       }`}>
                         {labelLetter}
                       </span>
-                      <span className="leading-snug">{option}</span>
+                      <div className="leading-snug flex-1">
+                        <RichExamContent text={option} zoomableImage={false} />
+                        {optImage && (
+                          <img
+                            src={optImage}
+                            alt={`Opsi ${labelLetter}`}
+                            className="mt-2 max-h-36 rounded-lg border border-slate-200 object-contain"
+                          />
+                        )}
+                      </div>
                     </div>
                     {isSelected && (
                       <span className="w-5 h-5 rounded-full bg-indigo-600 text-white flex items-center justify-center text-xs font-bold shrink-0">

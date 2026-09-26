@@ -1,8 +1,10 @@
-import React, { useState } from 'react';
-import { Users, FileSpreadsheet, RefreshCw, KeyRound, Edit, Trash2, Plus, Save, BookOpen, Clock, X, ChevronRight, Check, AlertTriangle, ShieldCheck, Search, Eye, EyeOff, Layers, Settings2, Sparkles, Ticket, Download, Upload, Shuffle, UserCheck, Lock, CheckCircle2, ChevronLeft } from 'lucide-react';
+import React, { useState, useRef } from 'react';
+import { Users, FileSpreadsheet, RefreshCw, KeyRound, Edit, Trash2, Plus, Save, BookOpen, Clock, X, ChevronRight, Check, AlertTriangle, ShieldCheck, Search, Eye, EyeOff, Layers, Settings2, Sparkles, Ticket, Download, Upload, Shuffle, UserCheck, Lock, CheckCircle2, ChevronLeft, Image as ImageIcon, AlignLeft, HelpCircle } from 'lucide-react';
 import * as XLSX from 'xlsx';
 import { Student, Question, ExamConfig, ExamSubject, StudentUser } from '../types';
 import { getExamSubjects, saveSingleStudent } from '../utils/sync';
+import { RichExamContent } from './RichExamContent';
+import { compressImageFile } from '../utils/imageCompressor';
 
 // Helper to calculate actual subject metrics for a student
 export function getStudentMetrics(s: Student, questionsList: Question[]) {
@@ -137,6 +139,28 @@ export default function AdminPanel({
   const [qCorrect, setQCorrect] = useState<number>(0);
   const [qSubjectId, setQSubjectId] = useState<string>('sub1');
   const [qScore, setQScore] = useState<number>(20);
+  const [qImageUrl, setQImageUrl] = useState<string>('');
+  const [qIsReadingPassage, setQIsReadingPassage] = useState<boolean>(false);
+  const [isUploadingQImage, setIsUploadingQImage] = useState<boolean>(false);
+  const qTextAreaRef = useRef<HTMLTextAreaElement>(null);
+
+  const insertSymbolIntoQText = (sym: string) => {
+    const el = qTextAreaRef.current;
+    if (!el) {
+      setQText(prev => prev + sym);
+      return;
+    }
+    const start = el.selectionStart || 0;
+    const end = el.selectionEnd || 0;
+    const current = qText;
+    const updated = current.substring(0, start) + sym + current.substring(end);
+    setQText(updated);
+    setTimeout(() => {
+      el.focus();
+      const cursorNext = start + sym.length;
+      el.setSelectionRange(cursorNext, cursorNext);
+    }, 15);
+  };
 
   // States for CSV/Excel Question Import
   const [importText, setImportText] = useState('');
@@ -652,13 +676,16 @@ export default function AdminPanel({
       'opsi c',
       'opsi d',
       'skor tiap soal',
-      'kode_naskah'
+      'kode_naskah',
+      'link_gambar (opsional)',
+      'mode_wacana (1=ya/0=tidak)'
     ];
     
     const sampleRows = [
-      ['MC', `Contoh soal pilihan ganda 1 untuk ${subName}`, 'Opsi A', '*Opsi B Benar', 'Opsi C', 'Opsi D', 20, subCode],
-      ['MR', `Contoh soal respon ganda 2 (pilih 2) untuk ${subName}`, '**Opsi A Benar', '**Opsi B Benar', 'Opsi C', 'Opsi D', 20, subCode],
-      ['MC', `Siapakah bapak pramuka sedunia?`, '*Lord Baden Powell', 'Ir. Soekarno', 'Ki Hajar Dewantara', 'Jenderal Sudirman', 20, subCode]
+      ['MC', `Sebuah lingkaran memiliki jari-jari r = 7 cm. Berapakah luas lingkaran tersebut? (Gunakan nilai π = 22/7)`, '144 cm²', '*154 cm²', '164 cm²', '174 cm²', 20, subCode, '', 0],
+      ['MC', `Perhatikan diagram bangun ruang pada gambar di samping! Berapakah volume bangun tersebut jika tinggi t = 10 cm?`, '300 cm³', '450 cm³', '*600 cm³', '750 cm³', 20, subCode, 'https://images.unsplash.com/photo-1635070041078-e363dbe005cb?w=600&auto=format&fit=crop&q=80', 0],
+      ['MC', `Bacalah teks wacana berikut dengan saksama!\n\n   Hutan mangrove memiliki peranan yang sangat penting bagi ekosistem pesisir pantai. Akar-akarnya yang kuat mampu menahan abrasi gelombang air laut.\n\n   Selain itu, hutan mangrove juga menjadi habitat alami bagi aneka biota laut seperti kepiting, udang, dan burung bangau untuk berkembang biak secara aman.\n\nBerdasarkan wacana di atas, fungsi utama akar mangrove adalah...`, 'Tempat bertelur aneka burung', '*Mencegah bahaya abrasi pantai', 'Menjernihkan air laut', 'Menahan angin darat', 20, subCode, '', 1],
+      ['MR', `Pilihlah 2 (dua) pernyataan yang benar mengenai segitiga siku-siku dengan panjang sisi a, b, dan hipotenusa c:`, '**Berlaku rumus Pythagoras: a² + b² = c²', '**Sudut terbesar adalah sudut siku-siku (90°)', 'Memiliki 2 sisi yang selalu sama panjang', 'Jumlah seluruh sudut dalamnya adalah 360°', 20, subCode, '', 0]
     ];
 
     const data = [headers, ...sampleRows];
@@ -667,13 +694,15 @@ export default function AdminPanel({
     // Set column widths for readability in Excel
     ws['!cols'] = [
       { wch: 20 }, // jenis_soal
-      { wch: 45 }, // soal
+      { wch: 50 }, // soal
       { wch: 22 }, // opsi a
       { wch: 22 }, // opsi b
       { wch: 22 }, // opsi c
       { wch: 22 }, // opsi d
       { wch: 15 }, // skor
-      { wch: 16 }  // kode_naskah
+      { wch: 16 }, // kode_naskah
+      { wch: 30 }, // link_gambar
+      { wch: 25 }  // mode_wacana
     ];
 
     const wb = XLSX.utils.book_new();
@@ -855,9 +884,15 @@ export default function AdminPanel({
         if (matched) subId = matched.id;
       }
 
+      const rawImage = columns[8] ? (columns[8] || '').trim() : '';
+      const rawPassage = columns[9] ? (columns[9] || '').trim().toLowerCase() : '';
+      const isPassage = rawPassage === '1' || rawPassage === 'ya' || rawPassage === 'true' || rawPassage === 'wacana';
+
       importedQs.push({
         id: `q_import_${Date.now()}_${i}_${Math.random().toString(36).substr(2, 4)}`,
         questionText: soalText,
+        imageUrl: rawImage || undefined,
+        isReadingPassage: isPassage ? true : undefined,
         options: cleanOptions,
         correctAnswerIndex: correctIndices[0],
         correctAnswerIndices: correctIndices,
@@ -1187,9 +1222,15 @@ export default function AdminPanel({
           targetSubjectId = importSubjectTarget;
         }
 
+        const rawImage = columns[8] ? (columns[8] || '').trim() : '';
+        const rawPassage = columns[9] ? (columns[9] || '').trim().toLowerCase() : '';
+        const isPassage = rawPassage === '1' || rawPassage === 'ya' || rawPassage === 'true' || rawPassage === 'wacana';
+
         importedQs.push({
           id: `q_imported_${Date.now()}_${i}_${Math.random().toString(36).substr(2, 4)}`,
           questionText: soalText,
+          imageUrl: rawImage || undefined,
+          isReadingPassage: isPassage ? true : undefined,
           options: cleanOptions,
           correctAnswerIndex: firstCorrectIdx,
           correctAnswerIndices: correctIndices,
@@ -1601,6 +1642,8 @@ export default function AdminPanel({
       const newQ: Question = {
         id: `q_generated_${Date.now()}`,
         questionText: qText.trim(),
+        imageUrl: qImageUrl.trim() || undefined,
+        isReadingPassage: qIsReadingPassage,
         options: qOptions.map(o => o.trim()),
         correctAnswerIndex: qCorrect,
         correctAnswerIndices: [qCorrect],
@@ -1615,6 +1658,8 @@ export default function AdminPanel({
           return {
             ...q,
             questionText: qText.trim(),
+            imageUrl: qImageUrl.trim() || undefined,
+            isReadingPassage: qIsReadingPassage,
             options: qOptions.map(o => o.trim()),
             correctAnswerIndex: qCorrect,
             correctAnswerIndices: q.correctAnswerIndices || [qCorrect],
@@ -1631,6 +1676,8 @@ export default function AdminPanel({
     setIsCreatingQuestion(false);
     setEditingQuestion(null);
     setQText('');
+    setQImageUrl('');
+    setQIsReadingPassage(false);
     setQOptions(['', '', '', '']);
     setQCorrect(0);
     setQScore(20);
@@ -2279,6 +2326,8 @@ export default function AdminPanel({
                     setIsCreatingQuestion(true);
                     setEditingQuestion(null);
                     setQText('');
+                    setQImageUrl('');
+                    setQIsReadingPassage(false);
                     setQOptions(['', '', '', '']);
                     setQCorrect(0);
                     setQSubjectId(effectiveActiveSubject.id);
@@ -2819,16 +2868,166 @@ export default function AdminPanel({
                   </div>
 
                   <div>
-                    <label className="block text-xs font-semibold text-slate-500 uppercase font-mono tracking-wider mb-2">Teks Soal / Pertanyaan</label>
+                    <div className="flex flex-wrap items-center justify-between gap-2 mb-2">
+                      <label className="text-xs font-semibold text-slate-700 uppercase font-mono tracking-wider">
+                        Teks Soal / Pertanyaan
+                      </label>
+                      <div className="text-[11px] text-slate-500 flex items-center gap-1">
+                        <Sparkles className="w-3.5 h-3.5 text-indigo-500" />
+                        <span>Pintasan Simbol Matematika SMP:</span>
+                      </div>
+                    </div>
+
+                    {/* SMP Math Symbols Toolbar */}
+                    <div className="mb-2 p-2 bg-slate-100 rounded-xl border border-slate-200 flex flex-wrap items-center gap-1.5 text-xs">
+                      <span className="text-[10px] font-mono font-bold text-slate-500 uppercase px-1">Sisipkan:</span>
+                      <button type="button" onClick={() => insertSymbolIntoQText('π')} className="px-2 py-1 bg-white hover:bg-indigo-50 hover:text-indigo-600 rounded-lg border border-slate-200 font-bold transition shadow-2xs cursor-pointer" title="Simbol Pi (π)">π</button>
+                      <button type="button" onClick={() => insertSymbolIntoQText('²')} className="px-2 py-1 bg-white hover:bg-indigo-50 hover:text-indigo-600 rounded-lg border border-slate-200 font-bold transition shadow-2xs cursor-pointer" title="Pangkat Dua / Kuadrat (²)">x²</button>
+                      <button type="button" onClick={() => insertSymbolIntoQText('³')} className="px-2 py-1 bg-white hover:bg-indigo-50 hover:text-indigo-600 rounded-lg border border-slate-200 font-bold transition shadow-2xs cursor-pointer" title="Pangkat Tiga / Kubik (³)">x³</button>
+                      <button type="button" onClick={() => insertSymbolIntoQText('½')} className="px-2 py-1 bg-white hover:bg-indigo-50 hover:text-indigo-600 rounded-lg border border-slate-200 font-bold transition shadow-2xs cursor-pointer" title="Pecahan Setengah (½)">½</button>
+                      <button type="button" onClick={() => insertSymbolIntoQText('\\frac{a}{b}')} className="px-2 py-1 bg-white hover:bg-indigo-50 hover:text-indigo-600 rounded-lg border border-slate-200 font-bold transition shadow-2xs cursor-pointer font-mono" title="Pecahan TeX (\frac{a}{b})">\frac&#123;a&#125;&#123;b&#125;</button>
+                      <button type="button" onClick={() => insertSymbolIntoQText('√')} className="px-2 py-1 bg-white hover:bg-indigo-50 hover:text-indigo-600 rounded-lg border border-slate-200 font-bold transition shadow-2xs cursor-pointer" title="Akar Kuadrat (√)">√</button>
+                      <button type="button" onClick={() => insertSymbolIntoQText('°')} className="px-2 py-1 bg-white hover:bg-indigo-50 hover:text-indigo-600 rounded-lg border border-slate-200 font-bold transition shadow-2xs cursor-pointer" title="Derajat Sudut (°)">30°</button>
+                      <button type="button" onClick={() => insertSymbolIntoQText('×')} className="px-2 py-1 bg-white hover:bg-indigo-50 hover:text-indigo-600 rounded-lg border border-slate-200 font-bold transition shadow-2xs cursor-pointer" title="Simbol Kali (×)">×</button>
+                      <button type="button" onClick={() => insertSymbolIntoQText('÷')} className="px-2 py-1 bg-white hover:bg-indigo-50 hover:text-indigo-600 rounded-lg border border-slate-200 font-bold transition shadow-2xs cursor-pointer" title="Simbol Bagi (÷)">÷</button>
+                      <button type="button" onClick={() => insertSymbolIntoQText('±')} className="px-2 py-1 bg-white hover:bg-indigo-50 hover:text-indigo-600 rounded-lg border border-slate-200 font-bold transition shadow-2xs cursor-pointer" title="Plus Minus (±)">±</button>
+                      <button type="button" onClick={() => insertSymbolIntoQText('≤')} className="px-2 py-1 bg-white hover:bg-indigo-50 hover:text-indigo-600 rounded-lg border border-slate-200 font-bold transition shadow-2xs cursor-pointer" title="Kurang dari sama dengan (≤)">≤</button>
+                      <button type="button" onClick={() => insertSymbolIntoQText('≥')} className="px-2 py-1 bg-white hover:bg-indigo-50 hover:text-indigo-600 rounded-lg border border-slate-200 font-bold transition shadow-2xs cursor-pointer" title="Lebih dari sama dengan (≥)">≥</button>
+                      <button type="button" onClick={() => insertSymbolIntoQText('≠')} className="px-2 py-1 bg-white hover:bg-indigo-50 hover:text-indigo-600 rounded-lg border border-slate-200 font-bold transition shadow-2xs cursor-pointer" title="Tidak sama dengan (≠)">≠</button>
+                      <button type="button" onClick={() => insertSymbolIntoQText('∠')} className="px-2 py-1 bg-white hover:bg-indigo-50 hover:text-indigo-600 rounded-lg border border-slate-200 font-bold transition shadow-2xs cursor-pointer" title="Simbol Sudut (∠)">∠</button>
+                      <button type="button" onClick={() => insertSymbolIntoQText('$x^2 + 5x + 6 = 0$')} className="px-2 py-1 bg-indigo-50 text-indigo-700 hover:bg-indigo-100 rounded-lg border border-indigo-200 font-mono font-bold transition shadow-2xs cursor-pointer" title="Contoh Rumus KaTeX ($...$)">$rumus$</button>
+                    </div>
+
                     <textarea
+                      ref={qTextAreaRef}
                       required
-                      placeholder="Tuliskan pertanyaan ujian di sini..."
+                      placeholder="Tuliskan pertanyaan ujian di sini... (Untuk soal matematika, gunakan simbol di atas atau format $...$. Untuk teks bacaan/paragraf, tekan Enter 2x untuk paragraf baru yang menjorok)"
                       value={qText}
                       onChange={(e) => setQText(e.target.value)}
-                      rows={3}
-                      className="w-full px-4 py-3 bg-slate-50 border border-slate-200 focus:border-indigo-500 focus:bg-white rounded-xl text-slate-800 focus:outline-none transition"
+                      rows={4}
+                      className="w-full px-4 py-3 bg-slate-50 border border-slate-200 focus:border-indigo-500 focus:bg-white rounded-xl text-slate-800 text-sm focus:outline-none transition leading-relaxed"
                     />
                   </div>
+
+                  {/* Indonesian Reading Passage Toggle */}
+                  <div className="p-3.5 bg-amber-50/60 border border-amber-200/80 rounded-xl flex items-start gap-3">
+                    <input
+                      type="checkbox"
+                      id="checkbox-is-passage"
+                      checked={qIsReadingPassage}
+                      onChange={(e) => setQIsReadingPassage(e.target.checked)}
+                      className="mt-0.5 w-4 h-4 rounded text-amber-600 focus:ring-amber-500 border-amber-300 cursor-pointer"
+                    />
+                    <label htmlFor="checkbox-is-passage" className="text-xs text-slate-700 cursor-pointer select-none">
+                      <span className="font-bold text-amber-950 flex items-center gap-1.5">
+                        <AlignLeft className="w-3.5 h-3.5 text-amber-700" />
+                        Format Teks Wacana / Bacaan Panjang (Bahasa Indonesia)
+                      </span>
+                      <span className="text-slate-500 block mt-0.5">
+                        Mengaktifkan gaya paragraf menjorok ke dalam (*indent* awal kalimat) dan jarak antar baris (*line-height*) yang renggang dan nyaman dibaca siswa. Pisahkan antar paragraf dengan menekan <strong>Enter 2 kali</strong>.
+                      </span>
+                    </label>
+                  </div>
+
+                  {/* Question Image / Diagram (Math & Geometry) */}
+                  <div className="p-4 bg-indigo-50/50 border border-indigo-100 rounded-xl space-y-3">
+                    <div className="flex items-center justify-between">
+                      <label className="text-xs font-bold text-indigo-950 flex items-center gap-1.5 font-mono uppercase tracking-wider">
+                        <ImageIcon className="w-4 h-4 text-indigo-600" />
+                        Gambar / Diagram / Ilustrasi Soal (Opsional)
+                      </label>
+                      {qImageUrl && (
+                        <button
+                          type="button"
+                          onClick={() => setQImageUrl('')}
+                          className="text-[11px] font-bold text-rose-600 hover:text-rose-700 flex items-center gap-1 cursor-pointer"
+                        >
+                          <Trash2 className="w-3 h-3" />
+                          Hapus Gambar
+                        </button>
+                      )}
+                    </div>
+
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 items-center">
+                      {/* File upload from device */}
+                      <div>
+                        <label className="block text-[11px] font-bold text-slate-600 mb-1">
+                          1. Pilih Berkas Gambar (Otomatis Dioptimasi):
+                        </label>
+                        <input
+                          type="file"
+                          accept="image/*"
+                          disabled={isUploadingQImage}
+                          onChange={async (e) => {
+                            const file = e.target.files?.[0];
+                            if (!file) return;
+                            setIsUploadingQImage(true);
+                            try {
+                              const base64 = await compressImageFile(file, 1000, 0.82);
+                              setQImageUrl(base64);
+                            } catch (err: any) {
+                              alert(`Gagal memproses gambar: ${err.message || err}`);
+                            } finally {
+                              setIsUploadingQImage(false);
+                              e.target.value = '';
+                            }
+                          }}
+                          className="block w-full text-xs text-slate-500 file:mr-2 file:py-1.5 file:px-3 file:rounded-lg file:border-0 file:text-xs file:font-bold file:bg-indigo-600 file:text-white hover:file:bg-indigo-500 cursor-pointer"
+                        />
+                      </div>
+
+                      {/* Direct URL input */}
+                      <div>
+                        <label className="block text-[11px] font-bold text-slate-600 mb-1">
+                          2. Atau Tempelkan Tautan / URL Gambar Web:
+                        </label>
+                        <input
+                          type="url"
+                          placeholder="https://.../diagram-geometri.png"
+                          value={qImageUrl.startsWith('data:') ? '' : qImageUrl}
+                          onChange={(e) => setQImageUrl(e.target.value)}
+                          className="w-full px-3 py-1.5 bg-white border border-slate-200 rounded-lg text-xs text-slate-800 placeholder:text-slate-400 focus:outline-none focus:border-indigo-500"
+                        />
+                      </div>
+                    </div>
+
+                    {/* Image Thumbnail Preview */}
+                    {qImageUrl && (
+                      <div className="mt-2 p-2 bg-white rounded-xl border border-indigo-200 flex items-center gap-3">
+                        <img
+                          src={qImageUrl}
+                          alt="Preview Gambar Soal"
+                          className="h-20 w-auto max-w-[140px] object-contain rounded-lg border border-slate-200 bg-slate-50"
+                        />
+                        <div className="text-xs text-slate-600 flex-1">
+                          <span className="font-bold text-emerald-600 flex items-center gap-1">
+                            <Check className="w-3.5 h-3.5" /> Gambar siap ditampilkan
+                          </span>
+                          <p className="text-[11px] text-slate-400 mt-0.5">
+                            Siswa dapat mengklik gambar ini untuk memperbesar (zoom modal) saat mengerjakan ujian.
+                          </p>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Live Student View Preview Box */}
+                  {(qText || qImageUrl) && (
+                    <div className="p-4 bg-slate-50 border border-slate-200 rounded-xl space-y-2">
+                      <div className="flex items-center gap-1.5 text-xs font-bold text-slate-600 font-mono uppercase">
+                        <Eye className="w-3.5 h-3.5 text-indigo-600" />
+                        Pratinjau Tampilan Siswa (Live Preview)
+                      </div>
+                      <div className="p-4 bg-white rounded-xl border border-slate-200 shadow-2xs">
+                        <RichExamContent
+                          text={qText}
+                          imageUrl={qImageUrl}
+                          isReadingPassage={qIsReadingPassage}
+                          className="text-sm font-medium text-slate-800"
+                        />
+                      </div>
+                    </div>
+                  )}
 
                   <div className="space-y-3">
                     <label className="block text-xs font-semibold text-slate-500 uppercase font-mono tracking-wider">Pilihlah Opsi Jawaban Ganda beserta Kunci</label>
@@ -2941,7 +3140,14 @@ export default function AdminPanel({
                               Bobot: {q.score ?? 10} Poin
                             </span>
                           </div>
-                          <h4 className="font-bold text-slate-800 text-base mt-2 leading-relaxed">{q.questionText}</h4>
+                          <div className="mt-2">
+                            <RichExamContent
+                              text={q.questionText}
+                              imageUrl={q.imageUrl}
+                              isReadingPassage={q.isReadingPassage}
+                              className="text-base font-semibold text-slate-800 leading-relaxed"
+                            />
+                          </div>
                         </div>
                         <div className="flex gap-1">
                           <button
@@ -2954,6 +3160,8 @@ export default function AdminPanel({
                               setQCorrect(q.correctAnswerIndex);
                               setQSubjectId(q.subjectId || effectiveActiveSubject.id);
                               setQScore(q.score !== undefined ? q.score : 20);
+                              setQImageUrl(q.imageUrl || '');
+                              setQIsReadingPassage(q.isReadingPassage || false);
                             }}
                             className="p-1 px-2 hover:bg-slate-100 text-slate-500 hover:text-indigo-600 rounded-md transition"
                             title="Edit Soal"

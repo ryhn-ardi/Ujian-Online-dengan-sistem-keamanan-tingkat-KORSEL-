@@ -1,12 +1,15 @@
 export interface Question {
   id: string;
   questionText: string;
+  imageUrl?: string; // Optional image URL or compressed Base64 data URL for mathematics diagrams, geometry, illustrations
   options: string[];
+  optionImages?: string[]; // Optional images for options A, B, C, D
   correctAnswerIndex: number; // Index of correct option (0-3)
   correctAnswerIndices?: number[]; // List of correct indices, used for MR (multiple response)
   type?: 'MC' | 'MR'; // 'MC' = Multiple Choice (single), 'MR' = Multiple Response (2 correct answers)
   score?: number; // Custom score for each question
   subjectId?: string; // ID of the subject this question belongs to (e.g. 'sub1' or 'sub2')
+  isReadingPassage?: boolean; // For Indonesian language / long text: enables paragraph indentation & generous line-spacing
 }
 
 export interface StudentUser {
