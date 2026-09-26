@@ -562,6 +562,10 @@ export default function AdminPanel({
     if (onUpdateStudentUsers) {
       onUpdateStudentUsers(updated);
     }
+    setImportAccountMsg({
+      text: `Akun siswa "${newAcc.name}" (@${newAcc.username}) berhasil ditambahkan dan disimpan ke database!`,
+      success: true
+    });
     setShowAddAccountModal(false);
     setNewAccUsername('');
     setNewAccPassword('123');

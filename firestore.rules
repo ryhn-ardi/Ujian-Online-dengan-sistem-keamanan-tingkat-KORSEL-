@@ -26,12 +26,14 @@ service cloud.firestore {
 
     // 4. Student Users (pre-registered accounts for login authentication)
     match /studentUsers/{userId} {
-      allow read, write: if isValidId(userId);
+      allow read: if true;
+      allow write: if isValidId(userId);
     }
 
     // 5. Student Accounts Chunks (for high-performance storage of 1,200+ student accounts)
     match /studentAccounts/{chunkId} {
-      allow read, write: if isValidId(chunkId);
+      allow read: if true;
+      allow write: if isValidId(chunkId);
     }
   }
 }

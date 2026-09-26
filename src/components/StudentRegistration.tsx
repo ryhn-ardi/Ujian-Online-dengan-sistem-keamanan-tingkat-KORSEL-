@@ -95,7 +95,7 @@ export default function StudentRegistration({
       setAbsentNumber(matchedUser.absentNumber || '');
       setLoginError('');
     } else {
-      setLoginError('Username atau Password siswa salah! Silakan tanyakan ke Proktor atau periksa kembali kartu ujian Anda.');
+      setLoginError('Username atau Password siswa salah / belum terdaftar! Pastikan data akun siswa sudah ditambahkan di menu Admin (ikon gembok di kanan atas > Data Akun Siswa).');
     }
   };
 
