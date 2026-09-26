@@ -48,6 +48,8 @@ export interface ExamSubject {
   name: string; // Subject display name (e.g. 'Seni Budaya dan P kelas 8')
   code?: string; // Optional code/abbreviation (e.g. 'SB-8')
   isActive?: boolean; // Whether this subject is visible/available for students to choose on the exam link
+  enableRandomSampling?: boolean; // Per-subject random sampling toggle
+  sampleQuestionCount?: number; // Number of questions to randomly pick for this specific subject
 }
 
 export interface ExamConfig {
