@@ -1,22 +1,45 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Play, AlertTriangle, ShieldAlert, KeyRound, Clock, ChevronLeft, ChevronRight, CheckSquare, Send, CheckCircle, RefreshCw, Check, Radio, Ticket, Lock, Unlock } from 'lucide-react';
+import { Play, AlertTriangle, ShieldAlert, KeyRound, Clock, ChevronLeft, ChevronRight, CheckSquare, Send, CheckCircle, RefreshCw, Check, Radio, Ticket, Lock, Unlock, BellOff, Smartphone, Volume2, Info } from 'lucide-react';
 import { Student, Question, ExamConfig } from '../types';
 import { getStudentFromServer } from '../utils/sync';
 import { RichExamContent } from './RichExamContent';
 import { useRealtimeWIB } from '../utils/timeWib';
+
+let sharedAudioContext: AudioContext | null = null;
+
+export function warmUpAudioContext(): AudioContext | null {
+  try {
+    const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
+    if (!AudioContextClass) return null;
+    if (!sharedAudioContext || sharedAudioContext.state === 'closed') {
+      sharedAudioContext = new AudioContextClass();
+    }
+    if (sharedAudioContext.state === 'suspended') {
+      sharedAudioContext.resume().catch(() => {});
+    }
+    return sharedAudioContext;
+  } catch (e) {
+    return null;
+  }
+}
 
 // Synthesizer Siren Alarm (Emergency high-frequency sweeping pitch)
 function playSirenAlarm() {
   try {
     // 1. Trigger repetitive intense physical vibration to make loud mechanical rattling noise on desks
     if (typeof navigator !== 'undefined' && navigator.vibrate) {
-      navigator.vibrate([600, 200, 600, 200, 600, 200, 600, 200, 600, 200, 600]);
+      try {
+        navigator.vibrate([600, 200, 600, 200, 600, 200, 600, 200, 600, 200, 600]);
+      } catch (e) {}
     }
 
-    const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
-    if (!AudioContextClass) return;
-    const ctx = new AudioContextClass();
-    
+    const ctx = warmUpAudioContext();
+    if (!ctx) return;
+    if (ctx.state === 'suspended') {
+      ctx.resume().catch(() => {});
+    }
+
+    const now = ctx.currentTime;
     const osc1 = ctx.createOscillator();
     const osc2 = ctx.createOscillator();
     const lfo = ctx.createOscillator();
@@ -26,11 +49,11 @@ function playSirenAlarm() {
     osc1.type = 'sawtooth';
     osc2.type = 'square';
     
-    osc1.frequency.setValueAtTime(600, ctx.currentTime);
-    osc2.frequency.setValueAtTime(800, ctx.currentTime);
+    osc1.frequency.setValueAtTime(650, now);
+    osc2.frequency.setValueAtTime(850, now);
     
-    lfo.frequency.setValueAtTime(4, ctx.currentTime); // 4 sweeps per second
-    lfoGain.gain.setValueAtTime(150, ctx.currentTime); // sweep frequency amplitude
+    lfo.frequency.setValueAtTime(4.5, now); // Sweeping siren cycle
+    lfoGain.gain.setValueAtTime(180, now); // sweep frequency amplitude
     
     lfo.connect(lfoGain);
     lfoGain.connect(osc1.frequency);
@@ -38,9 +61,8 @@ function playSirenAlarm() {
     
     const oscGain1 = ctx.createGain();
     const oscGain2 = ctx.createGain();
-    // Maximize wave-shaping level
-    oscGain1.gain.setValueAtTime(0.8, ctx.currentTime);
-    oscGain2.gain.setValueAtTime(0.7, ctx.currentTime);
+    oscGain1.gain.setValueAtTime(0.85, now);
+    oscGain2.gain.setValueAtTime(0.75, now);
     
     osc1.connect(oscGain1);
     osc2.connect(oscGain2);
@@ -51,22 +73,18 @@ function playSirenAlarm() {
     mainGain.connect(ctx.destination);
     
     // Play with highly amplified envelope (+250% software boost)
-    mainGain.gain.setValueAtTime(0, ctx.currentTime);
-    mainGain.gain.linearRampToValueAtTime(2.5, ctx.currentTime + 0.1); // Ultra-loud rise
-    mainGain.gain.setValueAtTime(2.5, ctx.currentTime + 4.7);
-    mainGain.gain.linearRampToValueAtTime(0.01, ctx.currentTime + 5.0); // Fast fall
+    mainGain.gain.setValueAtTime(0, now);
+    mainGain.gain.linearRampToValueAtTime(2.5, now + 0.08); // Ultra-loud rise
+    mainGain.gain.setValueAtTime(2.5, now + 4.5);
+    mainGain.gain.linearRampToValueAtTime(0.01, now + 5.0); // Fast fall
     
-    osc1.start();
-    osc2.start();
-    lfo.start();
+    osc1.start(now);
+    osc2.start(now);
+    lfo.start(now);
     
-    osc1.stop(ctx.currentTime + 5.0);
-    osc2.stop(ctx.currentTime + 5.0);
-    lfo.stop(ctx.currentTime + 5.0);
-    
-    setTimeout(() => {
-      ctx.close().catch(() => {});
-    }, 5500);
+    osc1.stop(now + 5.0);
+    osc2.stop(now + 5.0);
+    lfo.stop(now + 5.0);
   } catch (err) {
     console.error('Failed to play synthesized siren sound:', err);
   }
@@ -110,6 +128,7 @@ export default function StudentExam({
   const [examStatus, setExamStatus] = useState(student.status);
   const [isGraceActive, setIsGraceActive] = useState(false);
   const [violationToast, setViolationToast] = useState<{ message: string; count: number; max: number } | null>(null);
+  const [dndConfirmed, setDndConfirmed] = useState(false);
   const isUnlockingRef = useRef(false);
   const wibClock = useRealtimeWIB();
 
@@ -224,9 +243,17 @@ export default function StudentExam({
 
   // Request Fullscreen on entering active exam state
   const requestFullscreen = async () => {
+    warmUpAudioContext();
     try {
-      if (document.documentElement.requestFullscreen) {
-        await document.documentElement.requestFullscreen();
+      const docEl = document.documentElement as any;
+      if (docEl.requestFullscreen) {
+        await docEl.requestFullscreen();
+      } else if (docEl.webkitRequestFullscreen) {
+        await docEl.webkitRequestFullscreen();
+      } else if (docEl.mozRequestFullScreen) {
+        await docEl.mozRequestFullScreen();
+      } else if (docEl.msRequestFullscreen) {
+        await docEl.msRequestFullscreen();
       }
       setFullscreenFailed(false);
       setIsCurrentlyFullscreen(true);
@@ -273,35 +300,63 @@ export default function StudentExam({
     if (config.strictSecurityEnabled === false) return; // Ignore if security is off
 
     let blurTimeout: NodeJS.Timeout | null = null;
+    let touchStartY = 0;
+
+    const checkIsFs = () => {
+      return !!(
+        document.fullscreenElement ||
+        (document as any).webkitFullscreenElement ||
+        (document as any).mozFullScreenElement ||
+        (document as any).msFullscreenElement
+      );
+    };
 
     const handleFullscreenChange = () => {
-      const isFs = !!document.fullscreenElement;
+      const isFs = checkIsFs();
       setIsCurrentlyFullscreen(isFs);
       if (!isFs && !isGraceActive) {
-        triggerViolation('Mencoba Keluar dari Layar Penuh (Fullscreen)');
+        triggerViolation('Keluar dari Mode Layar Penuh (Fullscreen)');
       }
     };
 
     const handleVisibilityChange = () => {
       if (document.hidden && !isGraceActive) {
-        triggerViolation('Berpindah Tab / Meminimalkan Jendela Browser');
+        triggerViolation('Bilah Notifikasi / Jendela Terbuka (Layar Ujian Tersembunyi)');
       }
     };
 
     const handleWindowBlur = () => {
       if (isGraceActive) return;
       if (blurTimeout) clearTimeout(blurTimeout);
+      // On mobile devices, window.blur fires immediately when pulling down notification shade or opening quick settings or answering popup
       blurTimeout = setTimeout(() => {
-        if ((!document.hasFocus() || document.hidden) && !isGraceActive) {
-          triggerViolation('Membuka Aplikasi Lain / Keluar dari Fokus Layar');
+        if (!isGraceActive) {
+          triggerViolation('Membuka Bilah Notifikasi / Quick Settings HP atau Keluar Fokus Layar');
         }
-      }, 500);
+      }, 120);
     };
 
     const handleWindowFocus = () => {
       if (blurTimeout) {
         clearTimeout(blurTimeout);
         blurTimeout = null;
+      }
+    };
+
+    const handleTouchStart = (e: TouchEvent) => {
+      if (e.touches && e.touches.length > 0) {
+        touchStartY = e.touches[0].clientY;
+      }
+    };
+
+    const handleTouchMove = (e: TouchEvent) => {
+      if (isGraceActive) return;
+      if (e.touches && e.touches.length > 0) {
+        const currentY = e.touches[0].clientY;
+        // If swipe began at the very top edge (<= 40px) and is dragged down (> 30px), this is pulling down status bar / quick settings
+        if (touchStartY <= 40 && (currentY - touchStartY) > 30) {
+          triggerViolation('Mencoba Menarik Bilah Quick Settings / Notifikasi HP');
+        }
       }
     };
 
@@ -340,12 +395,17 @@ export default function StudentExam({
     // Quick delay listeners to allow user to enter fullscreen without immediate triggers
     const setupTimer = setTimeout(() => {
       document.addEventListener('fullscreenchange', handleFullscreenChange);
+      document.addEventListener('webkitfullscreenchange', handleFullscreenChange);
+      document.addEventListener('mozfullscreenchange', handleFullscreenChange);
+      document.addEventListener('MSFullscreenChange', handleFullscreenChange);
       document.addEventListener('visibilitychange', handleVisibilityChange);
       document.addEventListener('contextmenu', handleContextMenu);
       window.addEventListener('blur', handleWindowBlur);
       window.addEventListener('focus', handleWindowFocus);
       window.addEventListener('resize', handleResize);
       window.addEventListener('keydown', handleKeyDown);
+      window.addEventListener('touchstart', handleTouchStart, { passive: true });
+      window.addEventListener('touchmove', handleTouchMove, { passive: true });
       examStartedRef.current = true;
     }, 800);
 
@@ -353,20 +413,32 @@ export default function StudentExam({
       clearTimeout(setupTimer);
       if (blurTimeout) clearTimeout(blurTimeout);
       document.removeEventListener('fullscreenchange', handleFullscreenChange);
+      document.removeEventListener('webkitfullscreenchange', handleFullscreenChange);
+      document.removeEventListener('mozfullscreenchange', handleFullscreenChange);
+      document.removeEventListener('MSFullscreenChange', handleFullscreenChange);
       document.removeEventListener('visibilitychange', handleVisibilityChange);
       document.removeEventListener('contextmenu', handleContextMenu);
       window.removeEventListener('blur', handleWindowBlur);
       window.removeEventListener('focus', handleWindowFocus);
       window.removeEventListener('resize', handleResize);
       window.removeEventListener('keydown', handleKeyDown);
+      window.removeEventListener('touchstart', handleTouchStart);
+      window.removeEventListener('touchmove', handleTouchMove);
     };
   }, [examStatus, config.strictSecurityEnabled, isGraceActive]);
 
   const handleSelectOption = (questionId: string, optionIndex: number) => {
+    warmUpAudioContext();
     const questionObj = questions.find(q => q.id === questionId);
     let updated;
 
-    if (questionObj?.type === 'MR') {
+    const isMulti = questionObj?.type === 'MR' || (questionObj?.correctAnswerIndices && questionObj.correctAnswerIndices.length > 1);
+
+    if (isMulti) {
+      const maxAllowed = questionObj?.correctAnswerIndices && questionObj.correctAnswerIndices.length > 1
+        ? questionObj.correctAnswerIndices.length
+        : 2;
+
       const currentSelection = Array.isArray(selectedAnswers[questionId])
         ? (selectedAnswers[questionId] as number[])
         : selectedAnswers[questionId] !== undefined && selectedAnswers[questionId] !== null
@@ -377,8 +449,8 @@ export default function StudentExam({
       if (currentSelection.includes(optionIndex)) {
         nextSelection = currentSelection.filter(item => item !== optionIndex);
       } else {
-        if (currentSelection.length >= 2) {
-          // Keep max 2 by replacing the oldest (index 0)
+        if (currentSelection.length >= maxAllowed) {
+          // Keep max by replacing the oldest
           nextSelection = [...currentSelection.slice(1), optionIndex];
         } else {
           nextSelection = [...currentSelection, optionIndex];
@@ -756,42 +828,111 @@ export default function StudentExam({
     );
   }
 
-  // 2. --- RENDERING: PINDAH LAYAR PENUH INTI ---
+  // 2. --- RENDERING: PINDAH LAYAR PENUH INTI & PANDUAN DND ---
   if (examStatus === 'BELUM_MULAI') {
+    const handleStartWithDnd = async () => {
+      if (!dndConfirmed) {
+        alert('Harap centang konfirmasi Mode Jangan Ganggu (DND) dan pemahaman aturan ujian terlebih dahulu!');
+        return;
+      }
+      warmUpAudioContext();
+      await requestFullscreen();
+      onStartExam();
+    };
+
     return (
-      <div className="min-h-screen bg-slate-900 flex flex-col justify-center items-center p-4 text-white text-center font-sans">
-        <div className="max-w-md w-full bg-slate-800 rounded-2xl p-8 border border-slate-700 shadow-xl">
-          <div className="inline-flex items-center justify-center p-4 bg-teal-500/10 rounded-2xl mb-6 text-teal-400">
-            <Play className="w-12 h-12" />
+      <div className="min-h-screen bg-slate-900 flex flex-col justify-center items-center p-4 text-white font-sans py-8">
+        <div className="max-w-lg w-full bg-slate-800 rounded-3xl p-6 sm:p-8 border border-slate-700 shadow-2xl relative">
+          
+          <div className="text-center mb-5">
+            <div className="inline-flex items-center justify-center p-3.5 bg-teal-500/10 rounded-2xl mb-3 text-teal-400 border border-teal-500/20">
+              <Play className="w-10 h-10" />
+            </div>
+            <h2 className="text-2xl font-black tracking-tight text-white uppercase">Siap Memulai Ujian</h2>
+            <p className="text-slate-400 text-xs mt-1">
+              {student.name} • Kelas {student.studentClass} • No. Absen {student.absentNumber}
+            </p>
           </div>
-          <h2 className="text-2xl font-bold tracking-tight mb-2">Masuk Layar Pengawasan</h2>
-          <p className="text-slate-400 text-sm mb-6 leading-relaxed">
-            Untuk memulai pengerjaan, Anda harus menyetujui program masuk ke Layar Penuh. Hal ini mencegah gangguan selama ujian berlangsung.
-          </p>
+
+          {/* DND MODE & PROCTOR SECURITY GUIDE */}
+          <div className="bg-slate-950/70 border border-amber-500/40 rounded-2xl p-4 sm:p-5 mb-5 space-y-3.5 text-left">
+            <div className="flex items-center gap-2 text-amber-400 font-bold text-xs sm:text-sm font-mono uppercase tracking-wide">
+              <BellOff className="w-4 h-4 shrink-0 text-amber-400" />
+              <span>Wajib: Aktifkan Mode Jangan Ganggu (DND)</span>
+            </div>
+
+            <div className="text-xs text-slate-300 space-y-2 leading-relaxed">
+              <div className="p-3 bg-amber-950/30 border border-amber-500/20 rounded-xl space-y-1.5">
+                <div className="font-bold text-amber-300 flex items-center gap-1.5">
+                  <Smartphone className="w-3.5 h-3.5" />
+                  <span>Panduan untuk Pengguna HP / Smartphone:</span>
+                </div>
+                <ul className="list-disc list-inside space-y-1 text-slate-300 text-[11px] pl-1">
+                  <li>
+                    Tarik bilah atas layar HP (Quick Settings) sekarang juga.
+                  </li>
+                  <li>
+                    Nyalakan fitur <strong>"Jangan Ganggu" (Do Not Disturb / DND)</strong> atau <strong>"Heningkan Pemberitahuan"</strong>.
+                  </li>
+                  <li>
+                    Pastikan tidak ada notifikasi mengambang (pop-up) WhatsApp/telepon yang muncul saat ujian.
+                  </li>
+                </ul>
+              </div>
+
+              <div className="p-3 bg-rose-950/30 border border-rose-500/30 rounded-xl space-y-1 text-rose-200 text-[11px]">
+                <div className="font-extrabold text-rose-400 flex items-center gap-1.5">
+                  <AlertTriangle className="w-3.5 h-3.5" />
+                  <span>Peringatan Keras Pelanggaran Proktor:</span>
+                </div>
+                <p>
+                  Sistem website tidak dapat mematikan notifikasi HP secara sepihak karena batasan keamanan sistem Android/iOS.
+                </p>
+                <p className="font-semibold text-rose-300">
+                  ⚠️ Menarik bilah notifikasi / Quick Settings, mengetuk notifikasi pesan masuk, atau keluar dari fullscreen akan <strong>LANGSUNG MEMBUNYIKAN ALARM SIRINE KERAS</strong> dan dicatat sebagai pelanggaran ujian!
+                </p>
+              </div>
+            </div>
+
+            {/* Checkbox Konfirmasi DND */}
+            <label className="flex items-start gap-3 p-3 bg-slate-900 border border-slate-700 rounded-xl cursor-pointer hover:border-amber-400 transition select-none">
+              <input
+                type="checkbox"
+                checked={dndConfirmed}
+                onChange={(e) => setDndConfirmed(e.target.checked)}
+                className="mt-0.5 w-4 h-4 rounded text-teal-500 focus:ring-teal-400 border-slate-600 bg-slate-800 cursor-pointer shrink-0"
+              />
+              <span className="text-xs text-slate-200 leading-snug">
+                Saya telah mengaktifkan <strong>Mode Jangan Ganggu (DND)</strong> di HP saya dan paham bahwa membuka notifikasi atau keluar fullscreen akan membunyikan alarm sirine.
+              </span>
+            </label>
+          </div>
 
           {fullscreenFailed && (
-            <div className="mb-6 p-4 bg-amber-500/10 border border-amber-500/20 rounded-xl text-amber-300 text-xs text-left">
-              Gagal mematikan mode desktop normal. Pastikan izin fullscreen aktif di browser Anda atau tekan tombol manual di bawah ini.
+            <div className="mb-4 p-3 bg-amber-500/10 border border-amber-500/20 rounded-xl text-amber-300 text-xs text-left">
+              Browser Anda memerlukan izin manual untuk Layar Penuh. Silakan klik tombol di bawah untuk mengizinkan.
             </div>
           )}
 
-          <div className="space-y-3">
+          <div className="space-y-2.5">
             <button
               id="btn-trigger-fullscreen-start"
-              onClick={async () => {
-                await requestFullscreen();
-                onStartExam();
-              }}
-              className="w-full bg-teal-500 hover:bg-teal-400 text-slate-950 font-bold py-3.5 px-6 rounded-xl transition duration-200 flex items-center justify-center gap-2 shadow-lg"
+              onClick={handleStartWithDnd}
+              className={`w-full py-3.5 px-6 rounded-xl font-black text-sm transition duration-200 flex items-center justify-center gap-2 shadow-lg cursor-pointer ${
+                dndConfirmed
+                  ? 'bg-teal-500 hover:bg-teal-400 text-slate-950 active:scale-[0.98]'
+                  : 'bg-slate-700 text-slate-400 hover:bg-slate-600'
+              }`}
             >
-              Masukkan Layar Penuh & Mulai
+              <Play className="w-4 h-4 shrink-0" />
+              Masukkan Layar Penuh & Mulai Ujian
             </button>
             <button
               id="btn-abort-exam"
               onClick={onExit}
-              className="w-full bg-transparent hover:bg-slate-700 font-semibold text-slate-300 border border-slate-600/50 py-2.5 rounded-xl transition duration-150 text-sm"
+              className="w-full bg-transparent hover:bg-slate-700 font-semibold text-slate-400 hover:text-white border border-slate-700 py-2.5 rounded-xl transition duration-150 text-xs cursor-pointer"
             >
-              Kembali
+              Kembali ke Menu
             </button>
           </div>
         </div>
@@ -904,20 +1045,54 @@ export default function StudentExam({
               <span className="text-xs font-bold text-indigo-500 uppercase font-mono tracking-widest">
                 Pertanyaan {currentQuestionIndex + 1} dari {questions.length}
               </span>
-              <span className="px-2.5 py-1 bg-slate-100 text-slate-500 text-xs rounded-full font-semibold font-mono">
-                {selectedAnswers[currentQuestion.id] !== undefined && 
-                 (!Array.isArray(selectedAnswers[currentQuestion.id]) || (selectedAnswers[currentQuestion.id] as number[]).length > 0)
-                  ? `✓ Terjawab${currentQuestion.type === 'MR' ? ` (${(selectedAnswers[currentQuestion.id] as number[]).length}/2)` : ''}`
-                  : '• Belum Terjawab'}
-              </span>
+              {(() => {
+                const isMulti = currentQuestion.type === 'MR' || (currentQuestion.correctAnswerIndices && currentQuestion.correctAnswerIndices.length > 1);
+                const maxChoices = currentQuestion.correctAnswerIndices && currentQuestion.correctAnswerIndices.length > 1
+                  ? currentQuestion.correctAnswerIndices.length
+                  : 2;
+                const ans = selectedAnswers[currentQuestion.id];
+                const selectedCount = Array.isArray(ans) ? ans.length : (ans !== undefined && ans !== null ? 1 : 0);
+                const isAnswered = selectedCount > 0;
+
+                return (
+                  <span className="px-2.5 py-1 bg-slate-100 text-slate-500 text-xs rounded-full font-semibold font-mono">
+                    {isAnswered
+                      ? `✓ Terjawab${isMulti ? ` (${selectedCount}/${maxChoices})` : ''}`
+                      : '• Belum Terjawab'}
+                  </span>
+                );
+              })()}
             </div>
 
-            {currentQuestion.type === 'MR' && (
-              <div className="mb-5 p-3.5 bg-amber-50 border border-amber-200 rounded-xl text-xs font-semibold text-amber-850 flex items-center gap-2">
-                <span className="w-2 h-2 rounded-full bg-amber-500 mr-1 shrink-0 animate-ping" />
-                <span>PILIHAN GANDA 2 JAWABAN: Pilih tepat 2 (dua) opsi jawaban yang benar!</span>
-              </div>
-            )}
+            {(() => {
+              const isMulti = currentQuestion.type === 'MR' || (currentQuestion.correctAnswerIndices && currentQuestion.correctAnswerIndices.length > 1);
+              const maxChoices = currentQuestion.correctAnswerIndices && currentQuestion.correctAnswerIndices.length > 1
+                ? currentQuestion.correctAnswerIndices.length
+                : 2;
+              const ans = selectedAnswers[currentQuestion.id];
+              const selectedCount = Array.isArray(ans) ? ans.length : (ans !== undefined && ans !== null ? 1 : 0);
+
+              if (isMulti) {
+                return (
+                  <div className="mb-5 p-3.5 bg-amber-50 border border-amber-200 rounded-xl text-xs font-semibold text-amber-900 flex flex-wrap items-center justify-between gap-2 shadow-2xs">
+                    <div className="flex items-center gap-2">
+                      <span className="w-2.5 h-2.5 rounded-full bg-amber-500 mr-1 shrink-0 animate-ping" />
+                      <span>PILIHAN GANDA KOMPLEKS: Pilih tepat {maxChoices} (dua atau lebih) opsi jawaban yang benar!</span>
+                    </div>
+                    <span className="text-[11px] font-mono font-bold bg-amber-200/60 text-amber-950 px-2 py-0.5 rounded">
+                      {selectedCount} / {maxChoices} Terpilih
+                    </span>
+                  </div>
+                );
+              }
+
+              return (
+                <div className="mb-5 p-2.5 bg-blue-50/70 border border-blue-200/80 rounded-xl text-xs text-blue-900 flex items-center gap-2">
+                  <span className="w-2 h-2 rounded-full bg-blue-500 shrink-0" />
+                  <span className="font-medium">PILIHAN GANDA TUNGGAL: Pilih 1 (satu) opsi jawaban yang paling tepat.</span>
+                </div>
+              );
+            })()}
 
             {/* Question Text & Media */}
             <div className="mb-6">

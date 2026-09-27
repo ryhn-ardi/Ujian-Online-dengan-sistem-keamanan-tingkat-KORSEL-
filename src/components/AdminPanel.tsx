@@ -1,5 +1,5 @@
 import React, { useState, useRef } from 'react';
-import { Users, FileSpreadsheet, RefreshCw, KeyRound, Edit, Trash2, Plus, Save, BookOpen, Clock, X, ChevronRight, Check, AlertTriangle, ShieldCheck, Search, Eye, EyeOff, Layers, Settings2, Sparkles, Ticket, Download, Upload, Shuffle, UserCheck, Lock, CheckCircle2, ChevronLeft, Image as ImageIcon, AlignLeft, HelpCircle, FileText, Calendar, Timer } from 'lucide-react';
+import { Users, FileSpreadsheet, RefreshCw, KeyRound, Edit, Trash2, Plus, Save, BookOpen, Clock, X, ChevronRight, Check, AlertTriangle, ShieldCheck, Search, Eye, EyeOff, Layers, Settings2, Sparkles, Ticket, Download, Upload, Shuffle, UserCheck, Lock, CheckCircle2, ChevronLeft, Image as ImageIcon, AlignLeft, HelpCircle, FileText, Calendar, Timer, CheckSquare, Radio } from 'lucide-react';
 import * as XLSX from 'xlsx';
 import { Student, Question, ExamConfig, ExamSubject, StudentUser } from '../types';
 import { getExamSubjects, saveSingleStudent } from '../utils/sync';
@@ -144,9 +144,11 @@ export default function AdminPanel({
   // Question editor state
   const [editingQuestion, setEditingQuestion] = useState<Question | null>(null);
   const [isCreatingQuestion, setIsCreatingQuestion] = useState(false);
+  const [qType, setQType] = useState<'MC' | 'MR'>('MC');
   const [qText, setQText] = useState('');
   const [qOptions, setQOptions] = useState<string[]>(['', '', '', '']);
   const [qCorrect, setQCorrect] = useState<number>(0);
+  const [qCorrectIndices, setQCorrectIndices] = useState<number[]>([0]);
   const [qSubjectId, setQSubjectId] = useState<string>('sub1');
   const [qScore, setQScore] = useState<number>(20);
   const [qImageUrl, setQImageUrl] = useState<string>('');
@@ -1740,6 +1742,19 @@ export default function AdminPanel({
     if (!qText.trim()) return alert('Teks soal wajib terisi!');
     if (qOptions.some(opt => !opt.trim())) return alert('Semua pilihan jawaban wajib diisi!');
 
+    if (qType === 'MR') {
+      if (qCorrectIndices.length < 2) {
+        return alert('Untuk tipe Pilihan Ganda Kompleks (Jawaban Ganda), pilih minimal 2 kunci jawaban yang benar!');
+      }
+    } else {
+      if (qCorrectIndices.length === 0) {
+        return alert('Pilihlah salah satu opsi sebagai kunci jawaban yang benar!');
+      }
+    }
+
+    const sortedIndices = [...qCorrectIndices].sort((a, b) => a - b);
+    const primaryCorrectIndex = sortedIndices[0] ?? 0;
+
     if (isCreatingQuestion) {
       const newQ: Question = {
         id: `q_generated_${Date.now()}`,
@@ -1747,9 +1762,9 @@ export default function AdminPanel({
         imageUrl: qImageUrl.trim() || undefined,
         isReadingPassage: qIsReadingPassage,
         options: qOptions.map(o => o.trim()),
-        correctAnswerIndex: qCorrect,
-        correctAnswerIndices: [qCorrect],
-        type: 'MC',
+        correctAnswerIndex: primaryCorrectIndex,
+        correctAnswerIndices: qType === 'MR' ? sortedIndices : [primaryCorrectIndex],
+        type: qType,
         score: qScore,
         subjectId: qSubjectId
       };
@@ -1763,8 +1778,9 @@ export default function AdminPanel({
             imageUrl: qImageUrl.trim() || undefined,
             isReadingPassage: qIsReadingPassage,
             options: qOptions.map(o => o.trim()),
-            correctAnswerIndex: qCorrect,
-            correctAnswerIndices: q.correctAnswerIndices || [qCorrect],
+            correctAnswerIndex: primaryCorrectIndex,
+            correctAnswerIndices: qType === 'MR' ? sortedIndices : [primaryCorrectIndex],
+            type: qType,
             subjectId: qSubjectId,
             score: qScore
           };
@@ -1782,6 +1798,8 @@ export default function AdminPanel({
     setQIsReadingPassage(false);
     setQOptions(['', '', '', '']);
     setQCorrect(0);
+    setQCorrectIndices([0]);
+    setQType('MC');
     setQScore(20);
   };
 
@@ -2459,6 +2477,8 @@ export default function AdminPanel({
                     setQIsReadingPassage(false);
                     setQOptions(['', '', '', '']);
                     setQCorrect(0);
+                    setQCorrectIndices([0]);
+                    setQType('MC');
                     setQSubjectId(effectiveActiveSubject.id);
                     setShowImportArea(false);
                   }}
@@ -3206,26 +3226,136 @@ export default function AdminPanel({
                     </div>
                   )}
 
+                  {/* Question Type Selector (Single Choice vs Multiple Choice / MR) */}
+                  <div className="p-4 bg-slate-50 border border-slate-200 rounded-xl space-y-3">
+                    <label className="block text-xs font-bold text-slate-700 uppercase font-mono tracking-wider">
+                      Model / Tipe Jawaban Soal Ujian:
+                    </label>
+                    
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                      {/* Option 1: Pilihan Ganda Tunggal */}
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setQType('MC');
+                          const first = qCorrectIndices[0] ?? 0;
+                          setQCorrect(first);
+                          setQCorrectIndices([first]);
+                        }}
+                        className={`p-3.5 rounded-xl border text-left transition flex items-start gap-3 cursor-pointer ${
+                          qType === 'MC'
+                            ? 'bg-blue-50/80 border-blue-500 ring-2 ring-blue-500/20 text-blue-950'
+                            : 'bg-white border-slate-200 hover:bg-slate-100 text-slate-700'
+                        }`}
+                      >
+                        <div className={`mt-0.5 p-1.5 rounded-lg shrink-0 ${qType === 'MC' ? 'bg-blue-600 text-white' : 'bg-slate-100 text-slate-400'}`}>
+                          <Radio className="w-4 h-4" />
+                        </div>
+                        <div>
+                          <div className="font-extrabold text-xs flex items-center gap-1.5">
+                            Pilihan Ganda Tunggal
+                            {qType === 'MC' && <span className="text-[10px] bg-blue-600 text-white px-1.5 py-0.2 rounded font-mono font-bold">AKTIF</span>}
+                          </div>
+                          <p className="text-[11px] text-slate-500 mt-1 leading-snug">
+                            Hanya ada <strong>1 jawaban benar</strong>. Siswa hanya dapat memilih 1 opsi radio.
+                          </p>
+                        </div>
+                      </button>
+
+                      {/* Option 2: Pilihan Ganda Kompleks */}
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setQType('MR');
+                          if (qCorrectIndices.length < 2) {
+                            // Automatically select second option if only 1 is currently chosen
+                            const next = qCorrectIndices.length === 0 ? [0, 1] : [qCorrectIndices[0], (qCorrectIndices[0] + 1) % 4];
+                            setQCorrectIndices(next.sort((a, b) => a - b));
+                          }
+                        }}
+                        className={`p-3.5 rounded-xl border text-left transition flex items-start gap-3 cursor-pointer ${
+                          qType === 'MR'
+                            ? 'bg-amber-50/80 border-amber-500 ring-2 ring-amber-500/20 text-amber-950'
+                            : 'bg-white border-slate-200 hover:bg-slate-100 text-slate-700'
+                        }`}
+                      >
+                        <div className={`mt-0.5 p-1.5 rounded-lg shrink-0 ${qType === 'MR' ? 'bg-amber-500 text-white' : 'bg-slate-100 text-slate-400'}`}>
+                          <CheckSquare className="w-4 h-4" />
+                        </div>
+                        <div>
+                          <div className="font-extrabold text-xs flex items-center gap-1.5">
+                            Pilihan Ganda Kompleks (Ganda)
+                            {qType === 'MR' && <span className="text-[10px] bg-amber-500 text-white px-1.5 py-0.2 rounded font-mono font-bold">AKTIF</span>}
+                          </div>
+                          <p className="text-[11px] text-slate-500 mt-1 leading-snug">
+                            Ada <strong>2 atau lebih jawaban benar</strong>. Siswa dapat mencentang beberapa opsi sekaligus.
+                          </p>
+                        </div>
+                      </button>
+                    </div>
+
+                    <div className="text-[11px] text-slate-500 px-1 flex items-center gap-1.5 font-medium">
+                      <span>💡</span>
+                      <span>
+                        {qType === 'MC' 
+                          ? 'Klik huruf A/B/C/D di bawah untuk memilih 1 kunci jawaban yang benar.'
+                          : 'Klik huruf A/B/C/D di bawah untuk mencentang 2 atau lebih kunci jawaban benar (Pilihan Ganda Kompleks).'
+                        }
+                      </span>
+                    </div>
+                  </div>
+
                   <div className="space-y-3">
-                    <label className="block text-xs font-semibold text-slate-500 uppercase font-mono tracking-wider">Pilihlah Opsi Jawaban Ganda beserta Kunci</label>
+                    <div className="flex items-center justify-between">
+                      <label className="block text-xs font-semibold text-slate-500 uppercase font-mono tracking-wider">
+                        {qType === 'MC' ? 'Pilih Opsi Jawaban & 1 Kunci' : 'Pilih Opsi Jawaban & Kunci Ganda (Minimal 2 Kunci)'}
+                      </label>
+                      <span className="text-xs font-mono font-bold text-indigo-600 bg-indigo-50 px-2 py-0.5 rounded">
+                        Kunci Terpilih: {qCorrectIndices.map(i => String.fromCharCode(65 + i)).join(', ') || '-'}
+                      </span>
+                    </div>
                     
                     {qOptions.map((opt, oIdx) => {
                       const letter = String.fromCharCode(65 + oIdx);
-                      const isCorrect = qCorrect === oIdx;
+                      const isCorrect = qCorrectIndices.includes(oIdx);
+
+                      const handleToggleOptionKey = () => {
+                        if (qType === 'MC') {
+                          setQCorrect(oIdx);
+                          setQCorrectIndices([oIdx]);
+                        } else {
+                          // Toggle in MR
+                          if (qCorrectIndices.includes(oIdx)) {
+                            if (qCorrectIndices.length <= 1) {
+                              alert('Minimal 1 kunci jawaban harus tetap dipilih!');
+                              return;
+                            }
+                            const updated = qCorrectIndices.filter(i => i !== oIdx);
+                            setQCorrectIndices(updated);
+                            setQCorrect(updated[0] ?? 0);
+                          } else {
+                            const updated = [...qCorrectIndices, oIdx].sort((a, b) => a - b);
+                            setQCorrectIndices(updated);
+                            setQCorrect(updated[0] ?? 0);
+                          }
+                        }
+                      };
 
                       return (
                         <div key={oIdx} className="flex items-center gap-3">
                           <button
                             type="button"
-                            onClick={() => setQCorrect(oIdx)}
-                            className={`w-10 h-10 rounded-xl flex items-center justify-center font-bold font-mono text-sm border shrink-0 transition-all ${
+                            onClick={handleToggleOptionKey}
+                            className={`min-w-14 h-10 px-2 rounded-xl flex items-center justify-center gap-1.5 font-bold font-mono text-sm border shrink-0 transition-all cursor-pointer ${
                               isCorrect
-                                ? 'bg-emerald-500 border-emerald-600 text-white'
-                                : 'bg-slate-50 hover:bg-slate-100 border-slate-200 text-slate-400 hover:text-slate-600'
+                                ? 'bg-emerald-500 border-emerald-600 text-white shadow-sm'
+                                : 'bg-slate-50 hover:bg-slate-100 border-slate-200 text-slate-500 hover:text-slate-800'
                             }`}
-                            title={isCorrect ? 'Ini adalah kunci jawaban' : 'Jadikan kunci jawaban'}
+                            title={isCorrect ? 'Opsi ini aktif sebagai kunci jawaban (Klik untuk ubah)' : 'Jadikan ini sebagai kunci jawaban'}
                           >
-                            {isCorrect ? <Check className="w-4 h-4" /> : letter}
+                            {isCorrect ? <Check className="w-4 h-4 shrink-0" /> : null}
+                            <span>{letter}</span>
+                            {isCorrect && <span className="text-[10px] uppercase font-bold tracking-tight">Kunci</span>}
                           </button>
                           <input
                             type="text"
@@ -3313,6 +3443,18 @@ export default function AdminPanel({
                             <span className="text-[10px] px-2 py-0.5 rounded font-bold font-mono uppercase bg-slate-100 text-slate-700">
                               {effectiveActiveSubject.name}
                             </span>
+                            {/* Question Type Badge */}
+                            {q.type === 'MR' || (q.correctAnswerIndices && q.correctAnswerIndices.length > 1) ? (
+                              <span className="text-[10px] bg-amber-50 text-amber-800 border border-amber-200 px-2 py-0.5 rounded font-mono font-bold flex items-center gap-1">
+                                <CheckSquare className="w-3 h-3 text-amber-600" />
+                                PG KOMPLEKS ({(q.correctAnswerIndices?.length || 2)} JAWABAN)
+                              </span>
+                            ) : (
+                              <span className="text-[10px] bg-blue-50 text-blue-800 border border-blue-200 px-2 py-0.5 rounded font-mono font-bold flex items-center gap-1">
+                                <Radio className="w-3 h-3 text-blue-600" />
+                                PG TUNGGAL
+                              </span>
+                            )}
                             <span className="text-[10px] bg-slate-100 text-slate-500 font-mono px-2 py-0.5 rounded">
                               Bobot: {q.score ?? 10} Poin
                             </span>
@@ -3330,11 +3472,19 @@ export default function AdminPanel({
                           <button
                             id={`btn-edit-q-${q.id}`}
                             onClick={() => {
+                              const isMulti = q.type === 'MR' || (q.correctAnswerIndices && q.correctAnswerIndices.length > 1);
+                              const initialType: 'MC' | 'MR' = isMulti ? 'MR' : 'MC';
+                              const initialIndices = q.correctAnswerIndices && q.correctAnswerIndices.length > 0
+                                ? q.correctAnswerIndices
+                                : [typeof q.correctAnswerIndex === 'number' ? q.correctAnswerIndex : 0];
+
                               setEditingQuestion(q);
                               setIsCreatingQuestion(false);
+                              setQType(initialType);
+                              setQCorrectIndices(initialIndices);
+                              setQCorrect(initialIndices[0] ?? 0);
                               setQText(q.questionText);
-                              setQOptions(q.options);
-                              setQCorrect(q.correctAnswerIndex);
+                              setQOptions([...q.options]);
                               setQSubjectId(q.subjectId || effectiveActiveSubject.id);
                               setQScore(q.score !== undefined ? q.score : 20);
                               setQImageUrl(q.imageUrl || '');
@@ -3359,14 +3509,18 @@ export default function AdminPanel({
                       <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 mt-4 pt-4 border-t border-slate-50 text-xs">
                         {q.options.map((opt, oIdx) => {
                           const optLetter = String.fromCharCode(65 + oIdx);
-                          const isCorrect = q.correctAnswerIndex === oIdx;
+                          const isMulti = q.type === 'MR' || (q.correctAnswerIndices && q.correctAnswerIndices.length > 1);
+                          const correctIndices = isMulti
+                            ? (q.correctAnswerIndices && q.correctAnswerIndices.length > 0 ? q.correctAnswerIndices : [q.correctAnswerIndex ?? 0])
+                            : [typeof q.correctAnswerIndex === 'number' ? q.correctAnswerIndex : 0];
+                          const isCorrect = correctIndices.includes(oIdx);
 
                           return (
                             <div
                               key={oIdx}
                               className={`p-2.5 rounded-lg flex items-center gap-2 border ${
                                 isCorrect
-                                  ? 'bg-emerald-50 border-emerald-250 text-emerald-800 font-semibold'
+                                  ? 'bg-emerald-50 border-emerald-300 text-emerald-900 font-semibold'
                                   : 'bg-slate-50 border-transparent text-slate-500'
                               }`}
                             >
@@ -3377,7 +3531,12 @@ export default function AdminPanel({
                               }`}>
                                 {optLetter}
                               </span>
-                              <span className="truncate">{opt}</span>
+                              <span className="truncate flex-1">{opt}</span>
+                              {isCorrect && (
+                                <span className="text-[10px] bg-emerald-100 text-emerald-800 font-bold px-1.5 py-0.5 rounded ml-auto flex items-center gap-0.5 shrink-0">
+                                  <Check className="w-2.5 h-2.5" /> Kunci
+                                </span>
+                              )}
                             </div>
                           );
                         })}

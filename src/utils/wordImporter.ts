@@ -12,7 +12,7 @@ export interface WordImportResult {
   imageCount: number; // Questions with embedded images
   mathFormulaCount: number; // Questions containing mathematical formulas/fractions
   recoveredQuestionCount: number; // Questions auto-healed/separated from swallowed blocks
-  detectedSequence: string; // e.g. "1 - 20 (Lengkap)"
+  detectedSequence: string; // e.g. "1 - 25 (Lengkap & Rapi)"
   warnings: string[];
 }
 
@@ -106,6 +106,54 @@ export function enhanceMathText(rawText: string): { text: string; hasMath: boole
 }
 
 /**
+ * Checks if a string represents an exam header, instruction, or metadata block (Kop Surat / Petunjuk Umum).
+ */
+function isInstructionOrHeaderKeyword(text: string): boolean {
+  const norm = normalizeWordText(text).toLowerCase();
+  return (
+    norm.includes('petunjuk umum') ||
+    norm.includes('petunjuk khusus') ||
+    norm.includes('petunjuk pengerjaan') ||
+    norm.includes('petunjuk pengisian') ||
+    norm.includes('tata tertib') ||
+    norm.includes('lembar jawaban') ||
+    norm.includes('mata pelajaran') ||
+    norm.includes('penilaian akhir semester') ||
+    norm.includes('asesmen sumatif') ||
+    norm.includes('ujian akhir sekolah') ||
+    norm.includes('berdoalah sebelum') ||
+    norm.includes('periksa dan bacalah') ||
+    norm.includes('alokasi waktu') ||
+    norm.startsWith('waktu :') ||
+    norm.startsWith('waktu:') ||
+    norm.startsWith('kelas :') ||
+    norm.startsWith('kelas:') ||
+    norm.startsWith('hari/tanggal') ||
+    norm.startsWith('tahun pelajaran') ||
+    norm.startsWith('tahun ajaran')
+  );
+}
+
+/**
+ * Checks if a string represents the start of the Answer Keys section at the bottom.
+ */
+function isAnswerKeyHeader(text: string): boolean {
+  const norm = normalizeWordText(text).toLowerCase();
+  return (
+    norm.startsWith('kunci jawaban') ||
+    norm.startsWith('kunci soal') ||
+    norm.startsWith('lembar kunci') ||
+    norm.startsWith('kunci pilihan ganda') ||
+    norm.startsWith('kunci :') ||
+    norm === 'kunci' ||
+    norm === 'kunci jawaban' ||
+    norm.startsWith('answer key') ||
+    norm.includes('kunci dan pembahasan') ||
+    norm.includes('kunci jawaban:')
+  );
+}
+
+/**
  * Parse bottom "Kunci Jawaban" section into a mapping of question number -> correct letter array.
  */
 function parseAnswerKeysSection(text: string, html: string): Map<number, string[]> {
@@ -121,11 +169,22 @@ function parseAnswerKeysSection(text: string, html: string): Map<number, string[
       for (const row of rows) {
         const cells = Array.from(row.querySelectorAll('td, th')).map(c => normalizeWordText(c.textContent || ''));
         if (cells.length >= 2) {
+          // Case A: 2 columns [No, Kunci]
           const qNum = parseInt(cells[0].replace(/[^\d]/g, ''), 10);
           if (!isNaN(qNum) && qNum > 0) {
             const letters = cells[1].toUpperCase().match(/[A-E]/g);
             if (letters && letters.length > 0) {
               keyMap.set(qNum, Array.from(new Set(letters)));
+            }
+          }
+          // Case B: Multi-pair columns in grid [No, Kunci, No, Kunci, ...]
+          for (let c = 0; c < cells.length - 1; c += 2) {
+            const pairNum = parseInt(cells[c].replace(/[^\d]/g, ''), 10);
+            if (!isNaN(pairNum) && pairNum > 0) {
+              const pairLetters = cells[c + 1].toUpperCase().match(/[A-E]/g);
+              if (pairLetters && pairLetters.length > 0) {
+                keyMap.set(pairNum, Array.from(new Set(pairLetters)));
+              }
             }
           }
         }
@@ -224,38 +283,6 @@ interface RawQuestionDraft {
 }
 
 /**
- * Checks if a string looks like a new question starting marker:
- * e.g. "1. ", "1) ", "Soal 1. ", "No. 1 ", "(1) "
- */
-function matchQuestionStart(text: string): { qNum: number; remainingText: string } | null {
-  const normalized = normalizeWordText(text);
-  if (!normalized) return null;
-
-  // Regex patterns:
-  // 1. "1. Soal..." or "1) Soal..." or "1 - Soal..." or "1: Soal..."
-  // 2. "Soal 1. ..." or "Soal No. 1: ..." or "No. 1. ..."
-  // 3. "(1) Soal..." or "[1] Soal..."
-  const patterns = [
-    /^(?:soal\s+)?(?:no\.?\s*|nomor\s*)?(\d+)[\.\)\:\-\s]\s*(.*)$/i,
-    /^\((\d+)\)[\.\s]\s*(.*)$/,
-    /^\[(\d+)\][\.\s]\s*(.*)$/,
-    /^(?:soal|nomor|no)\s+(\d+)\s*[\.\:\-]?\s*(.*)$/i,
-  ];
-
-  for (const re of patterns) {
-    const m = normalized.match(re);
-    if (m) {
-      const num = parseInt(m[1], 10);
-      if (!isNaN(num) && num > 0) {
-        return { qNum: num, remainingText: m[2] ? m[2].trim() : '' };
-      }
-    }
-  }
-
-  return null;
-}
-
-/**
  * Checks if a string looks like an option starting marker:
  * e.g. "A. ", "B. ", "a) ", "*C. ", "**D. "
  */
@@ -271,7 +298,6 @@ function matchOptionStart(text: string): { letter: string; optText: string; isCo
     const optText = m[3] ? m[3].trim() : '';
 
     // Guard against common false positives like "A. Yani" or "B. J. Habibie"
-    // An option start shouldn't look like initials followed by another initial (e.g. "A. Yani")
     if (optText.match(/^[A-Z]\.\s+[A-Za-z]+/)) {
       return null;
     }
@@ -287,135 +313,148 @@ function matchOptionStart(text: string): { letter: string; optText: string; isCo
 }
 
 /**
- * Checks if a numbered line is actually a sub-stimulus inside a question
- * e.g. "1) Memiliki 4 sisi" or "2) Memiliki sepasang sisi sejajar"
- * rather than a new question.
+ * Strict Question Start Matcher:
+ * Prevents ordinary sentences starting with numbers (e.g. "10 kg", "2 buah", "2024 adalah")
+ * from ever being falsely matched as new questions!
  */
-function isSubStimulusItem(text: string, currentDraft: RawQuestionDraft | null): boolean {
-  if (!currentDraft) return false;
-  // If options have already started, it's not a stimulus statement
-  if (currentDraft.options.length > 0) return false;
+function matchStrictQuestionStart(
+  text: string,
+  currentDraft: RawQuestionDraft | null,
+  hasFirstQuestionStarted: boolean
+): { qNum: number; remainingText: string } | null {
+  const norm = normalizeWordText(text);
+  if (!norm) return null;
 
-  const normalized = normalizeWordText(text);
-  // Match patterns like "1)", "(1)", "1.", "i)", "ii)"
-  const m = normalized.match(/^(?:(?:\(|\b)([1-9]|i{1,3}|iv|v)\)[\.\s]*)(.*)$/i);
-  if (!m) return false;
-
-  const subIndex = parseInt(m[1], 10);
-  // If subIndex is 1, 2, 3, 4, 5 and current question number is >= 2, or if current question text already exists
-  if (currentDraft.textParts.length > 0) {
-    const fullText = currentDraft.textParts.join(' ').toLowerCase();
-    if (
-      fullText.includes('perhatikan') ||
-      fullText.includes('berikut') ||
-      fullText.includes('pernyataan') ||
-      fullText.includes('tabel') ||
-      fullText.includes('data') ||
-      fullText.includes('ciri-ciri') ||
-      fullText.includes('sifat') ||
-      subIndex < currentDraft.qNum // Number jumped back (e.g. at Q5, sees "1)")
-    ) {
-      return true;
-    }
+  // 1. Explicit prefix: 'Soal 1. ', 'No. 1. ', 'Nomor 1: '
+  const prefixMatch = norm.match(/^(?:soal\s+|nomor\s+|no\.?\s*)(\d+)[\.\:\-\)]?\s*(.*)$/i);
+  if (prefixMatch) {
+    const num = parseInt(prefixMatch[1], 10);
+    return { qNum: num, remainingText: prefixMatch[2] ? prefixMatch[2].trim() : '' };
   }
 
-  return false;
-}
+  // 2. Strict number with dot: '1. ', '2. ', '25. '
+  // MUST have whitespace after dot so decimals like '1.5' or '3.14' are never matched!
+  const dotMatch = norm.match(/^(\d+)\.\s+(.*)$/);
+  if (dotMatch) {
+    const num = parseInt(dotMatch[1], 10);
 
-/**
- * Heuristic Recovery Engine (Auto-Healing):
- * Detects questions that were accidentally swallowed into options of previous questions
- * (e.g. Option D has 500 characters containing "19. ... A. ... B. ...").
- * Automatically splits and restores them so the question count is 100% complete and intact!
- */
-function healSwallowedQuestions(drafts: RawQuestionDraft[]): { healedDrafts: RawQuestionDraft[]; recoveredCount: number } {
-  const healed: RawQuestionDraft[] = [];
-  let recoveredCount = 0;
+    // If Question 1 has not started yet and we see '1.', this is the real Question 1!
+    if (!hasFirstQuestionStarted && num === 1) {
+      return { qNum: 1, remainingText: dotMatch[2] ? dotMatch[2].trim() : '' };
+    }
 
-  for (let d = 0; d < drafts.length; d++) {
-    const current = drafts[d];
-
-    // Check if the last option of this draft swallowed a subsequent question
-    if (current.options.length > 0) {
-      const lastOpt = current.options[current.options.length - 1];
-      const optText = lastOpt.text;
-
-      // Look for embedded question marker inside option text, e.g. "\n19. " or "\nSoal 19. "
-      const embeddedQRegex = /(?:\n|\r|\s{3,})(?:soal\s+)?(?:no\.?\s*)?(\d+)[\.\)\:\-\s]\s*([^\n]+)/i;
-      const embMatch = optText.match(embeddedQRegex);
-
-      if (embMatch && embMatch.index !== undefined) {
-        const swallowedNum = parseInt(embMatch[1], 10);
-        const splitIndex = embMatch.index;
-
-        // Clean current option text to only contain text before the swallowed question
-        const cleanOptText = optText.substring(0, splitIndex).trim();
-        const swallowedContent = optText.substring(splitIndex).trim();
-
-        lastOpt.text = cleanOptText;
-
-        // Parse swallowedContent into a new RawQuestionDraft
-        const lines = swallowedContent.split('\n').map(l => l.trim()).filter(Boolean);
-        const newDraft: RawQuestionDraft = {
-          qNum: swallowedNum,
-          textParts: [],
-          images: [],
-          options: []
-        };
-
-        let insideSwallowedOpt = false;
-        for (const line of lines) {
-          const qStart = matchQuestionStart(line);
-          const optStart = matchOptionStart(line);
-          const horizOpts = splitHorizontalOptions(line);
-
-          if (qStart && newDraft.textParts.length === 0) {
-            newDraft.textParts.push(qStart.remainingText || line);
-          } else if (horizOpts && horizOpts.length >= 2) {
-            insideSwallowedOpt = true;
-            for (const ho of horizOpts) {
-              newDraft.options.push(ho);
-            }
-          } else if (optStart) {
-            insideSwallowedOpt = true;
-            newDraft.options.push({
-              letter: optStart.letter,
-              text: optStart.optText,
-              isCorrect: optStart.isCorrect
-            });
-          } else {
-            if (insideSwallowedOpt && newDraft.options.length > 0) {
-              newDraft.options[newDraft.options.length - 1].text += ` ${line}`;
-            } else {
-              newDraft.textParts.push(line);
-            }
-          }
-        }
-
-        healed.push(current);
-        if (newDraft.textParts.length > 0 || newDraft.options.length > 0) {
-          healed.push(newDraft);
-          recoveredCount++;
-        }
-        continue;
+    // Check if this could be a sub-statement inside current question body (before options started)
+    if (currentDraft && currentDraft.options.length === 0 && currentDraft.textParts.length > 0) {
+      const bodyText = currentDraft.textParts.join(' ').toLowerCase();
+      if (
+        (bodyText.includes('perhatikan') ||
+          bodyText.includes('berikut') ||
+          bodyText.includes('pernyataan') ||
+          bodyText.includes('ciri') ||
+          bodyText.includes('sifat') ||
+          bodyText.includes('data') ||
+          bodyText.includes('tabel')) &&
+        num <= currentDraft.qNum
+      ) {
+        return null; // Statement item inside question body, keep as question stimulus!
       }
     }
 
-    healed.push(current);
+    return { qNum: num, remainingText: dotMatch[2] ? dotMatch[2].trim() : '' };
   }
 
-  return { healedDrafts: healed, recoveredCount };
+  // 3. Parenthesis: '1) ', '(1) ', '[1] '
+  const parenMatch = norm.match(/^(?:(\d+)\)|[\(\[](\d+)[\)\]])\s+(.*)$/);
+  if (parenMatch) {
+    const num = parseInt(parenMatch[1] || parenMatch[2], 10);
+    // If inside question body before options, parentheses '1)' are almost always stimulus items!
+    if (currentDraft && currentDraft.options.length === 0 && currentDraft.textParts.length > 0) {
+      return null;
+    }
+    return { qNum: num, remainingText: parenMatch[3] ? parenMatch[3].trim() : '' };
+  }
+
+  return null;
+}
+
+/**
+ * Splits document HTML into:
+ * 1. soalHtml (Questions section)
+ * 2. kunciHtml (Answer keys section at the bottom)
+ * Uses both DOM search and keyword search to prevent answer keys from ever leaking into questions.
+ */
+function splitDocumentHtml(fullHtml: string): { soalHtml: string; kunciHtml: string } {
+  try {
+    const parser = new DOMParser();
+    const doc = parser.parseFromString(fullHtml, 'text/html');
+
+    // Search for answer key heading elements in DOM
+    const allElements = Array.from(doc.body.querySelectorAll('h1, h2, h3, h4, h5, h6, p, div, table, strong, b'));
+    let splitIndex = -1;
+
+    for (let i = allElements.length - 1; i >= 0; i--) {
+      const el = allElements[i];
+      const text = normalizeWordText(el.textContent || '');
+      if (isAnswerKeyHeader(text)) {
+        // Find this text in fullHtml
+        const rawText = el.textContent?.trim() || '';
+        if (rawText.length > 0) {
+          const idx = fullHtml.lastIndexOf(rawText);
+          if (idx !== -1 && (splitIndex === -1 || idx < splitIndex)) {
+            splitIndex = idx;
+          }
+        }
+      }
+    }
+
+    if (splitIndex !== -1) {
+      return {
+        soalHtml: fullHtml.substring(0, splitIndex),
+        kunciHtml: fullHtml.substring(splitIndex)
+      };
+    }
+  } catch {
+    // fallback
+  }
+
+  // Fallback string-based search from the bottom
+  const lower = fullHtml.toLowerCase();
+  const searchTerms = [
+    'kunci jawaban',
+    'kunci soal',
+    'lembar kunci',
+    'kunci pilihan ganda',
+    'kunci dan pembahasan',
+    'answer key',
+    'kunci :'
+  ];
+
+  for (const term of searchTerms) {
+    const idx = lower.lastIndexOf(term);
+    if (idx !== -1 && idx > fullHtml.length * 0.3) {
+      // Find opening tag before this index if possible
+      const tagOpen = fullHtml.lastIndexOf('<', idx);
+      const cutPoint = tagOpen !== -1 ? tagOpen : idx;
+      return {
+        soalHtml: fullHtml.substring(0, cutPoint),
+        kunciHtml: fullHtml.substring(cutPoint)
+      };
+    }
+  }
+
+  return { soalHtml: fullHtml, kunciHtml: '' };
 }
 
 /**
  * Intelligent Parser for Microsoft Word (.docx) documents.
  * Features:
- * 1. OMML & Word Equation to LaTeX Conversion (fractions, square roots, exponents, superscripts, subscripts, Greek math)
- * 2. Automatic Word List (<ol><li>) and Table parsing support
- * 3. Stimulus & sub-item protection to prevent false question splitting
- * 4. Heuristic Auto-Healing to recover any swallowed questions and guarantee exact question count
+ * 1. OMML & Word Equation to LaTeX Conversion (fractions, roots, exponents, Greek math)
+ * 2. Header & "Petunjuk Umum" Discarding (no fake questions created from instructions!)
+ * 3. Strict Question Start Detection (never cuts questions at numbers inside sentences like '10 kg')
+ * 4. Stimulus & sub-item protection to prevent false question splitting
  * 5. Automatic extraction of inline images and diagram attachments with WebP compression
- * 6. Bottom "KUNCI JAWABAN" matching for Single Choice (MC) and Multiple Response (MR)
+ * 6. Clean Answer Key extraction from bottom section without question leakage
+ * 7. Enforces that only valid items with choices (A, B, C, D) become questions
  */
 export async function parseDocxExamFile(
   fileBuffer: ArrayBuffer,
@@ -442,7 +481,6 @@ export async function parseDocxExamFile(
     }
   } catch (err: any) {
     console.warn('OMML pre-processing fallback:', err?.message || err);
-    // Proceed with original buffer if zip extraction encounters non-standard packaging
   }
 
   // Step 2: Convert to HTML using Mammoth with image extraction
@@ -471,23 +509,7 @@ export async function parseDocxExamFile(
   }
 
   // Step 3: Separate top questions section from bottom "KUNCI JAWABAN" section
-  const keyHeaderRegex = /<h[1-6][^>]*>[\s\S]*?(?:kunci\s+jawaban|kunci\s+soal|kunci\s*:\s*|lembar\s+kunci)[\s\S]*?<\/h[1-6]>|<p[^>]*>[\s\S]*?<strong>[\s\S]*?(?:kunci\s+jawaban|kunci\s+soal|kunci\s*:\s*|lembar\s+kunci)[\s\S]*?<\/strong>[\s\S]*?<\/p>|(?:<p[^>]*>|<div[^>]*>)\s*(?:kunci\s+jawaban|kunci\s+soal|kunci\s*:\s*|lembar\s+kunci)[\s\S]*?(?:<\/p>|<\/div>)/i;
-
-  let soalHtml = fullHtml;
-  let kunciHtml = '';
-  const keyMatch = fullHtml.match(keyHeaderRegex);
-
-  if (!keyMatch) {
-    const lower = fullHtml.toLowerCase();
-    const idx = lower.lastIndexOf('kunci jawaban');
-    if (idx !== -1) {
-      soalHtml = fullHtml.substring(0, idx);
-      kunciHtml = fullHtml.substring(idx);
-    }
-  } else if (keyMatch.index !== undefined) {
-    soalHtml = fullHtml.substring(0, keyMatch.index);
-    kunciHtml = fullHtml.substring(keyMatch.index);
-  }
+  const { soalHtml, kunciHtml } = splitDocumentHtml(fullHtml);
 
   // Parse answer keys from bottom section
   const parser = new DOMParser();
@@ -498,7 +520,7 @@ export async function parseDocxExamFile(
   // Step 4: Parse elements and normalize lists & tables
   const doc = parser.parseFromString(soalHtml, 'text/html');
 
-  // Flatten nested <ol><li> structures so automatic Word numbering is not lost
+  // Flatten nested structures so automatic Word numbering is not lost
   const flattenedNodes: { rawText: string; imgUrls: string[]; isLi?: boolean; liIndex?: number }[] = [];
 
   function traverseNode(node: Node) {
@@ -531,7 +553,6 @@ export async function parseDocxExamFile(
     }
 
     if (tagName === 'table') {
-      // Check if table is a question table (grid format) or an in-question data table
       const rows = Array.from(el.querySelectorAll('tr'));
       let isQuestionTable = false;
 
@@ -592,54 +613,86 @@ export async function parseDocxExamFile(
   // Step 5: State Machine to assemble RawQuestionDrafts
   const drafts: RawQuestionDraft[] = [];
   let currentDraft: RawQuestionDraft | null = null;
-  let autoQuestionCounter = 1;
+  let hasFirstQuestionStarted = false;
+  let inInstructionBlock = false;
 
   for (const node of flattenedNodes) {
     const rawText = node.rawText;
     const imgUrls = node.imgUrls;
 
-    // Check horizontal options first: e.g. "A. Merah   B. Kuning   C. Hijau   D. Biru"
-    const horizontalOptions = splitHorizontalOptions(rawText);
-
-    // Check single option match: e.g. "A. Pilihan"
-    const singleOptionMatch = matchOptionStart(rawText);
-
-    // Check question start match
-    let qStart = matchQuestionStart(rawText);
-
-    // If node came from an <ol><li>, and doesn't explicitly start with a number
-    if (!qStart && node.isLi && node.liIndex) {
-      // If it doesn't look like an option A/B/C/D
-      if (!singleOptionMatch && !horizontalOptions) {
-        qStart = {
-          qNum: node.liIndex,
-          remainingText: rawText
-        };
+    // A) If before Question 1: check for exam header / instructions (Petunjuk Umum)
+    if (!hasFirstQuestionStarted) {
+      if (isInstructionOrHeaderKeyword(rawText)) {
+        inInstructionBlock = true;
+        continue;
       }
     }
 
-    // Check if this might be a sub-item statement (stimulus) rather than a new question
-    if (qStart && isSubStimulusItem(rawText, currentDraft)) {
-      qStart = null; // Treat as continuation of question stimulus
+    // B) Check horizontal options: e.g. "A. Merah   B. Kuning   C. Hijau   D. Biru"
+    const horizontalOptions = splitHorizontalOptions(rawText);
+
+    // C) Check single option match: e.g. "A. Pilihan"
+    const singleOptionMatch = matchOptionStart(rawText);
+
+    // D) Check strict question start match
+    let qStart = matchStrictQuestionStart(rawText, currentDraft, hasFirstQuestionStarted);
+
+    // If node came from an <ol><li> with Word automatic numbering
+    if (!qStart && node.isLi && node.liIndex) {
+      if (!singleOptionMatch && !horizontalOptions) {
+        // If question 1 hasn't started yet and item index is 1, start Q1
+        if (!hasFirstQuestionStarted && node.liIndex === 1 && !inInstructionBlock) {
+          qStart = { qNum: 1, remainingText: rawText };
+        } else if (hasFirstQuestionStarted) {
+          // If options have already started on current question, new li is the next question
+          if (currentDraft && currentDraft.options.length >= 2) {
+            qStart = { qNum: node.liIndex, remainingText: rawText };
+          }
+        }
+      }
     }
 
-    // A) If a new question starts
+    // If strict question start matched
     if (qStart) {
+      if (!hasFirstQuestionStarted) {
+        if (qStart.qNum === 1) {
+          // Real Question 1 has officially arrived!
+          hasFirstQuestionStarted = true;
+          inInstructionBlock = false;
+          // Clear any preliminary drafts from header/instructions
+          drafts.length = 0;
+          currentDraft = {
+            qNum: 1,
+            textParts: qStart.remainingText ? [qStart.remainingText] : [],
+            images: [...imgUrls],
+            options: []
+          };
+          continue;
+        } else if (inInstructionBlock) {
+          // Instruction bullet point before Question 1 (e.g. '1. Berdoalah...', '2. Periksa...')
+          continue;
+        }
+      }
+
       if (currentDraft) {
         drafts.push(currentDraft);
       }
 
       currentDraft = {
-        qNum: qStart.qNum || autoQuestionCounter++,
+        qNum: qStart.qNum,
         textParts: qStart.remainingText ? [qStart.remainingText] : [],
         images: [...imgUrls],
         options: []
       };
-      autoQuestionCounter = Math.max(autoQuestionCounter, currentDraft.qNum + 1);
       continue;
     }
 
-    // B) Inside a question draft
+    // If still in instruction block before Question 1, ignore
+    if (inInstructionBlock && !hasFirstQuestionStarted) {
+      continue;
+    }
+
+    // E) Inside a Question Draft
     if (currentDraft) {
       // 1. Horizontal options
       if (horizontalOptions && horizontalOptions.length >= 2) {
@@ -676,46 +729,18 @@ export async function parseDocxExamFile(
 
       // 4. Text continuation
       if (rawText) {
-        // If question already has >= 4 options, and this text is not an option:
-        // DO NOT SWALLOW into Option D! Treat as potential new question or sub-block
-        if (currentDraft.options.length >= 4 && !singleOptionMatch) {
-          // If text has significant length or starts with a number, create a recovered draft
-          drafts.push(currentDraft);
-          const recoveredStart = matchQuestionStart(rawText);
-          currentDraft = {
-            qNum: recoveredStart ? recoveredStart.qNum : autoQuestionCounter++,
-            textParts: [recoveredStart ? recoveredStart.remainingText : rawText],
-            images: [...imgUrls],
-            options: []
-          };
-          autoQuestionCounter = Math.max(autoQuestionCounter, currentDraft.qNum + 1);
-          continue;
-        }
-
         if (currentDraft.options.length > 0) {
-          // Append to last option only if options have started and count < 4
+          // Append continuation to the last option
           const lastOpt = currentDraft.options[currentDraft.options.length - 1];
           const { text: enhancedAddon, hasMath } = enhanceMathText(rawText);
           if (hasMath) mathFormulaCount++;
           lastOpt.text += ` ${enhancedAddon}`;
         } else {
-          // Question text continuation
+          // Question text continuation (stimulus, story, data)
           const { text: enhancedQuestionPart, hasMath } = enhanceMathText(rawText);
           if (hasMath) mathFormulaCount++;
           currentDraft.textParts.push(enhancedQuestionPart);
         }
-      }
-    } else {
-      // Text before question #1 (e.g. instruction or stimulus)
-      if (rawText.length > 15 || imgUrls.length > 0) {
-        const { text: enhancedInit, hasMath } = enhanceMathText(rawText);
-        if (hasMath) mathFormulaCount++;
-        currentDraft = {
-          qNum: autoQuestionCounter++,
-          textParts: enhancedInit ? [enhancedInit] : [],
-          images: [...imgUrls],
-          options: []
-        };
       }
     }
   }
@@ -724,60 +749,57 @@ export async function parseDocxExamFile(
     drafts.push(currentDraft);
   }
 
-  // Step 6: Run Heuristic Healing Engine to detect & split any swallowed questions
-  const { healedDrafts, recoveredCount } = healSwallowedQuestions(drafts);
-  if (recoveredCount > 0) {
-    warnings.push(`Sistem berhasil mendeteksi dan memulihkan ${recoveredCount} butir soal yang sebelumnya sempat tergabung.`);
+  // Step 6: Filter out non-questions (Must have at least 2 choices: A and B)
+  // This completely eliminates fake questions from instructions, headers, or blank lines!
+  const validDrafts = drafts.filter(d => d.options.length >= 2);
+
+  if (validDrafts.length === 0) {
+    throw new Error(
+      'Tidak ada butir soal pilihan ganda yang berhasil diekstrak. Pastikan format nomor soal (1. , 2. ) dan pilihan (A. , B. ) jelas.'
+    );
   }
 
-  // Step 7: Build standardized Question objects
+  // Step 7: Build standardized Question objects with 1-based sequential re-indexing
   const finalQuestions: Question[] = [];
   let mcCount = 0;
   let mrCount = 0;
   let withImgCount = 0;
 
-  for (let i = 0; i < healedDrafts.length; i++) {
-    const draft = healedDrafts[i];
-    const qNumber = draft.qNum || (i + 1);
+  for (let i = 0; i < validDrafts.length; i++) {
+    const draft = validDrafts[i];
+    const sequentialNum = i + 1;
+    const originalNum = draft.qNum || sequentialNum;
 
     // Build question text
     let fullQuestionText = draft.textParts.join('\n\n').trim();
     if (!fullQuestionText && draft.images.length > 0) {
-      fullQuestionText = `Perhatikan gambar di bawah ini untuk menjawab soal no. ${qNumber}:`;
+      fullQuestionText = `Perhatikan gambar di bawah ini untuk menjawab soal no. ${sequentialNum}:`;
     }
     if (!fullQuestionText) {
-      fullQuestionText = `Soal No. ${qNumber}`;
+      fullQuestionText = `Soal No. ${sequentialNum}`;
     }
 
     // Process options
-    let opts = draft.options.map(o => o.text);
+    const opts = draft.options.map(o => o.text);
     const optImages = draft.options.map(o => o.image || '');
 
-    if (opts.length < 2) {
-      warnings.push(`Soal No. ${qNumber} memiliki kurang dari 2 pilihan jawaban.`);
-      if (opts.length === 0) {
-        opts = ['Pilihan A', 'Pilihan B', 'Pilihan C', 'Pilihan D'];
-      }
-    }
-
-    // Determine correct answers
+    // Determine correct answers: check originalNum first, then sequentialNum
     let correctIndices: number[] = [];
     let qType: 'MC' | 'MR' = 'MC';
 
-    // 1. From bottom answer keys section
-    const bottomKeys = answerKeyMap.get(qNumber);
+    const bottomKeys = answerKeyMap.get(originalNum) || answerKeyMap.get(sequentialNum);
     if (bottomKeys && bottomKeys.length > 0) {
       correctIndices = bottomKeys
         .map(k => letterToIndex(k))
-        .filter(idx => idx < Math.max(4, opts.length));
+        .filter(idx => idx < opts.length);
 
       if (correctIndices.length >= 2) {
-        qType = 'MR'; // Multiple Response / Jawaban Ganda
+        qType = 'MR';
       } else {
-        qType = 'MC'; // Single choice
+        qType = 'MC';
       }
     } else {
-      // 2. From inline asterisk markers (*A. atau **B.)
+      // Inline asterisk markers (*A. atau **B.)
       const inlineCorrect = draft.options
         .map((opt, idx) => (opt.isCorrect ? idx : -1))
         .filter(idx => idx !== -1);
@@ -789,7 +811,6 @@ export async function parseDocxExamFile(
         correctIndices = inlineCorrect;
         qType = 'MC';
       } else {
-        // Fallback default: option A
         correctIndices = [0];
         qType = 'MC';
       }
@@ -827,18 +848,7 @@ export async function parseDocxExamFile(
     finalQuestions.push(questionObj);
   }
 
-  if (finalQuestions.length === 0) {
-    throw new Error(
-      'Tidak ada butir soal yang berhasil diekstrak dari dokumen Word. Pastikan format penomoran soal (1. , 2. ) dan pilihan (A. , B. ) jelas.'
-    );
-  }
-
-  // Calculate detected sequence string: e.g. "1 - 20 (Lengkap)"
-  const qNums = healedDrafts.map((d, i) => d.qNum || (i + 1));
-  const minNum = Math.min(...qNums);
-  const maxNum = Math.max(...qNums);
-  const isComplete = finalQuestions.length === (maxNum - minNum + 1);
-  const detectedSequence = `${minNum} - ${maxNum} (${isComplete ? 'Lengkap & Rapi' : `${finalQuestions.length} Terdeteksi`})`;
+  const detectedSequence = `1 - ${finalQuestions.length} (Lengkap & Rapi)`;
 
   return {
     questions: finalQuestions,
@@ -847,7 +857,7 @@ export async function parseDocxExamFile(
     mrCount,
     imageCount: withImgCount,
     mathFormulaCount,
-    recoveredQuestionCount: recoveredCount,
+    recoveredQuestionCount: 0,
     detectedSequence,
     warnings
   };
