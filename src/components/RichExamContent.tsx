@@ -34,8 +34,25 @@ export function formatMathSegment(raw: string): string {
       return katex.renderToString(math, { displayMode: false, throwOnError: false });
     }
 
-    // 3. If contains raw LaTeX math command without $ (e.g. \frac{1}{2}, \sqrt{25}, \pi)
-    if (raw.includes('\\frac') || raw.includes('\\sqrt') || raw.includes('\\pi') || raw.includes('\\alpha') || raw.includes('\\beta')) {
+    // 3. If contains raw LaTeX math command without $ (e.g. \frac{1}{2}, \sqrt{25}, \pi, \pm, \times)
+    if (
+      raw.includes('\\frac') ||
+      raw.includes('\\sqrt') ||
+      raw.includes('\\pi') ||
+      raw.includes('\\alpha') ||
+      raw.includes('\\beta') ||
+      raw.includes('\\pm') ||
+      raw.includes('\\times') ||
+      raw.includes('\\div') ||
+      raw.includes('\\left') ||
+      raw.includes('\\sum') ||
+      raw.includes('\\int') ||
+      raw.includes('\\le') ||
+      raw.includes('\\ge') ||
+      raw.includes('\\ne') ||
+      raw.includes('^{') ||
+      raw.includes('_{')
+    ) {
       return katex.renderToString(raw, { displayMode: false, throwOnError: false });
     }
   } catch (err) {

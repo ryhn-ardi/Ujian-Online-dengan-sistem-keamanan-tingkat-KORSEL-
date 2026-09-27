@@ -3,6 +3,7 @@ import { Play, AlertTriangle, ShieldAlert, KeyRound, Clock, ChevronLeft, Chevron
 import { Student, Question, ExamConfig } from '../types';
 import { getStudentFromServer } from '../utils/sync';
 import { RichExamContent } from './RichExamContent';
+import { useRealtimeWIB } from '../utils/timeWib';
 
 // Synthesizer Siren Alarm (Emergency high-frequency sweeping pitch)
 function playSirenAlarm() {
@@ -110,6 +111,7 @@ export default function StudentExam({
   const [isGraceActive, setIsGraceActive] = useState(false);
   const [violationToast, setViolationToast] = useState<{ message: string; count: number; max: number } | null>(null);
   const isUnlockingRef = useRef(false);
+  const wibClock = useRealtimeWIB();
 
   const isFullscreenSupported = typeof document !== 'undefined' && !!(
     document.documentElement?.requestFullscreen ||
@@ -842,7 +844,14 @@ export default function StudentExam({
             <h2 className="text-lg font-bold truncate tracking-tight">{student.name}</h2>
           </div>
 
-          <div className="flex items-center gap-4">
+          <div className="flex items-center gap-3 sm:gap-4">
+            {/* Real-time WIB Clock */}
+            <div className="hidden sm:flex items-center gap-2 bg-slate-800/90 border border-slate-700/80 px-3 py-2 rounded-xl text-slate-300 font-mono text-xs shadow-xs">
+              <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
+              <span className="text-[10px] text-slate-400 font-bold uppercase">WIB:</span>
+              <span className="font-bold text-white tracking-wide">{wibClock.formattedTimeOnly}</span>
+            </div>
+
             {/* Timer countdown view */}
             <div className="flex items-center gap-2 bg-slate-800 border border-slate-700 px-4 py-2 rounded-xl text-yellow-400 font-mono font-bold text-lg min-w-[120px] justify-center shadow-inner">
               <Clock className="w-5 h-5 shrink-0" />

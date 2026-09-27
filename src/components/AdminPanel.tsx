@@ -1,10 +1,12 @@
 import React, { useState, useRef } from 'react';
-import { Users, FileSpreadsheet, RefreshCw, KeyRound, Edit, Trash2, Plus, Save, BookOpen, Clock, X, ChevronRight, Check, AlertTriangle, ShieldCheck, Search, Eye, EyeOff, Layers, Settings2, Sparkles, Ticket, Download, Upload, Shuffle, UserCheck, Lock, CheckCircle2, ChevronLeft, Image as ImageIcon, AlignLeft, HelpCircle } from 'lucide-react';
+import { Users, FileSpreadsheet, RefreshCw, KeyRound, Edit, Trash2, Plus, Save, BookOpen, Clock, X, ChevronRight, Check, AlertTriangle, ShieldCheck, Search, Eye, EyeOff, Layers, Settings2, Sparkles, Ticket, Download, Upload, Shuffle, UserCheck, Lock, CheckCircle2, ChevronLeft, Image as ImageIcon, AlignLeft, HelpCircle, FileText, Calendar, Timer } from 'lucide-react';
 import * as XLSX from 'xlsx';
 import { Student, Question, ExamConfig, ExamSubject, StudentUser } from '../types';
 import { getExamSubjects, saveSingleStudent } from '../utils/sync';
 import { RichExamContent } from './RichExamContent';
 import { compressImageFile } from '../utils/imageCompressor';
+import { useRealtimeWIB, formatWIBDateTime, formatWIBShort, formatWIBTimeOnly, evaluateSubjectSchedule, toWIBDateTimeInputValue, parseWIBInputValueToISO, formatDurationCountdown } from '../utils/timeWib';
+import { parseDocxExamFile, WordImportResult } from '../utils/wordImporter';
 
 // Helper to calculate actual subject metrics for a student
 export function getStudentMetrics(s: Student, questionsList: Question[]) {
@@ -130,6 +132,14 @@ export default function AdminPanel({
   const [editSubjectIsActive, setEditSubjectIsActive] = useState(true);
   const [editSubjectEnableSampling, setEditSubjectEnableSampling] = useState(false);
   const [editSubjectSampleCount, setEditSubjectSampleCount] = useState(40);
+  const [editSubjectScheduleEnabled, setEditSubjectScheduleEnabled] = useState(false);
+  const [editSubjectScheduleDisplayStart, setEditSubjectScheduleDisplayStart] = useState('');
+  const [editSubjectScheduleDisplayEnd, setEditSubjectScheduleDisplayEnd] = useState('');
+  const [editSubjectScheduleExamStart, setEditSubjectScheduleExamStart] = useState('');
+  const [editSubjectScheduleExamEnd, setEditSubjectScheduleExamEnd] = useState('');
+
+  // Live WIB clock hook
+  const wibClock = useRealtimeWIB();
 
   // Question editor state
   const [editingQuestion, setEditingQuestion] = useState<Question | null>(null);
@@ -176,6 +186,15 @@ export default function AdminPanel({
   const [isProcessingQuestionFile, setIsProcessingQuestionFile] = useState(false);
   const [questionModalError, setQuestionModalError] = useState('');
   const [questionModalSuccess, setQuestionModalSuccess] = useState('');
+
+  // Prominent Dedicated Microsoft Word (.docx) Question Import Modal
+  const [showWordImportModal, setShowWordImportModal] = useState(false);
+  const [isProcessingWordFile, setIsProcessingWordFile] = useState(false);
+  const [wordModalError, setWordModalError] = useState('');
+  const [wordModalSuccess, setWordModalSuccess] = useState('');
+  const [parsedWordResult, setParsedWordResult] = useState<WordImportResult | null>(null);
+  const [wordImportMode, setWordImportMode] = useState<'APPEND' | 'OVERWRITE'>('APPEND');
+  const [wordImportDefaultScore, setWordImportDefaultScore] = useState<number>(10);
 
   // Modal for adding student manually in Monitor tab
   const [showAddStudentMonitorModal, setShowAddStudentMonitorModal] = useState(false);
@@ -259,7 +278,12 @@ export default function AdminPanel({
           code: editSubjectCode.trim() || s.code,
           isActive: editSubjectIsActive,
           enableRandomSampling: editSubjectEnableSampling,
-          sampleQuestionCount: Math.max(1, editSubjectSampleCount || 40)
+          sampleQuestionCount: Math.max(1, editSubjectSampleCount || 40),
+          scheduleEnabled: editSubjectScheduleEnabled,
+          scheduleDisplayStart: editSubjectScheduleDisplayStart ? parseWIBInputValueToISO(editSubjectScheduleDisplayStart) : undefined,
+          scheduleDisplayEnd: editSubjectScheduleDisplayEnd ? parseWIBInputValueToISO(editSubjectScheduleDisplayEnd) : undefined,
+          scheduleExamStart: editSubjectScheduleExamStart ? parseWIBInputValueToISO(editSubjectScheduleExamStart) : undefined,
+          scheduleExamEnd: editSubjectScheduleExamEnd ? parseWIBInputValueToISO(editSubjectScheduleExamEnd) : undefined
         };
       }
       return s;
@@ -981,6 +1005,84 @@ export default function AdminPanel({
     setShowQuestionImportModal(false);
     setParsedQuestionsPreview(null);
     alert(`Sukses mengimpor ${finalQs.length} butir soal ke Bank Soal!`);
+  };
+
+  // Helper to open Edit Subject Modal with proper state preparation
+  const handleOpenEditSubjectModal = (sub: ExamSubject) => {
+    setEditSubjectName(sub.name);
+    setEditSubjectCode(sub.code || '');
+    setEditSubjectIsActive(sub.isActive !== false);
+    setEditSubjectEnableSampling(sub.enableRandomSampling || false);
+    setEditSubjectSampleCount(sub.sampleQuestionCount || 40);
+    setEditSubjectScheduleEnabled(sub.scheduleEnabled || false);
+    setEditSubjectScheduleDisplayStart(toWIBDateTimeInputValue(sub.scheduleDisplayStart));
+    setEditSubjectScheduleDisplayEnd(toWIBDateTimeInputValue(sub.scheduleDisplayEnd));
+    setEditSubjectScheduleExamStart(toWIBDateTimeInputValue(sub.scheduleExamStart));
+    setEditSubjectScheduleExamEnd(toWIBDateTimeInputValue(sub.scheduleExamEnd));
+    setEditingSubjectModal(sub);
+  };
+
+  // Microsoft Word (.docx) Universal Question Import Handler
+  const handleWordFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    setIsProcessingWordFile(true);
+    setWordModalError('');
+    setWordModalSuccess('');
+    setParsedWordResult(null);
+
+    try {
+      if (!file.name.toLowerCase().endsWith('.docx')) {
+        throw new Error('Berkas harus berformat Microsoft Word (.docx). Silakan simpan dokumen naskah soal Anda sebagai file .docx.');
+      }
+
+      const buffer = await file.arrayBuffer();
+      const targetId = importSubjectTarget === 'current' ? effectiveActiveSubject.id : importSubjectTarget;
+      const result = await parseDocxExamFile(buffer, targetId, wordImportDefaultScore);
+
+      setParsedWordResult(result);
+      setWordModalSuccess(
+        `Berhasil membaca ${result.totalParsed} butir soal (${result.mcCount} Pilihan Ganda Tunggal, ${result.mrCount} Jawaban Ganda, ${result.imageCount} soal bergambar) dari "${file.name}"! Periksa tinjauan di bawah lalu klik tombol "Simpan & Impor".`
+      );
+    } catch (err: any) {
+      setWordModalError(err.message || 'Gagal memproses berkas Microsoft Word.');
+    } finally {
+      setIsProcessingWordFile(false);
+      e.target.value = '';
+    }
+  };
+
+  const handleConfirmWordImport = () => {
+    if (!parsedWordResult || parsedWordResult.questions.length === 0) return;
+
+    const targetSubId = importSubjectTarget === 'current' ? effectiveActiveSubject.id : importSubjectTarget;
+    const finalQs = parsedWordResult.questions.map(q => ({
+      ...q,
+      subjectId: importSubjectTarget === 'auto' ? q.subjectId : targetSubId
+    }));
+
+    let updatedQuestions: Question[] = [];
+    if (wordImportMode === 'OVERWRITE') {
+      if (importSubjectTarget === 'auto') {
+        updatedQuestions = finalQs;
+      } else {
+        const remaining = questions.filter(q => {
+          const qSub = q.subjectId || 'sub1';
+          return qSub !== targetSubId;
+        });
+        updatedQuestions = [...remaining, ...finalQs];
+      }
+    } else {
+      updatedQuestions = [...questions, ...finalQs];
+    }
+
+    onUpdateQuestions(updatedQuestions);
+    setShowWordImportModal(false);
+    setParsedWordResult(null);
+    setWordModalError('');
+    setWordModalSuccess('');
+    alert(`Sukses mengimpor ${finalQs.length} butir soal dari dokumen Microsoft Word ke Bank Soal!`);
   };
 
   // Universal File Upload Handler (.xlsx, .xls, .csv)
@@ -1716,7 +1818,19 @@ export default function AdminPanel({
             </div>
           </div>
 
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2">
+            {/* Live Real-time WIB Clock */}
+            <div className="flex items-center gap-2 bg-slate-900 border border-slate-800 px-3.5 py-1.5 rounded-xl shadow-xs">
+              <span className="relative flex h-2 w-2">
+                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+                <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span>
+              </span>
+              <div className="flex items-center gap-1.5 font-mono text-xs">
+                <span className="text-[10px] text-slate-400 font-extrabold uppercase">WIB:</span>
+                <span className="text-amber-300 font-bold">{wibClock.formattedDateTime}</span>
+              </div>
+            </div>
+
             <button
               id="btn-admin-export"
               onClick={handleExportToExcel}
@@ -2314,11 +2428,26 @@ export default function AdminPanel({
                     setQuestionModalSuccess('');
                     setShowQuestionImportModal(true);
                   }}
-                  className="px-4 py-2 bg-emerald-600 hover:bg-emerald-500 text-white font-extrabold text-xs rounded-xl transition flex items-center justify-center gap-1.5 shadow-sm cursor-pointer"
+                  className="px-3.5 py-2 bg-emerald-600 hover:bg-emerald-500 text-white font-extrabold text-xs rounded-xl transition flex items-center justify-center gap-1.5 shadow-sm cursor-pointer"
                   title="Buka panel impor soal dari file Excel (.xlsx / .xls) atau CSV"
                 >
                   <Upload className="w-3.5 h-3.5" />
-                  Import Soal Excel (.xlsx / CSV)
+                  Import Soal Excel (.xlsx)
+                </button>
+                <button
+                  id="btn-open-word-import-modal"
+                  onClick={() => {
+                    setImportSubjectTarget(effectiveActiveSubject.id);
+                    setParsedWordResult(null);
+                    setWordModalError('');
+                    setWordModalSuccess('');
+                    setShowWordImportModal(true);
+                  }}
+                  className="px-3.5 py-2 bg-blue-600 hover:bg-blue-500 text-white font-extrabold text-xs rounded-xl transition flex items-center justify-center gap-1.5 shadow-sm cursor-pointer"
+                  title="Buka panel impor soal langsung dari Microsoft Word (.docx) lengkap dengan gambar & kunci di bawah"
+                >
+                  <FileText className="w-3.5 h-3.5" />
+                  Import Soal Word (.docx)
                 </button>
                 <button
                   id="btn-add-question-trigger"
@@ -2469,11 +2598,65 @@ export default function AdminPanel({
                         )}
                       </button>
                     </div>
+
+                    {/* Live Schedule Status Indicator */}
+                    <div className="flex flex-wrap items-center gap-2 mt-2 pt-2 border-t border-slate-100">
+                      <span className="text-[11px] font-mono text-slate-500 font-bold flex items-center gap-1">
+                        <Calendar className="w-3.5 h-3.5 text-indigo-500" />
+                        Jadwal WIB:
+                      </span>
+                      {effectiveActiveSubject.scheduleEnabled ? (
+                        (() => {
+                          const sched = evaluateSubjectSchedule(effectiveActiveSubject, wibClock.now);
+                          return (
+                            <div className="flex flex-wrap items-center gap-2">
+                              <span className={`text-[10px] font-mono font-black px-2 py-0.5 rounded-full border ${sched.badgeBg}`}>
+                                {sched.badgeText}
+                              </span>
+                              <span className="text-[11px] text-slate-600 font-mono">
+                                {effectiveActiveSubject.scheduleExamStart
+                                  ? `Mulai: ${formatWIBShort(effectiveActiveSubject.scheduleExamStart)}`
+                                  : 'Langsung bisa dikerjakan'}
+                                {effectiveActiveSubject.scheduleExamEnd && ` s/d ${formatWIBShort(effectiveActiveSubject.scheduleExamEnd)}`}
+                              </span>
+                            </div>
+                          );
+                        })()
+                      ) : (
+                        <div className="flex items-center gap-2">
+                          <span className="text-[10px] font-mono bg-slate-100 text-slate-600 font-bold px-2 py-0.5 rounded-md border border-slate-200">
+                            Tanpa Jadwal (Terbuka Bebas)
+                          </span>
+                          <button
+                            type="button"
+                            onClick={() => handleOpenEditSubjectModal(effectiveActiveSubject)}
+                            className="text-[11px] font-bold text-indigo-600 hover:text-indigo-800 underline cursor-pointer"
+                          >
+                            + Jadwalkan Jam Ujian
+                          </button>
+                        </div>
+                      )}
+                    </div>
                   </div>
                 </div>
 
                 {/* Subject Actions Toolbar */}
                 <div className="flex flex-wrap items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setImportSubjectTarget(effectiveActiveSubject.id);
+                      setParsedWordResult(null);
+                      setWordModalError('');
+                      setWordModalSuccess('');
+                      setShowWordImportModal(true);
+                    }}
+                    className="px-3 py-1.5 bg-blue-600 hover:bg-blue-500 text-white font-bold text-xs rounded-xl transition flex items-center gap-1.5 shadow-2xs cursor-pointer"
+                    title={`Unggah & import soal langsung dari Microsoft Word (.docx) ke ${effectiveActiveSubject.name}`}
+                  >
+                    <FileText className="w-3.5 h-3.5" />
+                    Import Word (.docx)
+                  </button>
                   <button
                     type="button"
                     onClick={() => {
@@ -2487,22 +2670,16 @@ export default function AdminPanel({
                     title={`Unggah & import soal Excel (.xlsx) langsung ke mapel ${effectiveActiveSubject.name}`}
                   >
                     <Upload className="w-3.5 h-3.5" />
-                    Import Soal Excel
+                    Import Excel
                   </button>
                   <button
                     type="button"
-                    onClick={() => {
-                      setEditSubjectName(effectiveActiveSubject.name);
-                      setEditSubjectCode(effectiveActiveSubject.code || '');
-                      setEditSubjectIsActive(effectiveActiveSubject.isActive !== false);
-                      setEditSubjectEnableSampling(effectiveActiveSubject.enableRandomSampling || false);
-                      setEditSubjectSampleCount(effectiveActiveSubject.sampleQuestionCount || 40);
-                      setEditingSubjectModal(effectiveActiveSubject);
-                    }}
-                    className="px-3 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold text-xs rounded-xl transition flex items-center gap-1"
+                    onClick={() => handleOpenEditSubjectModal(effectiveActiveSubject)}
+                    className="px-3 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold text-xs rounded-xl transition flex items-center gap-1 cursor-pointer"
+                    title="Atur Nama, Kode, Jadwal Jam WIB, dan Pengambilan Soal Acak"
                   >
                     <Edit className="w-3.5 h-3.5" />
-                    Edit Mapel
+                    Jadwal & Edit Mapel
                   </button>
                   <button
                     type="button"
@@ -4411,18 +4588,18 @@ export default function AdminPanel({
         </div>
       )}
 
-      {/* Modal Edit Informasi Mata Pelajaran */}
+      {/* Modal Edit Informasi Mata Pelajaran & Penjadwalan Waktu Real-Time WIB */}
       {editingSubjectModal && (
         <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4 z-50">
-          <div className="bg-white rounded-2xl border border-slate-200 shadow-xl max-w-md w-full p-6 animate-fade-in">
-            <div className="flex items-center justify-between border-b border-slate-100 pb-3 mb-4">
+          <div className="bg-white rounded-3xl border border-slate-200 shadow-2xl max-w-xl w-full p-6 sm:p-7 max-h-[92vh] overflow-y-auto animate-fade-in space-y-4">
+            <div className="flex items-center justify-between border-b border-slate-100 pb-3">
               <h3 className="text-base font-extrabold text-slate-800 flex items-center gap-2">
                 <Edit className="w-5 h-5 text-indigo-600" />
-                Edit Informasi Mata Pelajaran
+                Edit Mata Pelajaran & Jadwal Ujian (WIB)
               </h3>
               <button
                 onClick={() => setEditingSubjectModal(null)}
-                className="p-1 hover:bg-slate-100 rounded-full transition text-slate-400"
+                className="p-1 hover:bg-slate-100 rounded-full transition text-slate-400 cursor-pointer"
               >
                 <X className="w-5 h-5" />
               </button>
@@ -4506,19 +4683,188 @@ export default function AdminPanel({
                 )}
               </div>
 
+              {/* Pengaturan Penjadwalan Waktu Real-Time WIB */}
+              <div className="p-4 bg-amber-50/70 border border-amber-200 rounded-2xl space-y-3">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <Calendar className="w-5 h-5 text-amber-700" />
+                    <div>
+                      <span className="text-xs font-bold text-amber-950 block">Penjadwalan Waktu Ujian (WIB Real-Time)</span>
+                      <span className="text-[11px] text-amber-800 block">
+                        Atur jam tayang di portal siswa dan jam mulai/selesai pengerjaan
+                      </span>
+                    </div>
+                  </div>
+                  <input
+                    type="checkbox"
+                    checked={editSubjectScheduleEnabled}
+                    onChange={(e) => setEditSubjectScheduleEnabled(e.target.checked)}
+                    className="w-5 h-5 text-amber-600 rounded border-slate-300 focus:ring-amber-500 cursor-pointer"
+                  />
+                </div>
+
+                {editSubjectScheduleEnabled && (
+                  <div className="space-y-3 pt-2.5 border-t border-amber-200/80 text-xs">
+                    {/* Quick Presets */}
+                    <div className="space-y-1">
+                      <span className="text-[10px] font-mono font-bold text-slate-500 uppercase">Pintasan Waktu Cepat:</span>
+                      <div className="flex flex-wrap gap-1.5">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const nowStr = toWIBDateTimeInputValue(new Date());
+                            setEditSubjectScheduleDisplayStart(nowStr);
+                            setEditSubjectScheduleExamStart(nowStr);
+                            setEditSubjectScheduleDisplayEnd('');
+                            setEditSubjectScheduleExamEnd('');
+                          }}
+                          className="px-2.5 py-1 bg-white hover:bg-slate-100 border border-amber-300 rounded-lg text-[11px] font-bold text-slate-700 cursor-pointer shadow-2xs"
+                        >
+                          ⚡ Buka Sekarang Bebas
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const now = new Date();
+                            const nowStr = toWIBDateTimeInputValue(now);
+                            const end = new Date(now.getTime() + 2 * 60 * 60 * 1000); // +2 hours
+                            const endStr = toWIBDateTimeInputValue(end);
+                            setEditSubjectScheduleDisplayStart(nowStr);
+                            setEditSubjectScheduleExamStart(nowStr);
+                            setEditSubjectScheduleDisplayEnd(endStr);
+                            setEditSubjectScheduleExamEnd(endStr);
+                          }}
+                          className="px-2.5 py-1 bg-white hover:bg-slate-100 border border-amber-300 rounded-lg text-[11px] font-bold text-slate-700 cursor-pointer shadow-2xs"
+                        >
+                          ⏱️ Mulai Sekarang (Durasi 2 Jam)
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const tomorrow = new Date();
+                            tomorrow.setDate(tomorrow.getDate() + 1);
+                            tomorrow.setHours(7, 0, 0, 0);
+                            const dispStr = toWIBDateTimeInputValue(tomorrow);
+                            tomorrow.setHours(7, 30, 0, 0);
+                            const startStr = toWIBDateTimeInputValue(tomorrow);
+                            tomorrow.setHours(9, 30, 0, 0);
+                            const endStr = toWIBDateTimeInputValue(tomorrow);
+                            setEditSubjectScheduleDisplayStart(dispStr);
+                            setEditSubjectScheduleExamStart(startStr);
+                            setEditSubjectScheduleDisplayEnd(endStr);
+                            setEditSubjectScheduleExamEnd(endStr);
+                          }}
+                          className="px-2.5 py-1 bg-white hover:bg-slate-100 border border-amber-300 rounded-lg text-[11px] font-bold text-slate-700 cursor-pointer shadow-2xs"
+                        >
+                          🌅 Besok Pagi (07:30 - 09:30 WIB)
+                        </button>
+                      </div>
+                    </div>
+
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1">
+                      <div className="bg-white p-2.5 rounded-xl border border-amber-200">
+                        <label className="block text-[11px] font-bold text-slate-800 mb-1">
+                          1. Waktu Tampil di Menu Siswa:
+                        </label>
+                        <input
+                          type="datetime-local"
+                          value={editSubjectScheduleDisplayStart}
+                          onChange={(e) => setEditSubjectScheduleDisplayStart(e.target.value)}
+                          className="w-full px-2.5 py-1.5 bg-slate-50 border border-slate-300 rounded-lg text-xs font-mono text-slate-800"
+                        />
+                        <span className="text-[10px] text-slate-500 block mt-0.5">
+                          Kapan mapel mulai terlihat di layar siswa.
+                        </span>
+                      </div>
+
+                      <div className="bg-white p-2.5 rounded-xl border border-amber-200">
+                        <label className="block text-[11px] font-bold text-slate-800 mb-1">
+                          2. Batas Akhir Tampil (Opsional):
+                        </label>
+                        <input
+                          type="datetime-local"
+                          value={editSubjectScheduleDisplayEnd}
+                          onChange={(e) => setEditSubjectScheduleDisplayEnd(e.target.value)}
+                          className="w-full px-2.5 py-1.5 bg-slate-50 border border-slate-300 rounded-lg text-xs font-mono text-slate-800"
+                        />
+                        <span className="text-[10px] text-slate-500 block mt-0.5">
+                          Kosongkan jika ingin tampil terus.
+                        </span>
+                      </div>
+
+                      <div className="bg-white p-2.5 rounded-xl border border-indigo-200">
+                        <label className="block text-[11px] font-bold text-indigo-900 mb-1">
+                          3. Waktu Mulai Dikerjakan (WIB):
+                        </label>
+                        <input
+                          type="datetime-local"
+                          value={editSubjectScheduleExamStart}
+                          onChange={(e) => setEditSubjectScheduleExamStart(e.target.value)}
+                          className="w-full px-2.5 py-1.5 bg-indigo-50/50 border border-indigo-300 rounded-lg text-xs font-mono text-slate-800 font-bold"
+                        />
+                        <span className="text-[10px] text-indigo-600 block mt-0.5">
+                          Sebelum jam ini, tombol ujian dikunci hitung mundur.
+                        </span>
+                      </div>
+
+                      <div className="bg-white p-2.5 rounded-xl border border-rose-200">
+                        <label className="block text-[11px] font-bold text-rose-900 mb-1">
+                          4. Batas Akhir Mulai Ujian (WIB):
+                        </label>
+                        <input
+                          type="datetime-local"
+                          value={editSubjectScheduleExamEnd}
+                          onChange={(e) => setEditSubjectScheduleExamEnd(e.target.value)}
+                          className="w-full px-2.5 py-1.5 bg-rose-50/50 border border-rose-300 rounded-lg text-xs font-mono text-slate-800 font-bold"
+                        />
+                        <span className="text-[10px] text-rose-600 block mt-0.5">
+                          Setelah jam ini, siswa dilarang mulai ujian.
+                        </span>
+                      </div>
+                    </div>
+
+                    {/* Preview Live Status Badge */}
+                    <div className="p-3 bg-white rounded-xl border border-amber-300 flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs">
+                      <div>
+                        <span className="font-bold text-slate-700 block">Status di Jam WIB Sekarang:</span>
+                        <span className="text-[10px] text-slate-400 font-mono">WIB Saat Ini: {wibClock.formattedTimeOnly}</span>
+                      </div>
+                      {(() => {
+                        const tempSub: ExamSubject = {
+                          id: editingSubjectModal.id,
+                          name: editSubjectName,
+                          isActive: editSubjectIsActive,
+                          scheduleEnabled: editSubjectScheduleEnabled,
+                          scheduleDisplayStart: editSubjectScheduleDisplayStart ? parseWIBInputValueToISO(editSubjectScheduleDisplayStart) : undefined,
+                          scheduleDisplayEnd: editSubjectScheduleDisplayEnd ? parseWIBInputValueToISO(editSubjectScheduleDisplayEnd) : undefined,
+                          scheduleExamStart: editSubjectScheduleExamStart ? parseWIBInputValueToISO(editSubjectScheduleExamStart) : undefined,
+                          scheduleExamEnd: editSubjectScheduleExamEnd ? parseWIBInputValueToISO(editSubjectScheduleExamEnd) : undefined
+                        };
+                        const status = evaluateSubjectSchedule(tempSub, wibClock.now);
+                        return (
+                          <span className={`px-3 py-1 rounded-full font-mono font-black text-xs border ${status.badgeBg}`}>
+                            {status.badgeText} ({status.statusLabel})
+                          </span>
+                        );
+                      })()}
+                    </div>
+                  </div>
+                )}
+              </div>
+
               <div className="flex gap-2 pt-3 border-t border-slate-100">
                 <button
                   type="button"
                   onClick={() => setEditingSubjectModal(null)}
-                  className="flex-1 py-2.5 text-xs font-bold text-slate-500 hover:bg-slate-50 border border-slate-200 rounded-xl transition"
+                  className="flex-1 py-2.5 text-xs font-bold text-slate-500 hover:bg-slate-50 border border-slate-200 rounded-xl transition cursor-pointer"
                 >
                   Batal
                 </button>
                 <button
                   type="submit"
-                  className="flex-1 py-2.5 text-xs font-extrabold text-white bg-indigo-600 hover:bg-indigo-500 rounded-xl transition shadow-sm"
+                  className="flex-1 py-2.5 text-xs font-extrabold text-white bg-indigo-600 hover:bg-indigo-500 rounded-xl transition shadow-sm cursor-pointer"
                 >
-                  Simpan Perubahan
+                  Simpan Perubahan & Jadwal
                 </button>
               </div>
             </form>
@@ -4757,6 +5103,373 @@ export default function AdminPanel({
               >
                 <Check className="w-4 h-4" />
                 Simpan & Impor {parsedQuestionsPreview ? `${parsedQuestionsPreview.length} Soal` : 'Soal'} ke Bank Soal
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Modal Dedikasi: Import Soal Microsoft Word (.docx) Lengkap dengan Gambar & Kunci di Bawah */}
+      {showWordImportModal && (
+        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4 z-50 animate-fade-in overflow-y-auto">
+          <div className="bg-white rounded-3xl border border-slate-200 shadow-2xl max-w-3xl w-full p-6 sm:p-8 space-y-5 my-8 max-h-[92vh] flex flex-col">
+            {/* Header Modal */}
+            <div className="flex items-center justify-between border-b border-slate-100 pb-4">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-2xl bg-blue-100 text-blue-700 flex items-center justify-center shadow-xs">
+                  <FileText className="w-5 h-5" />
+                </div>
+                <div>
+                  <div className="flex items-center gap-2">
+                    <h3 className="text-lg font-black text-slate-900 tracking-tight">
+                      Import Soal Microsoft Word (.docx)
+                    </h3>
+                    <span className="text-[10px] font-mono font-bold bg-blue-100 text-blue-800 px-2 py-0.5 rounded-full">
+                      DOCX PARSER
+                    </span>
+                  </div>
+                  <p className="text-xs text-slate-500">
+                    Format: Soal PG di atas, kunci jawaban di bawah, dan gambar otomatis disisipkan ke soal.
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  setShowWordImportModal(false);
+                  setParsedWordResult(null);
+                  setWordModalError('');
+                  setWordModalSuccess('');
+                }}
+                className="p-1.5 text-slate-400 hover:text-slate-600 hover:bg-slate-100 rounded-full transition cursor-pointer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {/* Modal Body */}
+            <div className="overflow-y-auto space-y-4 pr-1 flex-1">
+              {/* Target Mapel Selector */}
+              <div className="p-4 bg-slate-50 border border-slate-200 rounded-2xl space-y-2">
+                <label className="block text-xs font-bold text-slate-700 uppercase font-mono tracking-wider">
+                  Target Mata Pelajaran Sasaran:
+                </label>
+                <div className="flex flex-wrap gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setImportSubjectTarget(effectiveActiveSubject.id)}
+                    className={`px-3 py-1.5 rounded-xl border text-xs font-bold transition flex items-center gap-1.5 cursor-pointer ${
+                      importSubjectTarget === effectiveActiveSubject.id || importSubjectTarget === 'current'
+                        ? 'bg-blue-600 text-white border-blue-700 shadow-xs'
+                        : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-100'
+                    }`}
+                  >
+                    <Check className="w-3.5 h-3.5" />
+                    Mapel Aktif ({effectiveActiveSubject.name})
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setImportSubjectTarget('auto')}
+                    className={`px-3 py-1.5 rounded-xl border text-xs font-bold transition flex items-center gap-1.5 cursor-pointer ${
+                      importSubjectTarget === 'auto'
+                        ? 'bg-emerald-600 text-white border-emerald-700 shadow-xs'
+                        : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-100'
+                    }`}
+                  >
+                    <Shuffle className="w-3.5 h-3.5" />
+                    Otomatis dari Kode
+                  </button>
+                  {subjects.filter(s => s.id !== effectiveActiveSubject.id).map(s => (
+                    <button
+                      key={s.id}
+                      type="button"
+                      onClick={() => setImportSubjectTarget(s.id)}
+                      className={`px-3 py-1.5 rounded-xl border text-xs font-bold transition flex items-center gap-1.5 cursor-pointer ${
+                        importSubjectTarget === s.id
+                          ? 'bg-blue-600 text-white border-blue-700 shadow-xs'
+                          : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-100'
+                      }`}
+                    >
+                      {s.name}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {/* Panduan Format Word */}
+              <div className="p-4 bg-blue-50/70 border border-blue-200 rounded-2xl space-y-2.5 text-xs text-slate-700">
+                <div className="flex items-center justify-between">
+                  <span className="font-extrabold text-blue-950 flex items-center gap-1.5">
+                    <Sparkles className="w-4 h-4 text-blue-600" />
+                    Panduan Cerdas Format Dokumen Microsoft Word (.docx):
+                  </span>
+                  <span className="text-[10px] font-mono font-bold bg-blue-100 text-blue-800 px-2 py-0.5 rounded">
+                    PG Tunggal, Ganda & Matematika
+                  </span>
+                </div>
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-3 text-[11px] leading-relaxed">
+                  <div className="bg-white p-3 rounded-xl border border-blue-100 space-y-1">
+                    <strong className="text-blue-900 block font-bold">1. Format Soal & Nomor Presisi</strong>
+                    <ul className="list-disc pl-4 space-y-0.5 text-slate-600">
+                      <li>Nomor soal: <code className="font-mono font-bold">1. </code>, <code className="font-mono font-bold">2. </code>, dst.</li>
+                      <li>Pilihan jawaban: <code className="font-mono font-bold">A. </code>, <code className="font-mono font-bold">B. </code>, <code className="font-mono font-bold">C. </code>, <code className="font-mono font-bold">D. </code></li>
+                      <li><strong>Anti-Acak / Anti-Tertelan:</strong> Dilengkapi deteksi urutan nomor pintar & pemulihan otomatis (Auto-Heal) jika ada soal yang menempel.</li>
+                      <li><strong>Gambar / Diagram:</strong> Sisipkan gambar langsung ke Word! Otomatis diekstrak dan masuk ke soal.</li>
+                    </ul>
+                  </div>
+
+                  <div className="bg-white p-3 rounded-xl border border-indigo-100 space-y-1">
+                    <strong className="text-indigo-900 block font-bold">2. Matematika, Pecahan & Rumus Rumit</strong>
+                    <ul className="list-disc pl-4 space-y-0.5 text-slate-600">
+                      <li><strong>Word Equation:</strong> Rumus dari menu <em>Insert &gt; Equation</em> otomatis diubah ke KaTeX beresolusi tinggi.</li>
+                      <li><strong>Pecahan:</strong> Bentuk pecahan bertingkat maupun teks (<code className="font-mono font-bold">1/2</code>, <code className="font-mono font-bold">3/4</code>) terbaca rapi.</li>
+                      <li><strong>Pangkat &amp; Akar:</strong> Mendukung <code className="font-mono font-bold">x²</code>, <code className="font-mono font-bold">cm³</code>, <code className="font-mono font-bold">√25</code>, serta simbol <code className="font-mono font-bold">±, ×, ÷, ≤, ≥, π</code>.</li>
+                    </ul>
+                  </div>
+
+                  <div className="bg-white p-3 rounded-xl border border-blue-100 space-y-1">
+                    <strong className="text-blue-900 block font-bold">3. Bagian Bawah: Kunci Jawaban</strong>
+                    <ul className="list-disc pl-4 space-y-0.5 text-slate-600">
+                      <li>Tulis judul: <code className="font-mono font-bold text-indigo-700">KUNCI JAWABAN</code> di bagian paling bawah.</li>
+                      <li><strong>PG Tunggal:</strong> contoh <code className="font-mono font-bold">1. A</code>, <code className="font-mono font-bold">3. D</code></li>
+                      <li><strong>Jawaban Ganda:</strong> contoh <code className="font-mono font-bold">2. B, C</code> atau <code className="font-mono font-bold">4. A, D</code></li>
+                    </ul>
+                  </div>
+                </div>
+
+                <div className="flex items-center justify-between pt-1">
+                  <div className="flex items-center gap-2">
+                    <span className="text-[11px] font-bold text-slate-700">Skor Default per Soal:</span>
+                    <input
+                      type="number"
+                      min="1"
+                      value={wordImportDefaultScore}
+                      onChange={(e) => setWordImportDefaultScore(Math.max(1, parseInt(e.target.value) || 10))}
+                      className="w-16 px-2 py-0.5 bg-white border border-slate-300 rounded text-center font-mono font-bold text-xs"
+                    />
+                    <span className="text-[11px] text-slate-500">Poin</span>
+                  </div>
+                </div>
+              </div>
+
+              {/* Kolom / Dropzone Upload Berkas Word (.docx) */}
+              <div className="border-2 border-dashed border-blue-300 hover:border-blue-500 rounded-2xl p-7 text-center bg-blue-50/20 transition">
+                <input
+                  type="file"
+                  id="modal-word-file-input"
+                  accept=".docx"
+                  onChange={handleWordFileUpload}
+                  className="hidden"
+                />
+                <label
+                  htmlFor="modal-word-file-input"
+                  className="cursor-pointer flex flex-col items-center justify-center space-y-2.5"
+                >
+                  <div className="w-14 h-14 rounded-2xl bg-blue-100 text-blue-700 flex items-center justify-center shadow-xs">
+                    <FileText className="w-7 h-7" />
+                  </div>
+                  <span className="text-sm font-black text-slate-800">
+                    {isProcessingWordFile
+                      ? 'Sedang membaca dokumen Word, membedah rumus matematika & gambar...'
+                      : 'Klik di Sini untuk Memilih Berkas Microsoft Word (.docx)'}
+                  </span>
+                  <span className="text-xs text-slate-500 max-w-md">
+                    Format berkas didukung: <code className="font-mono text-blue-800 bg-blue-100 px-1 rounded font-bold">.docx</code>. Seluruh diagram, rumus matematika, pecahan & kunci jawaban di bawah akan diproses otomatis.
+                  </span>
+                </label>
+              </div>
+
+              {/* Feedback Notifikasi */}
+              {wordModalError && (
+                <div className="p-4 bg-rose-50 border border-rose-200 rounded-xl text-rose-700 text-xs font-semibold flex items-center gap-2">
+                  <AlertTriangle className="w-4 h-4 shrink-0 text-rose-600" />
+                  <span>{wordModalError}</span>
+                </div>
+              )}
+              {wordModalSuccess && (
+                <div className="p-4 bg-emerald-50 border border-emerald-200 rounded-xl text-emerald-800 text-xs font-bold flex items-center gap-2">
+                  <Check className="w-4 h-4 shrink-0 text-emerald-600" />
+                  <span>{wordModalSuccess}</span>
+                </div>
+              )}
+
+              {/* Tinjauan Soal yang Dibaca dari Word */}
+              {parsedWordResult && parsedWordResult.questions.length > 0 && (
+                <div className="border border-slate-200 rounded-2xl overflow-hidden space-y-3 p-4 bg-slate-50">
+                  {/* Statistik Hasil Parse */}
+                  <div className="grid grid-cols-2 sm:grid-cols-5 gap-2 text-center">
+                    <div className="bg-white p-2.5 rounded-xl border border-slate-200 shadow-2xs">
+                      <span className="text-[10px] text-slate-400 font-bold uppercase font-mono block">Total Soal</span>
+                      <span className="text-base font-black text-slate-900 font-mono">{parsedWordResult.totalParsed}</span>
+                      <span className="text-[9px] text-slate-500 block truncate font-mono">{parsedWordResult.detectedSequence}</span>
+                    </div>
+                    <div className="bg-white p-2.5 rounded-xl border border-slate-200 shadow-2xs">
+                      <span className="text-[10px] text-indigo-500 font-bold uppercase font-mono block">PG Tunggal</span>
+                      <span className="text-base font-black text-indigo-700 font-mono">{parsedWordResult.mcCount}</span>
+                    </div>
+                    <div className="bg-white p-2.5 rounded-xl border border-slate-200 shadow-2xs">
+                      <span className="text-[10px] text-purple-500 font-bold uppercase font-mono block">Jawaban Ganda</span>
+                      <span className="text-base font-black text-purple-700 font-mono">{parsedWordResult.mrCount}</span>
+                    </div>
+                    <div className="bg-white p-2.5 rounded-xl border border-slate-200 shadow-2xs">
+                      <span className="text-[10px] text-emerald-500 font-bold uppercase font-mono block">Ada Gambar</span>
+                      <span className="text-base font-black text-emerald-700 font-mono">{parsedWordResult.imageCount}</span>
+                    </div>
+                    <div className="bg-white p-2.5 rounded-xl border border-slate-200 shadow-2xs">
+                      <span className="text-[10px] text-amber-600 font-bold uppercase font-mono block">Rumus / Math</span>
+                      <span className="text-base font-black text-amber-700 font-mono">{parsedWordResult.mathFormulaCount}</span>
+                      <span className="text-[9px] text-amber-600 font-bold block">KaTeX Render</span>
+                    </div>
+                  </div>
+
+                  {/* Diagnostic Banner if Recovered Questions or Warnings */}
+                  {parsedWordResult.recoveredQuestionCount > 0 && (
+                    <div className="p-3 bg-emerald-50 border border-emerald-200 rounded-xl text-emerald-900 text-xs font-semibold flex items-center gap-2">
+                      <Sparkles className="w-4 h-4 text-emerald-600 shrink-0" />
+                      <span>
+                        Sistem cerdas berhasil memulihkan <strong>{parsedWordResult.recoveredQuestionCount} butir soal</strong> yang sebelumnya sempat menyatu dengan teks nomor lain. Jumlah nomor soal sekarang utuh dan genap!
+                      </span>
+                    </div>
+                  )}
+
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-slate-200 pb-3 pt-1">
+                    <span className="text-xs font-black text-slate-800 uppercase font-mono">
+                      Tinjauan Butir Soal Terbaca ({parsedWordResult.questions.length} Butir):
+                    </span>
+                    <div className="flex items-center gap-3 text-xs font-bold text-slate-700">
+                      <span>Metode:</span>
+                      <label className="flex items-center gap-1.5 cursor-pointer">
+                        <input
+                          type="radio"
+                          name="wordImportMode"
+                          checked={wordImportMode === 'APPEND'}
+                          onChange={() => setWordImportMode('APPEND')}
+                        />
+                        <span>Tambah (Append)</span>
+                      </label>
+                      <label className="flex items-center gap-1.5 cursor-pointer">
+                        <input
+                          type="radio"
+                          name="wordImportMode"
+                          checked={wordImportMode === 'OVERWRITE'}
+                          onChange={() => setWordImportMode('OVERWRITE')}
+                        />
+                        <span>Gantikan Lama (Overwrite)</span>
+                      </label>
+                    </div>
+                  </div>
+
+                  {/* List Question Cards Preview with Rich KaTeX Math Rendering */}
+                  <div className="max-h-72 overflow-y-auto space-y-2.5 pr-1">
+                    {parsedWordResult.questions.slice(0, 15).map((q, idx) => {
+                      const isMulti = q.type === 'MR';
+                      const keyIndices = isMulti ? (q.correctAnswerIndices || []) : [q.correctAnswerIndex];
+                      const keyLetters = keyIndices.map(k => String.fromCharCode(65 + k)).join(', ');
+                      const hasMath = q.questionText.includes('$') || q.questionText.includes('\\frac') || q.options.some(o => o.includes('$') || o.includes('\\frac'));
+
+                      return (
+                        <div key={idx} className="bg-white p-3.5 rounded-xl border border-slate-200 text-xs space-y-2 shadow-2xs">
+                          <div className="flex items-center justify-between">
+                            <div className="flex items-center gap-2">
+                              <span className="font-mono font-black text-indigo-700">Soal #{idx + 1}</span>
+                              <span className={`text-[10px] font-mono px-2 py-0.5 rounded-md font-bold ${
+                                isMulti ? 'bg-purple-100 text-purple-800' : 'bg-indigo-100 text-indigo-800'
+                              }`}>
+                                {isMulti ? 'Jawaban Ganda (Multi Response)' : 'Pilihan Ganda Tunggal'}
+                              </span>
+                              {q.imageUrl && (
+                                <span className="text-[10px] font-mono bg-emerald-100 text-emerald-800 px-2 py-0.5 rounded-md font-bold flex items-center gap-1">
+                                  <ImageIcon className="w-3 h-3" />
+                                  Gambar Terlampir
+                                </span>
+                              )}
+                              {hasMath && (
+                                <span className="text-[10px] font-mono bg-amber-100 text-amber-900 px-2 py-0.5 rounded-md font-bold">
+                                  📐 Rumus KaTeX
+                                </span>
+                              )}
+                            </div>
+                            <span className="font-mono text-[10px] bg-amber-100 text-amber-900 font-bold px-2 py-0.5 rounded">
+                              Kunci: {keyLetters || 'A'}
+                            </span>
+                          </div>
+
+                          {/* Soal Text with Rich KaTeX Math Rendering */}
+                          <div className="font-semibold text-slate-800 text-sm leading-relaxed">
+                            <RichExamContent text={q.questionText} />
+                          </div>
+
+                          {/* Gambar Preview */}
+                          {q.imageUrl && (
+                            <div className="my-1.5 max-w-sm rounded-xl overflow-hidden border border-slate-200 bg-slate-50 p-1">
+                              <img
+                                src={q.imageUrl}
+                                alt={`Ilustrasi Soal ${idx + 1}`}
+                                className="max-h-40 w-auto rounded object-contain mx-auto"
+                              />
+                            </div>
+                          )}
+
+                          {/* Options with Rich KaTeX Math Rendering */}
+                          <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5 pt-1">
+                            {q.options.map((opt, oIdx) => {
+                              const isCorrect = keyIndices.includes(oIdx);
+                              return (
+                                <div
+                                  key={oIdx}
+                                  className={`px-2.5 py-1.5 rounded-lg text-xs flex items-center justify-between ${
+                                    isCorrect
+                                      ? 'bg-emerald-50 text-emerald-900 font-bold border border-emerald-300'
+                                      : 'bg-slate-50 text-slate-700 border border-slate-100'
+                                  }`}
+                                >
+                                  <div className="flex items-baseline gap-1.5 overflow-hidden">
+                                    <span className="font-mono font-bold text-slate-500 shrink-0">{String.fromCharCode(65 + oIdx)}.</span>
+                                    <div className="truncate">
+                                      <RichExamContent text={opt} />
+                                    </div>
+                                  </div>
+                                  {isCorrect && <Check className="w-3.5 h-3.5 text-emerald-600 shrink-0 ml-1" />}
+                                </div>
+                              );
+                            })}
+                          </div>
+                        </div>
+                      );
+                    })}
+
+                    {parsedWordResult.questions.length > 15 && (
+                      <p className="text-center text-xs text-slate-400 font-mono italic">
+                        ... dan {parsedWordResult.questions.length - 15} butir soal lainnya siap diimpor ke bank soal.
+                      </p>
+                    )}
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {/* Tombol Aksi Bawah */}
+            <div className="flex items-center justify-end gap-3 pt-3 border-t border-slate-100">
+              <button
+                type="button"
+                onClick={() => {
+                  setShowWordImportModal(false);
+                  setParsedWordResult(null);
+                  setWordModalError('');
+                  setWordModalSuccess('');
+                }}
+                className="px-4 py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold text-xs rounded-xl transition cursor-pointer"
+              >
+                Batal
+              </button>
+              <button
+                type="button"
+                disabled={!parsedWordResult || parsedWordResult.questions.length === 0}
+                onClick={handleConfirmWordImport}
+                className="px-5 py-2.5 bg-blue-600 hover:bg-blue-500 disabled:opacity-40 disabled:cursor-not-allowed text-white font-black text-xs rounded-xl transition shadow-sm flex items-center gap-1.5 cursor-pointer"
+              >
+                <Check className="w-4 h-4" />
+                Simpan & Impor {parsedWordResult ? `${parsedWordResult.questions.length} Soal` : 'Soal Word'} ke Bank Soal
               </button>
             </div>
           </div>

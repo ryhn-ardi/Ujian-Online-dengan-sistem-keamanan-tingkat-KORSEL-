@@ -53,6 +53,12 @@ export interface ExamSubject {
   isActive?: boolean; // Whether this subject is visible/available for students to choose on the exam link
   enableRandomSampling?: boolean; // Per-subject random sampling toggle
   sampleQuestionCount?: number; // Number of questions to randomly pick for this specific subject
+  // Penjadwalan Otomatis Real-time WIB
+  scheduleEnabled?: boolean; // Apakah penjadwalan otomatis waktu aktif
+  scheduleDisplayStart?: string; // Waktu mulai ditampilkan di portal siswa (WIB)
+  scheduleDisplayEnd?: string; // Waktu selesai ditampilkan di portal siswa (WIB)
+  scheduleExamStart?: string; // Waktu mulai siswa diizinkan mengerjakan ujian (WIB)
+  scheduleExamEnd?: string; // Batas akhir siswa diizinkan mulai mengerjakan (WIB)
 }
 
 export interface ExamConfig {

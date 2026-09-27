@@ -1,7 +1,8 @@
 import React, { useState } from 'react';
-import { ShieldCheck, UserCheck, Settings, AlertTriangle, AlertCircle, Info, RefreshCw, BookOpen, Check, Eye, EyeOff, KeyRound } from 'lucide-react';
+import { ShieldCheck, UserCheck, Settings, AlertTriangle, AlertCircle, Info, RefreshCw, BookOpen, Check, Eye, EyeOff, KeyRound, Clock, Timer, Calendar } from 'lucide-react';
 import { Student, Question, ExamConfig, ExamSubject, StudentUser } from '../types';
 import { getExamSubjects } from '../utils/sync';
+import { useRealtimeWIB, evaluateSubjectSchedule, formatDurationCountdown, formatWIBShort, formatWIBDateTime } from '../utils/timeWib';
 
 interface StudentRegistrationProps {
   students: Student[];
@@ -45,12 +46,18 @@ export default function StudentRegistration({
   const [error, setError] = useState('');
   const [manualEntryMode, setManualEntryMode] = useState(false);
 
-  // Extract subjects and active subjects
+  // Live Real-time WIB Clock hook (ticks every 1000ms)
+  const wibClock = useRealtimeWIB();
+
+  // Extract subjects and filter visible ones according to real-time WIB schedule
   const allSubjects: ExamSubject[] = getExamSubjects(config);
-  const activeSubjects = allSubjects.filter(s => s.isActive !== false);
+  const visibleSubjects = allSubjects.filter(s => {
+    const schedule = evaluateSubjectSchedule(s, wibClock.now);
+    return schedule.isVisible;
+  });
 
   const [subjectId, setSubjectId] = useState<string>(() => {
-    return activeSubjects[0]?.id || 'sub1';
+    return visibleSubjects[0]?.id || 'sub1';
   });
 
   // Calculate question count for a specific subject
@@ -58,10 +65,13 @@ export default function StudentRegistration({
     return questions.filter(q => (!q.subjectId && subId === 'sub1') || q.subjectId === subId).length;
   };
 
-  // Determine effective subject ID (fallback if current is not in active list)
-  const effectiveSubjectId = activeSubjects.some(s => s.id === subjectId)
+  // Determine effective subject ID (fallback if current is not in visible list)
+  const effectiveSubjectId = visibleSubjects.some(s => s.id === subjectId)
     ? subjectId
-    : (activeSubjects[0]?.id || 'sub1');
+    : (visibleSubjects[0]?.id || 'sub1');
+
+  const selectedSubject = visibleSubjects.find(s => s.id === effectiveSubjectId);
+  const selectedSubjectSchedule = selectedSubject ? evaluateSubjectSchedule(selectedSubject, wibClock.now) : null;
 
   // Admin access state
   const [showAdminModal, setShowAdminModal] = useState(false);
@@ -109,7 +119,10 @@ export default function StudentRegistration({
     if (!finalName) return setError('Nama lengkap siswa belum terisi');
     if (!finalAbsent) return setError('Nomor absen belum terisi');
     if (!finalClass) return setError('Kelas belum terisi');
-    if (activeSubjects.length === 0) return setError('Belum ada naskah ujian yang diaktifkan oleh proktor.');
+    if (visibleSubjects.length === 0) return setError('Belum ada naskah ujian yang aktif atau dijadwalkan saat ini.');
+    if (selectedSubjectSchedule && !selectedSubjectSchedule.canStartExam) {
+      return setError(selectedSubjectSchedule.detailMessage);
+    }
     if (!agreed) return setError('Anda harus menyetujui seluruh pakta integritas ujian');
 
     // Duplicate string validation and re-connection logic
@@ -158,6 +171,31 @@ export default function StudentRegistration({
   return (
     <div className="min-h-screen bg-slate-50 flex flex-col justify-between py-12 px-4 sm:px-6 lg:px-8 font-sans">
       <div className="max-w-2xl mx-auto w-full">
+        {/* Real-time Jam Waktu Indonesia Barat (WIB) Widget */}
+        <div className="bg-white rounded-2xl shadow-xs border border-slate-200 p-3.5 sm:p-4 mb-6 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+          <div className="flex items-center gap-3">
+            <div className="w-10 h-10 rounded-2xl bg-indigo-50 border border-indigo-100 text-indigo-600 flex items-center justify-center shrink-0">
+              <Clock className="w-5 h-5" />
+            </div>
+            <div>
+              <div className="flex items-center gap-2">
+                <span className="text-[10px] font-mono font-extrabold text-indigo-700 bg-indigo-50 px-2 py-0.5 rounded-full uppercase tracking-wider">
+                  WAKTU RESMI PENGUJIAN
+                </span>
+                <span className="relative flex h-2 w-2">
+                  <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+                  <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span>
+                </span>
+              </div>
+              <h2 className="text-xs font-bold text-slate-700 mt-0.5">Waktu Indonesia Barat (WIB / UTC+7)</h2>
+            </div>
+          </div>
+          <div className="flex items-center gap-2 self-start sm:self-auto bg-slate-950 text-amber-300 font-mono font-bold px-3.5 py-2 rounded-xl text-xs shadow-inner">
+            <Timer className="w-4 h-4 text-amber-400 animate-pulse" />
+            <span className="tracking-wide text-xs">{wibClock.formattedDateTime}</span>
+          </div>
+        </div>
+
         {/* Banner Lembaga / Ujian */}
         <div className="text-center mb-8">
           <div className="inline-flex items-center justify-center p-3 bg-red-100 rounded-full text-red-600 mb-4 animate-pulse">
@@ -363,39 +401,67 @@ export default function StudentRegistration({
                     Pilih Naskah Ujian (Mata Pelajaran)
                   </label>
                   <span className="text-[11px] text-slate-400 font-mono">
-                    {activeSubjects.length} Naskah Aktif
+                    {visibleSubjects.length} Naskah Aktif / Terjadwal
                   </span>
                 </div>
 
-                {activeSubjects.length === 0 ? (
+                {visibleSubjects.length === 0 ? (
                   <div className="p-4 bg-amber-50 border border-amber-200 rounded-xl text-amber-800 text-xs flex items-center gap-2.5">
                     <AlertTriangle className="w-5 h-5 text-amber-600 shrink-0" />
-                    <span>Belum ada naskah ujian yang diaktifkan oleh proktor. Silakan hubungi pengawas / proktor di depan kelas.</span>
+                    <span>Belum ada naskah ujian yang ditayangkan atau dijadwalkan saat ini. Silakan hubungi proktor di depan kelas.</span>
                   </div>
-                ) : activeSubjects.length === 1 ? (
-                  <div className="p-4 bg-indigo-50/80 border border-indigo-200 rounded-xl flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-                    <div className="flex items-center gap-3">
-                      <div className="w-9 h-9 rounded-xl bg-indigo-600 text-white flex items-center justify-center font-bold text-sm shrink-0 shadow-xs">
-                        <Check className="w-5 h-5" />
+                ) : visibleSubjects.length === 1 ? (
+                  (() => {
+                    const sub = visibleSubjects[0];
+                    const subSchedule = evaluateSubjectSchedule(sub, wibClock.now);
+                    return (
+                      <div className="p-4 bg-indigo-50/80 border border-indigo-200 rounded-xl space-y-2">
+                        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                          <div className="flex items-center gap-3">
+                            <div className="w-9 h-9 rounded-xl bg-indigo-600 text-white flex items-center justify-center font-bold text-sm shrink-0 shadow-xs">
+                              <Check className="w-5 h-5" />
+                            </div>
+                            <div>
+                              <div className="flex items-center gap-2">
+                                <span className="text-[10px] font-bold uppercase font-mono tracking-wider text-indigo-600">
+                                  Naskah Ujian Aktif
+                                </span>
+                                <span className={`text-[9px] font-mono font-bold px-2 py-0.5 rounded-full border ${subSchedule.badgeBg}`}>
+                                  {subSchedule.badgeText}
+                                </span>
+                              </div>
+                              <h4 className="font-bold text-sm text-slate-900">{sub.name}</h4>
+                            </div>
+                          </div>
+                          <div className="flex items-center gap-2 self-end sm:self-auto">
+                            <span className="px-3 py-1 bg-white border border-indigo-100 rounded-lg text-xs font-mono font-bold text-indigo-700 shadow-xs">
+                              {getSubjectQuestionCount(sub.id)} Butir Soal
+                            </span>
+                          </div>
+                        </div>
+
+                        {sub.scheduleEnabled && (
+                          <div className="pt-2 border-t border-indigo-100 text-xs text-slate-600 flex flex-wrap items-center justify-between gap-2">
+                            <span className="text-[11px] font-mono text-slate-500">
+                              {subSchedule.detailMessage}
+                            </span>
+                            {subSchedule.statusType === 'UPCOMING' && subSchedule.secondsUntilStart !== undefined && (
+                              <span className="font-mono text-xs font-bold text-amber-700 bg-amber-100/80 px-2 py-0.5 rounded-lg flex items-center gap-1">
+                                <Timer className="w-3.5 h-3.5 animate-spin" />
+                                Mulai dalam {formatDurationCountdown(subSchedule.secondsUntilStart)}
+                              </span>
+                            )}
+                          </div>
+                        )}
                       </div>
-                      <div>
-                        <span className="text-[10px] font-bold uppercase font-mono tracking-wider text-indigo-600 block">
-                          Naskah Ujian Terjadwal Aktif
-                        </span>
-                        <h4 className="font-bold text-sm text-slate-900">{activeSubjects[0].name}</h4>
-                      </div>
-                    </div>
-                    <div className="flex items-center gap-2 self-end sm:self-auto">
-                      <span className="px-3 py-1 bg-white border border-indigo-100 rounded-lg text-xs font-mono font-bold text-indigo-700 shadow-xs">
-                        {getSubjectQuestionCount(activeSubjects[0].id)} Butir Soal
-                      </span>
-                    </div>
-                  </div>
+                    );
+                  })()
                 ) : (
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                    {activeSubjects.map((sub, idx) => {
+                    {visibleSubjects.map((sub, idx) => {
                       const isSelected = effectiveSubjectId === sub.id;
                       const qCount = getSubjectQuestionCount(sub.id);
+                      const subSchedule = evaluateSubjectSchedule(sub, wibClock.now);
 
                       return (
                         <button
@@ -422,6 +488,19 @@ export default function StudentRegistration({
                             </span>
                           </div>
                           <span className="font-bold text-sm text-slate-800 leading-snug">{sub.name}</span>
+
+                          {/* Status Jadwal Badge */}
+                          <div className="mt-2 flex flex-wrap items-center gap-1.5 w-full">
+                            <span className={`text-[9px] font-mono font-extrabold px-2 py-0.5 rounded-md border ${subSchedule.badgeBg}`}>
+                              {subSchedule.badgeText}
+                            </span>
+                            {subSchedule.statusType === 'UPCOMING' && subSchedule.secondsUntilStart !== undefined && (
+                              <span className="text-[10px] font-mono text-amber-700 font-bold bg-amber-50 px-1.5 py-0.5 rounded">
+                                ⏳ {formatDurationCountdown(subSchedule.secondsUntilStart)}
+                              </span>
+                            )}
+                          </div>
+
                           {isSelected && (
                             <span className="mt-2 text-[11px] font-bold text-indigo-600 flex items-center gap-1 font-mono">
                               <Check className="w-3.5 h-3.5" /> Terpilih
@@ -452,10 +531,28 @@ export default function StudentRegistration({
             <button
               id="btn-register-sudent"
               type="submit"
-              className="w-full bg-slate-900 hover:bg-slate-800 text-white font-bold py-4 px-6 rounded-xl border-b-4 border-slate-950 focus:outline-none active:scale-[0.98] transition-all flex items-center justify-center gap-2"
+              disabled={selectedSubjectSchedule ? !selectedSubjectSchedule.canStartExam : false}
+              className={`w-full font-bold py-4 px-6 rounded-xl border-b-4 focus:outline-none transition-all flex items-center justify-center gap-2 ${
+                selectedSubjectSchedule && !selectedSubjectSchedule.canStartExam
+                  ? 'bg-slate-200 text-slate-500 border-slate-300 cursor-not-allowed'
+                  : 'bg-slate-900 hover:bg-slate-800 text-white border-slate-950 active:scale-[0.98] cursor-pointer'
+              }`}
             >
-              <ShieldCheck className="w-5 h-5 text-green-400" />
-              Mulai Ujian & Masuk Layar Penuh
+              {selectedSubjectSchedule && !selectedSubjectSchedule.canStartExam ? (
+                <>
+                  <AlertTriangle className="w-5 h-5 text-amber-600" />
+                  <span>
+                    {selectedSubjectSchedule.statusType === 'UPCOMING'
+                      ? `Ujian Belum Dimulai (Kurang ${formatDurationCountdown(selectedSubjectSchedule.secondsUntilStart || 0)})`
+                      : 'Waktu Ujian Telah Ditutup'}
+                  </span>
+                </>
+              ) : (
+                <>
+                  <ShieldCheck className="w-5 h-5 text-green-400" />
+                  Mulai Ujian & Masuk Layar Penuh
+                </>
+              )}
             </button>
           </form>
         )}
