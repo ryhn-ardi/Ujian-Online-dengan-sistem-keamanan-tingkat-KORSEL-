@@ -101,21 +101,7 @@ export function cleanStudentUser(u: StudentUser, idx = 0): StudentUser {
 let localStudents: Student[] = getStored<Student[]>(STUDENTS_KEY, []);
 let localQuestions: Question[] = getStored<Question[]>(QUESTIONS_KEY, []);
 let localStudentUsers: StudentUser[] = getStored<StudentUser[]>(STUDENT_USERS_KEY, DEFAULT_STUDENT_USERS);
-let localConfig: ExamConfig = getStored<ExamConfig>(CONFIG_KEY, {
-  durationMinutes: 15,
-  examTitle: 'ujian berbasis keamanan tingkat korea utara + NASA',
-  subject1Name: 'Seni Budaya dan P kelas 8',
-  subject2Name: 'Informatika kelas 7',
-  subjects: [
-    { id: 'sub1', name: 'Seni Budaya dan P kelas 8', code: 'SB-8', isActive: true, enableRandomSampling: false, sampleQuestionCount: 50 },
-    { id: 'sub2', name: 'Informatika kelas 7', code: 'INF-7', isActive: true, enableRandomSampling: false, sampleQuestionCount: 50 },
-  ],
-  unlockTokens: ['TOKEN-1', 'TOKEN-2'],
-  usedGlobalTokens: [],
-  enableRandomSampling: false,
-  sampleQuestionCount: 50,
-  requireStudentLogin: true
-});
+let localConfig: ExamConfig = getStored<ExamConfig>(CONFIG_KEY, INITIAL_CONFIG);
 
 const initialSyncCompleted = {
   config: false,
@@ -150,10 +136,13 @@ export function getExamSubjects(config?: ExamConfig): ExamSubject[] {
   if (cfg.subjects && Array.isArray(cfg.subjects) && cfg.subjects.length > 0) {
     return cfg.subjects;
   }
-  return [
-    { id: 'sub1', name: cfg.subject1Name || 'Seni Budaya dan P kelas 8', code: 'SB-8', isActive: true },
-    { id: 'sub2', name: cfg.subject2Name || 'Informatika kelas 7', code: 'INF-7', isActive: true }
-  ];
+  if (cfg.subject1Name || cfg.subject2Name) {
+    const list: ExamSubject[] = [];
+    if (cfg.subject1Name) list.push({ id: 'sub2', name: cfg.subject1Name, code: 'MTK-TKA', isActive: true });
+    if (cfg.subject2Name) list.push({ id: 'sub3', name: cfg.subject2Name, code: 'TKA-IND', isActive: true });
+    return list;
+  }
+  return [];
 }
 
 // 2. Real-time Subscription management for React components
@@ -241,33 +230,6 @@ onSnapshot(
   async (snapshot) => {
     if (snapshot.exists()) {
       const data = snapshot.data() as ExamConfig;
-      let needUpgrade = false;
-      if (data.examTitle === 'Ujian Tengah Semester - Pengetahuan Umum') {
-        data.examTitle = 'ujian berbasis keamanan tingkat korea utara + NASA';
-        needUpgrade = true;
-      }
-      if (!data.subject1Name || data.subject1Name === 'Matematika & Sains (IPA)') {
-        data.subject1Name = 'Seni Budaya dan P kelas 8';
-        needUpgrade = true;
-      }
-      if (!data.subject2Name || data.subject2Name === 'IPS & Pengetahuan Umum') {
-        data.subject2Name = 'Informatika kelas 7';
-        needUpgrade = true;
-      }
-      if (!data.subjects || !Array.isArray(data.subjects) || data.subjects.length === 0) {
-        data.subjects = [
-          { id: 'sub1', name: data.subject1Name || 'Seni Budaya dan P kelas 8', code: 'SB-8', isActive: true },
-          { id: 'sub2', name: data.subject2Name || 'Informatika kelas 7', code: 'INF-7', isActive: true }
-        ];
-        needUpgrade = true;
-      }
-      if (needUpgrade) {
-        try {
-          await setDoc(doc(db, 'config', 'examConfig'), data);
-        } catch (err) {
-          console.warn('Failed to auto-upgrade configuration in database:', err);
-        }
-      }
       localConfig = data;
       localStorage.setItem(CONFIG_KEY, JSON.stringify(data));
       if (typeof document !== 'undefined' && data.examTitle) {
@@ -276,18 +238,31 @@ onSnapshot(
       initialSyncCompleted.config = true;
       notifySubscribers('SYNC_CONFIG');
     } else {
-      // Config collection has not been seeded, write initial parameters to public cloud
-      try {
-        await setDoc(doc(db, 'config', 'examConfig'), INITIAL_CONFIG);
+      // Config collection has not been seeded, check if we have cached config before writing initial
+      const cachedCfg = getStored<ExamConfig>(CONFIG_KEY, null as any);
+      if (cachedCfg && cachedCfg.subjects && cachedCfg.subjects.length > 0) {
+        localConfig = cachedCfg;
         initialSyncCompleted.config = true;
         notifySubscribers('SYNC_CONFIG');
-      } catch (err) {
-        handleFirestoreError(err, OperationType.WRITE, 'config/examConfig');
+        try {
+          await setDoc(doc(db, 'config', 'examConfig'), sanitizeForFirestore(cachedCfg));
+        } catch (err) {
+          console.warn('Silent sync of cached config to cloud:', err);
+        }
+      } else {
+        try {
+          await setDoc(doc(db, 'config', 'examConfig'), sanitizeForFirestore(INITIAL_CONFIG));
+          initialSyncCompleted.config = true;
+          notifySubscribers('SYNC_CONFIG');
+        } catch (err) {
+          handleFirestoreError(err, OperationType.WRITE, 'config/examConfig');
+        }
       }
     }
   },
   (error) => {
-    handleFirestoreError(error, OperationType.GET, 'config/examConfig');
+    console.warn('Config snapshot warning:', error);
+    initialSyncCompleted.config = true;
   }
 );
 
@@ -308,37 +283,21 @@ onSnapshot(
       initialSyncCompleted.questions = true;
       notifySubscribers('SYNC_QUESTIONS');
     } else {
-      // Questions bank is empty on cloud instance
-      try {
-        const seedStatusSnap = await getDoc(doc(db, 'config', 'seedMeta'));
-        if (seedStatusSnap.exists() && seedStatusSnap.data()?.questionsInitialized) {
-          // PROCTOR INTENTIONALLY EMPTIED THE BANK - DO NOT RE-SEED!
-          localQuestions = [];
-          localStorage.setItem(QUESTIONS_KEY, JSON.stringify([]));
-          initialSyncCompleted.questions = true;
-          notifySubscribers('SYNC_QUESTIONS');
-          return;
-        }
-
-        // Only on fresh first-ever project installation seed sample questions once
-        const batch = writeBatch(db);
-        INITIAL_QUESTIONS.forEach((q) => {
-          const ref = doc(db, 'questions', q.id);
-          batch.set(ref, q);
-        });
-        batch.set(doc(db, 'config', 'seedMeta'), { questionsInitialized: true });
-        await batch.commit();
-        initialSyncCompleted.questions = true;
-        notifySubscribers('SYNC_QUESTIONS');
-      } catch (err) {
+      // Questions bank snapshot is empty. Preserve cached questions if available to prevent accidental drops
+      const cached = getStored<Question[]>(QUESTIONS_KEY, []);
+      if (cached.length > 0) {
+        localQuestions = cached;
+      } else {
         localQuestions = [];
-        initialSyncCompleted.questions = true;
-        notifySubscribers('SYNC_QUESTIONS');
+        localStorage.setItem(QUESTIONS_KEY, JSON.stringify([]));
       }
+      initialSyncCompleted.questions = true;
+      notifySubscribers('SYNC_QUESTIONS');
     }
   },
   (error) => {
-    handleFirestoreError(error, OperationType.GET, 'questions');
+    console.warn('Questions snapshot warning:', error);
+    initialSyncCompleted.questions = true;
   }
 );
 

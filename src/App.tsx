@@ -164,15 +164,19 @@ export default function App() {
     saveExamConfig(updatedConfig);
   };
 
-  // 3. STUDENT FLOW: Registration Action (Supports Reconnection after reset / reload & Randomized question sampling)
+  // 3. STUDENT FLOW: Registration Action (Supports Multi-Subject exams, Reconnection & Randomized question sampling)
   const handleRegisterStudent = (data: { name: string; absentNumber: string; studentClass: string; subjectId: string; username?: string }) => {
     const existingStudents = getStudents();
     
-    // Check if there's an existing registered student with matching username or name
     const normalizedNewName = data.name.trim().toLowerCase().replace(/\s+/g, '');
     const normalizedUsername = data.username ? data.username.trim().toLowerCase() : '';
+    const targetSubjectId = data.subjectId || 'sub1';
 
+    // Look for existing session for THIS SPECIFIC SUBJECT so students can take multiple subjects
     const existing = existingStudents.find((s) => {
+      const sSubId = s.subjectId || 'sub1';
+      if (sSubId !== targetSubjectId) return false;
+
       if (normalizedUsername && s.username && s.username.toLowerCase() === normalizedUsername) {
         return true;
       }
@@ -212,14 +216,22 @@ export default function App() {
     };
 
     if (existing) {
+      if (existing.status === 'SELESAI') {
+        // Student already finished this specific subject
+        setCurrentStudentId(existing.id);
+        localStorage.setItem('active_student_id', existing.id);
+        setRole('STUDENT_FINISHED');
+        return;
+      }
+
       // Reconnect to existing session, updating basic parameters if they changed
       const updatedStudent: Student = {
         ...existing,
         username: data.username || existing.username || '',
         studentClass: data.studentClass.trim(),
         absentNumber: data.absentNumber.trim(),
-        subjectId: data.subjectId,
-        assignedQuestionIds: existing.assignedQuestionIds || sampleQuestionsForSubject(data.subjectId),
+        subjectId: targetSubjectId,
+        assignedQuestionIds: existing.assignedQuestionIds || sampleQuestionsForSubject(targetSubjectId),
         lastActive: new Date().toISOString()
       };
       
@@ -230,9 +242,9 @@ export default function App() {
       return;
     }
 
-    // Create new student session object for first-time registration
+    // Create new student session object for this subject
     const newStudentId = `siswa_${Date.now()}_${Math.random().toString(36).substr(2, 5)}`;
-    const sampledQuestionIds = sampleQuestionsForSubject(data.subjectId);
+    const sampledQuestionIds = sampleQuestionsForSubject(targetSubjectId);
     const newStudent: Student = {
       id: newStudentId,
       username: data.username || '',
@@ -243,7 +255,7 @@ export default function App() {
       violationCount: 0,
       answers: {},
       lastActive: new Date().toISOString(),
-      subjectId: data.subjectId,
+      subjectId: targetSubjectId,
       assignedQuestionIds: sampledQuestionIds && sampledQuestionIds.length > 0 ? sampledQuestionIds : undefined
     };
 
@@ -269,14 +281,19 @@ export default function App() {
     }
   };
 
-  // 3c. STUDENT FLOW: Save/Update Answers in Real-time
+  // 3c. STUDENT FLOW: Save/Update Answers in Real-time (with continuous score recalculation)
   const handleStudentAnswersUpdate = (updatedAnswers: Record<string, number | number[]>) => {
     const freshStudents = getStudents();
     const active = freshStudents.find((s) => s.id === currentStudentId);
     if (active) {
+      const activeWithNewAnswers = { ...active, answers: updatedAnswers };
+      const metrics = getStudentMetrics(activeWithNewAnswers, questions);
       const updatedActive: Student = {
         ...active,
         answers: updatedAnswers,
+        score: metrics.score,
+        correctAnswersCount: metrics.correctAnswersCount,
+        totalQuestions: metrics.totalQuestions,
         lastActive: new Date().toISOString()
       };
       saveSingleStudent(updatedActive);
@@ -380,15 +397,9 @@ export default function App() {
       lastActive: new Date().toISOString()
     };
 
-    const updatedConfig: ExamConfig = {
-      ...config,
-      usedGlobalTokens: nextGlobalTokens
-    };
-
     await saveSingleStudent(updatedActive);
-    await saveExamConfig(updatedConfig);
     setStudents(prev => prev.map(s => s.id === updatedActive.id ? updatedActive : s));
-    setConfig(updatedConfig);
+    setConfig(prev => ({ ...prev, usedGlobalTokens: nextGlobalTokens }));
 
     return {
       success: true,
@@ -397,7 +408,7 @@ export default function App() {
   };
 
   // 5. STUDENT FLOW: Final Answers Submission & Calculation
-  const handleStudentSubmit = (selectedAnswers: Record<string, number | number[]>) => {
+  const handleStudentSubmit = async (selectedAnswers: Record<string, number | number[]>) => {
     const freshStudents = getStudents();
     const active = freshStudents.find(s => s.id === currentStudentId);
     if (!active) return;
@@ -417,7 +428,7 @@ export default function App() {
       lastActive: new Date().toISOString()
     };
 
-    saveSingleStudent(updatedActive);
+    await saveSingleStudent(updatedActive);
     setRole('STUDENT_FINISHED');
   };
 
@@ -571,7 +582,7 @@ export default function App() {
                   }}
                   className="w-full bg-slate-900 hover:bg-slate-800 text-white font-bold py-4 px-6 rounded-2xl transition duration-150 flex items-center justify-center gap-2 shadow-sm cursor-pointer"
                 >
-                  Selesai & Keluar Aplikasi
+                  Selesai & Kerjakan Naskah Ujian Lain / Keluar
                   <ArrowRight className="w-4 h-4 text-slate-400 animate-pulse" />
                 </button>
               </div>

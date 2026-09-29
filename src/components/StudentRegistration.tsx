@@ -73,6 +73,24 @@ export default function StudentRegistration({
   const selectedSubject = visibleSubjects.find(s => s.id === effectiveSubjectId);
   const selectedSubjectSchedule = selectedSubject ? evaluateSubjectSchedule(selectedSubject, wibClock.now) : null;
 
+  // Check if current student has a session (completed or in progress) for a specific subject
+  const getStudentSessionForSubject = (subId: string) => {
+    const currentUsername = authenticatedUser ? authenticatedUser.username.toLowerCase() : usernameInput.trim().toLowerCase();
+    const currentName = authenticatedUser ? authenticatedUser.name.trim().toLowerCase().replace(/\s+/g, '') : name.trim().toLowerCase().replace(/\s+/g, '');
+    if (!currentUsername && !currentName) return null;
+
+    return students.find((s) => {
+      const sSub = s.subjectId || 'sub1';
+      if (sSub !== subId) return false;
+      if (currentUsername && s.username && s.username.toLowerCase() === currentUsername) return true;
+      if (currentName) {
+        const sNorm = s.name.trim().toLowerCase().replace(/\s+/g, '');
+        return sNorm === currentName;
+      }
+      return false;
+    });
+  };
+
   // Admin access state
   const [showAdminModal, setShowAdminModal] = useState(false);
   const [adminUsername, setAdminUsername] = useState('');
@@ -125,9 +143,13 @@ export default function StudentRegistration({
     }
     if (!agreed) return setError('Anda harus menyetujui seluruh pakta integritas ujian');
 
-    // Duplicate string validation and re-connection logic
+    // Per-subject validation: Student can take Subject B (Naskah B) even if they completed Subject A (Naskah A)
     const normalizedNewName = finalName.trim().toLowerCase().replace(/\s+/g, '');
-    const existingStudentObj = students.find((s) => {
+    const targetSubjectId = effectiveSubjectId || 'sub1';
+    const existingSubjectSession = students.find((s) => {
+      const sSubId = s.subjectId || 'sub1';
+      if (sSubId !== targetSubjectId) return false;
+
       if (finalUsername && s.username && s.username.toLowerCase() === finalUsername.toLowerCase()) {
         return true;
       }
@@ -135,15 +157,16 @@ export default function StudentRegistration({
       return normalizedExisting === normalizedNewName;
     });
 
-    if (existingStudentObj) {
-      if (existingStudentObj.status === 'SELESAI') {
+    if (existingSubjectSession) {
+      if (existingSubjectSession.status === 'SELESAI') {
+        const subName = visibleSubjects.find(sub => sub.id === targetSubjectId)?.name || 'naskah ini';
         return setError(
-          `Nama siswa "${finalName}" sudah menyelesaikan ujian ini dan hasil pengerjaan telah dikonfirmasi. Anda tidak dapat melakukan ujian kembali.`
+          `Siswa "${finalName}" sudah menyelesaikan naskah "${subName}" (Nilai: ${typeof existingSubjectSession.score === 'number' ? existingSubjectSession.score.toFixed(1) : '-'}). Anda dapat memilih naskah ujian lain yang belum dikerjakan pada menu pilihan naskah di atas!`
         );
       }
-      if (existingStudentObj.status === 'TERKUNCI') {
+      if (existingSubjectSession.status === 'TERKUNCI') {
         return setError(
-          `Sesi ujian untuk siswa "${finalName}" saat ini dibekukan (TERKUNCI) oleh pengawas kelas karena terdeteksi keluar dari layar penuh / split screen. Silakan lapor ke proktor di depan kelas untuk membuka kunci ujian Anda!`
+          `Sesi ujian untuk siswa "${finalName}" pada naskah ini saat ini dibekukan (TERKUNCI) oleh pengawas kelas karena terdeteksi keluar dari layar penuh / split screen. Silakan lapor ke proktor di depan kelas untuk membuka kunci ujian Anda!`
         );
       }
     }
@@ -462,6 +485,7 @@ export default function StudentRegistration({
                       const isSelected = effectiveSubjectId === sub.id;
                       const qCount = getSubjectQuestionCount(sub.id);
                       const subSchedule = evaluateSubjectSchedule(sub, wibClock.now);
+                      const studentSession = getStudentSessionForSubject(sub.id);
 
                       return (
                         <button
@@ -488,6 +512,27 @@ export default function StudentRegistration({
                             </span>
                           </div>
                           <span className="font-bold text-sm text-slate-800 leading-snug">{sub.name}</span>
+
+                          {/* Student Status Badge for this Subject */}
+                          {studentSession && (
+                            <div className="mt-1.5">
+                              {studentSession.status === 'SELESAI' && (
+                                <span className="text-[10px] font-mono font-bold px-2 py-0.5 rounded-md bg-emerald-100 text-emerald-800 border border-emerald-300 inline-flex items-center gap-1">
+                                  <Check className="w-3 h-3" /> SELESAI {typeof studentSession.score === 'number' ? `(Nilai: ${studentSession.score.toFixed(1)})` : ''}
+                                </span>
+                              )}
+                              {studentSession.status === 'SEDANG_MENGERJAKAN' && (
+                                <span className="text-[10px] font-mono font-bold px-2 py-0.5 rounded-md bg-blue-100 text-blue-800 border border-blue-300 inline-flex items-center gap-1 animate-pulse">
+                                  SEDANG DIKERJAKAN ({Object.keys(studentSession.answers || {}).length}/{qCount})
+                                </span>
+                              )}
+                              {studentSession.status === 'TERKUNCI' && (
+                                <span className="text-[10px] font-mono font-bold px-2 py-0.5 rounded-md bg-rose-100 text-rose-800 border border-rose-300 inline-flex items-center gap-1">
+                                  TERKUNCI
+                                </span>
+                              )}
+                            </div>
+                          )}
 
                           {/* Status Jadwal Badge */}
                           <div className="mt-2 flex flex-wrap items-center gap-1.5 w-full">
@@ -579,26 +624,10 @@ export default function StudentRegistration({
               </div>
             </div>
           </div>
-          <button
-            type="button"
-            id="btn-force-reload-sync"
-            onClick={() => {
-              // Clear cache keys to guarantee absolute clean fetch
-              localStorage.removeItem('proktor_questions');
-              localStorage.removeItem('proktor_config');
-              localStorage.removeItem('proktor_students');
-              // Soft feedback then reload
-              const btn = document.getElementById('btn-force-reload-sync');
-              if (btn) btn.innerText = "MEMBERSIHKAN CACHE...";
-              setTimeout(() => {
-                window.location.reload();
-              }, 500);
-            }}
-            className="w-full md:w-auto inline-flex items-center justify-center gap-1.5 text-[10px] bg-indigo-50 hover:bg-indigo-100 text-indigo-700 hover:text-indigo-800 px-3.5 py-2 rounded-xl border border-indigo-100 transition-all cursor-pointer font-bold shrink-0 uppercase active:scale-[0.98]"
-          >
-            <RefreshCw className="w-3.5 h-3.5 animate-spin" style={{ animationDuration: '3s' }} />
-            Bersihkan Cache & Sinkron Ulang
-          </button>
+          <div className="text-[11px] text-slate-400 font-mono flex items-center gap-1.5">
+            <span className="w-1.5 h-1.5 rounded-full bg-emerald-500"></span>
+            Server Siap & Terhubung
+          </div>
         </div>
 
       </div>

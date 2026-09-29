@@ -659,7 +659,9 @@ export default function AdminPanel({
     const matchesStatus = selectedStatusFilter === 'all' || s.status === selectedStatusFilter;
 
     const metrics = getStudentMetrics(s, questions);
-    const displayScore = s.status === 'SELESAI' ? metrics.score : s.score;
+    const displayScore = s.status === 'SELESAI'
+      ? (s.score !== undefined ? s.score : metrics.score)
+      : (typeof s.score === 'number' ? s.score : (Object.keys(s.answers || {}).length > 0 ? metrics.score : undefined));
 
     let matchesScore = true;
     const minVal = minScoreFilter.trim() !== '' ? parseFloat(minScoreFilter) : null;
@@ -1588,6 +1590,75 @@ export default function AdminPanel({
     alert(isFilterActive ? `Pelanggaran untuk ${targetStudents.length} siswa ter-filter berhasil di-reset bersih menjadi 0!` : 'Seluruh pelanggaran siswa berhasil di-reset bersih menjadi 0!');
   };
 
+  // Force finish a single student's ongoing exam and record their score
+  const handleForceSubmitStudent = (studentId: string) => {
+    const target = students.find(s => s.id === studentId);
+    if (!target) return;
+    if (!window.confirm(`Kumpulkan lembar ujian ${target.name} sekarang dan tetapkan nilai akhirnya?`)) {
+      return;
+    }
+    const metrics = getStudentMetrics(target, questions);
+    const updated = students.map((s) => {
+      if (s.id === studentId) {
+        return {
+          ...s,
+          status: 'SELESAI' as const,
+          score: metrics.score,
+          correctAnswersCount: metrics.correctAnswersCount,
+          totalQuestions: metrics.totalQuestions,
+          endTime: s.endTime || new Date().toISOString(),
+          lastActive: new Date().toISOString()
+        };
+      }
+      return s;
+    });
+    onUpdateStudents(updated);
+    alert(`Ujian siswa ${target.name} berhasil dikumpulkan! Nilai akhir: ${metrics.score.toFixed(1)} (${metrics.correctAnswersCount}/${metrics.totalQuestions} Benar).`);
+  };
+
+  // Force finish all ongoing/locked students at once and calculate their scores
+  const handleForceSubmitAllOngoing = () => {
+    const targetStudents = isFilterActive ? filteredStudents : students;
+    const ongoingList = targetStudents.filter(s => s.status === 'SEDANG_MENGERJAKAN' || s.status === 'TERKUNCI');
+    if (ongoingList.length === 0) {
+      alert(isFilterActive ? 'Tidak ada siswa yang sedang mengerjakan atau terkunci dalam filter aktif.' : 'Tidak ada siswa yang sedang mengerjakan atau terkunci saat ini.');
+      return;
+    }
+    if (!window.confirm(`Kumpulkan paksa ujian untuk seluruh (${ongoingList.length}) siswa yang masih berlangsung? Seluruh nilai mereka akan dihitung dan status diubah menjadi SELESAI.`)) {
+      return;
+    }
+    const ongoingIds = new Set(ongoingList.map(s => s.id));
+    const updated = students.map((s) => {
+      if (ongoingIds.has(s.id)) {
+        const metrics = getStudentMetrics(s, questions);
+        return {
+          ...s,
+          status: 'SELESAI' as const,
+          score: metrics.score,
+          correctAnswersCount: metrics.correctAnswersCount,
+          totalQuestions: metrics.totalQuestions,
+          endTime: s.endTime || new Date().toISOString(),
+          lastActive: new Date().toISOString()
+        };
+      }
+      return s;
+    });
+    onUpdateStudents(updated);
+    alert(`Berhasil mengumpulkan dan menetapkan nilai untuk ${ongoingList.length} siswa!`);
+  };
+
+  // Admin clear local browser cache and force re-sync
+  const handleAdminClearCache = () => {
+    if (!window.confirm('Bersihkan cache lokal browser ini dan sinkronkan ulang seluruh bank soal, mata pelajaran, dan siswa langsung dari Cloud Firestore?')) {
+      return;
+    }
+    localStorage.removeItem('proktor_questions');
+    localStorage.removeItem('proktor_config');
+    localStorage.removeItem('proktor_students');
+    localStorage.removeItem('proktor_student_users');
+    window.location.reload();
+  };
+
   // Mass reset entire student progress (reset to BELUM_MULAI with clean scores & answers)
   const handleResetAllStudents = () => {
     const targetStudents = isFilterActive ? filteredStudents : students;
@@ -1681,9 +1752,11 @@ export default function AdminPanel({
 
     const rows = students.map((s, idx) => {
       const metrics = getStudentMetrics(s, questions);
-      const correctCount = s.status === 'SELESAI' ? metrics.correctAnswersCount : (s.correctAnswersCount !== undefined ? s.correctAnswersCount : '-');
+      const correctCount = s.status === 'SELESAI' ? metrics.correctAnswersCount : (s.correctAnswersCount !== undefined ? s.correctAnswersCount : (metrics.correctAnswersCount || '-'));
       const totalCount = metrics.totalQuestions;
-      const finalScore = s.status === 'SELESAI' ? metrics.score.toFixed(1) : (s.score !== undefined ? s.score.toFixed(1) : '-');
+      const finalScore = s.status === 'SELESAI' 
+        ? metrics.score.toFixed(1) 
+        : (s.score !== undefined ? s.score.toFixed(1) : (Object.keys(s.answers || {}).length > 0 ? `${metrics.score.toFixed(1)} (Berjalan)` : '-'));
       
       const formatTimeText = (isoStr?: string) => {
         if (!isoStr) return '-';
@@ -1850,6 +1923,15 @@ export default function AdminPanel({
             </div>
 
             <button
+              id="btn-admin-clear-cache"
+              onClick={handleAdminClearCache}
+              className="px-3.5 py-2 bg-slate-800 hover:bg-slate-700 text-slate-200 hover:text-white border border-slate-700 font-bold rounded-xl text-xs sm:text-sm transition flex items-center gap-1.5 cursor-pointer shadow-xs"
+              title="Bersihkan cache lokal dan sinkronkan ulang langsung dari Cloud Database"
+            >
+              <RefreshCw className="w-4 h-4 text-indigo-400" />
+              Bersihkan Cache & Sinkronkan
+            </button>
+            <button
               id="btn-admin-export"
               onClick={handleExportToExcel}
               className="px-4 py-2 bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-extrabold rounded-xl text-xs sm:text-sm transition flex items-center gap-2"
@@ -1976,6 +2058,20 @@ export default function AdminPanel({
               )}
 
               <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+                <button
+                  type="button"
+                  id="btn-bulk-finalize"
+                  onClick={handleForceSubmitAllOngoing}
+                  className="px-4 py-3.5 bg-emerald-600 hover:bg-emerald-500 text-white font-extrabold rounded-xl text-xs sm:text-sm transition flex items-center justify-center gap-2 cursor-pointer active:scale-[0.98] shadow-xs"
+                  title="Kumpulkan dan tetapkan nilai untuk semua siswa yang masih Sedang Mengerjakan atau Terkunci"
+                >
+                  <CheckCircle2 className="w-4 h-4 text-emerald-200" />
+                  {isFilterActive
+                    ? `Kumpulkan Ter-filter (${filteredStudents.filter(s => s.status === 'SEDANG_MENGERJAKAN' || s.status === 'TERKUNCI').length})`
+                    : `Kumpulkan Semua Berjalan (${students.filter(s => s.status === 'SEDANG_MENGERJAKAN' || s.status === 'TERKUNCI').length})`
+                  }
+                </button>
+
                 <button
                   type="button"
                   id="btn-bulk-unlock"
@@ -2236,7 +2332,9 @@ export default function AdminPanel({
                     <tbody className="divide-y divide-slate-100">
                       {filteredStudents.map((s) => {
                         const metrics = getStudentMetrics(s, questions);
-                        const displayScore = s.status === 'SELESAI' ? metrics.score : s.score;
+                        const displayScore = s.status === 'SELESAI'
+                          ? (s.score !== undefined ? s.score : metrics.score)
+                          : (typeof s.score === 'number' ? s.score : (Object.keys(s.answers || {}).length > 0 ? metrics.score : undefined));
                         const scoreBg = displayScore !== undefined && displayScore >= 70 ? 'bg-green-100 text-green-800' : 'bg-rose-100 text-rose-800';
                         
                         return (
@@ -2321,14 +2419,33 @@ export default function AdminPanel({
                             </td>
                             <td className="px-6 py-4 font-bold">
                               {displayScore !== undefined ? (
-                                <span className={`px-2.5 py-1 text-xs font-extrabold rounded-md ${scoreBg} font-mono`}>
-                                  {displayScore.toFixed(1)} / 100
-                                </span>
+                                <div className="space-y-0.5">
+                                  <span className={`px-2.5 py-1 text-xs font-extrabold rounded-md ${scoreBg} font-mono inline-block`}>
+                                    {displayScore.toFixed(1)} / 100
+                                  </span>
+                                  {s.status !== 'SELESAI' && (
+                                    <div className="text-[10px] text-amber-600 font-mono font-semibold">
+                                      Live: {metrics.correctAnswersCount}/{metrics.totalQuestions} Benar
+                                    </div>
+                                  )}
+                                </div>
                               ) : (
                                 <span className="text-slate-300 font-mono">-</span>
                               )}
                             </td>
                             <td className="px-6 py-4 text-right space-x-1.5 whitespace-nowrap">
+                              {/* Option to Force Finish / Submit */}
+                              {s.status !== 'SELESAI' && (
+                                <button
+                                  id={`btn-finalize-${s.id}`}
+                                  onClick={() => handleForceSubmitStudent(s.id)}
+                                  className="px-2.5 py-1 text-xs font-bold bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg shadow-xs transition"
+                                  title="Kumpulkan lembar ujian siswa ini dan tetapkan nilai akhir"
+                                >
+                                  Kumpulkan
+                                </button>
+                              )}
+
                               {/* Option to Unlock (Reset Status to Sedang Mengerjakan) */}
                               {s.status === 'TERKUNCI' && (
                                 <button

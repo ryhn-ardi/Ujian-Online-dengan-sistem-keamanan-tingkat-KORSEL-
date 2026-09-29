@@ -325,15 +325,21 @@ export default function StudentExam({
       }
     };
 
+    let lastRightClickTime = 0;
+
     const handleWindowBlur = () => {
       if (isGraceActive) return;
+      // Jangan anggap klik kanan mouse sebagai pelanggaran bila menyebabkan blur sesaat
+      if (Date.now() - lastRightClickTime < 1500) {
+        return;
+      }
       if (blurTimeout) clearTimeout(blurTimeout);
       // On mobile devices, window.blur fires immediately when pulling down notification shade or opening quick settings or answering popup
       blurTimeout = setTimeout(() => {
-        if (!isGraceActive) {
+        if (!isGraceActive && Date.now() - lastRightClickTime >= 1500) {
           triggerViolation('Membuka Bilah Notifikasi / Quick Settings HP atau Keluar Fokus Layar');
         }
-      }, 120);
+      }, 150);
     };
 
     const handleWindowFocus = () => {
@@ -387,9 +393,17 @@ export default function StudentExam({
     };
 
     const handleContextMenu = (e: MouseEvent) => {
-      if (isGraceActive) return;
+      // User requested right-click is not treated as violation
       e.preventDefault();
-      triggerViolation('Klik Kanan Terlarang');
+      e.stopPropagation();
+      lastRightClickTime = Date.now();
+      return false;
+    };
+
+    const handleMouseDown = (e: MouseEvent) => {
+      if (e.button === 2) {
+        lastRightClickTime = Date.now();
+      }
     };
 
     // Quick delay listeners to allow user to enter fullscreen without immediate triggers
@@ -400,6 +414,7 @@ export default function StudentExam({
       document.addEventListener('MSFullscreenChange', handleFullscreenChange);
       document.addEventListener('visibilitychange', handleVisibilityChange);
       document.addEventListener('contextmenu', handleContextMenu);
+      window.addEventListener('mousedown', handleMouseDown, true);
       window.addEventListener('blur', handleWindowBlur);
       window.addEventListener('focus', handleWindowFocus);
       window.addEventListener('resize', handleResize);
@@ -418,6 +433,7 @@ export default function StudentExam({
       document.removeEventListener('MSFullscreenChange', handleFullscreenChange);
       document.removeEventListener('visibilitychange', handleVisibilityChange);
       document.removeEventListener('contextmenu', handleContextMenu);
+      window.removeEventListener('mousedown', handleMouseDown, true);
       window.removeEventListener('blur', handleWindowBlur);
       window.removeEventListener('focus', handleWindowFocus);
       window.removeEventListener('resize', handleResize);

@@ -108,24 +108,28 @@ export const INITIAL_QUESTIONS: Question[] = [
 
 export const DEFAULT_SUBJECTS: ExamSubject[] = [
   {
-    id: 'sub1',
-    name: 'Seni Budaya dan P kelas 8',
-    code: 'SB-8',
-    isActive: true
+    id: 'sub2',
+    name: 'Matematika TKA',
+    code: 'MTK-TKA',
+    isActive: true,
+    sampleQuestionCount: 25,
+    enableRandomSampling: true
   },
   {
-    id: 'sub2',
-    name: 'Informatika kelas 7',
-    code: 'INF-7',
-    isActive: true
+    id: 'sub3',
+    name: 'Bahasa Indonesia TKA',
+    code: 'TKA-IND',
+    isActive: true,
+    sampleQuestionCount: 25,
+    enableRandomSampling: true
   }
 ];
 
 export const INITIAL_CONFIG: ExamConfig = {
-  durationMinutes: 15,
-  examTitle: 'ujian berbasis keamanan tingkat korea utara + NASA',
-  subject1Name: 'Seni Budaya dan P kelas 8',
-  subject2Name: 'Informatika kelas 7',
+  durationMinutes: 90,
+  examTitle: 'Portal Ujian Berbasis Komputer & HP (CBT)',
+  subject1Name: 'Matematika TKA',
+  subject2Name: 'Bahasa Indonesia TKA',
   subjects: DEFAULT_SUBJECTS,
   strictSecurityEnabled: true,
   maxAllowedViolations: 3,
@@ -134,6 +138,6 @@ export const INITIAL_CONFIG: ExamConfig = {
   unlockTokens: ['TOKEN-1', 'TOKEN-2'],
   usedGlobalTokens: [],
   enableRandomSampling: false,
-  sampleQuestionCount: 50,
+  sampleQuestionCount: 25,
   requireStudentLogin: true
 };
