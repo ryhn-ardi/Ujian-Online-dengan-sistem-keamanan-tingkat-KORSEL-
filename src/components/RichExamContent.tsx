@@ -12,6 +12,16 @@ interface RichExamContentProps {
 }
 
 /**
+ * Helper to escape unescaped % signs in LaTeX expressions so KaTeX renders them
+ * instead of treating them as LaTeX comments (which swallows the % and rest of line).
+ */
+export function escapeLatexPercent(latexStr: string): string {
+  if (!latexStr) return '';
+  // Replace % that is not preceded by a backslash with \%
+  return latexStr.replace(/(^|[^\\])%/g, '$1\\%');
+}
+
+/**
  * Intelligent helper to convert raw math text or LaTeX into KaTeX rendered HTML.
  * Handles:
  * - Full LaTeX blocks: $$...$$ and $...$
@@ -25,13 +35,15 @@ export function formatMathSegment(raw: string): string {
     // 1. If wrapped in $$...$$ (display math)
     if (raw.startsWith('$$') && raw.endsWith('$$') && raw.length >= 4) {
       const math = raw.slice(2, -2).trim();
-      return katex.renderToString(math, { displayMode: true, throwOnError: false });
+      const safeMath = escapeLatexPercent(math);
+      return katex.renderToString(safeMath, { displayMode: true, throwOnError: false });
     }
 
     // 2. If wrapped in $...$ (inline math)
     if (raw.startsWith('$') && raw.endsWith('$') && raw.length >= 2) {
       const math = raw.slice(1, -1).trim();
-      return katex.renderToString(math, { displayMode: false, throwOnError: false });
+      const safeMath = escapeLatexPercent(math);
+      return katex.renderToString(safeMath, { displayMode: false, throwOnError: false });
     }
 
     // 3. If contains raw LaTeX math command without $ (e.g. \frac{1}{2}, \sqrt{25}, \pi, \pm, \times)
@@ -53,7 +65,8 @@ export function formatMathSegment(raw: string): string {
       raw.includes('^{') ||
       raw.includes('_{')
     ) {
-      return katex.renderToString(raw, { displayMode: false, throwOnError: false });
+      const safeMath = escapeLatexPercent(raw);
+      return katex.renderToString(safeMath, { displayMode: false, throwOnError: false });
     }
   } catch (err) {
     console.warn('KaTeX render error:', err);
@@ -297,3 +310,5 @@ export const RichExamContent: React.FC<RichExamContentProps> = ({
     </div>
   );
 };
+
+export default RichExamContent;

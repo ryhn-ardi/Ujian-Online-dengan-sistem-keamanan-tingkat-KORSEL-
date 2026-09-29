@@ -70,6 +70,7 @@ function mapMathSymbolsToLatex(text: string): string {
     '⇔': '\\Leftrightarrow ',
     '·': '\\cdot ',
     '•': '\\cdot ',
+    '%': '\\% ',
   };
 
   let res = text;

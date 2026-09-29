@@ -114,7 +114,18 @@ export default function StudentExam({
   config
 }: StudentExamProps) {
   const [currentQuestionIndex, setCurrentQuestionIndex] = useState(0);
-  const [selectedAnswers, setSelectedAnswers] = useState<Record<string, number | number[]>>(student.answers || {});
+  const [selectedAnswers, setSelectedAnswers] = useState<Record<string, number | number[]>>(() => {
+    try {
+      const local = localStorage.getItem(`exam_answers_${student.id}`);
+      if (local) {
+        const parsed = JSON.parse(local);
+        if (parsed && typeof parsed === 'object') {
+          return { ...(student.answers || {}), ...parsed };
+        }
+      }
+    } catch (e) {}
+    return student.answers || {};
+  });
   const [fullscreenFailed, setFullscreenFailed] = useState(false);
   const [timeRemaining, setTimeRemaining] = useState(0);
   const [tokenInput, setTokenInput] = useState('');
@@ -130,6 +141,7 @@ export default function StudentExam({
   const [violationToast, setViolationToast] = useState<{ message: string; count: number; max: number } | null>(null);
   const [dndConfirmed, setDndConfirmed] = useState(false);
   const isUnlockingRef = useRef(false);
+  const isSubmittingRef = useRef(false);
   const wibClock = useRealtimeWIB();
 
   const isFullscreenSupported = typeof document !== 'undefined' && !!(
@@ -195,10 +207,21 @@ export default function StudentExam({
     return () => clearInterval(interval);
   }, [examStatus, student.id]);
 
-  // Synchronize local answers state if student answers are reset/modified from parent (e.g. locks/resets)
+  // Synchronize local answers state: safely merge with server without clobbering locally selected answers
   useEffect(() => {
-    setSelectedAnswers(student.answers || {});
-  }, [student.answers]);
+    if (student.answers && Object.keys(student.answers).length > 0) {
+      setSelectedAnswers((prev) => {
+        const merged = {
+          ...student.answers,
+          ...prev // Local choices take precedence
+        };
+        try {
+          localStorage.setItem(`exam_answers_${student.id}`, JSON.stringify(merged));
+        } catch (e) {}
+        return merged;
+      });
+    }
+  }, [student.answers, student.id]);
 
   const initialWidth = useRef(window.innerWidth);
   const initialHeight = useRef(window.innerHeight);
@@ -265,6 +288,7 @@ export default function StudentExam({
   };
 
   const triggerViolation = (reason: string) => {
+    if (isSubmittingRef.current) return; // Do not trigger violation during exam submission
     if (config.strictSecurityEnabled === false) return; // Ignore if security is off
     if (isGraceActive) return; // Skip if in brief grace period
 
@@ -478,7 +502,10 @@ export default function StudentExam({
     }
 
     setSelectedAnswers(updated);
-    // Silent background sync
+    // Silent background sync and persistent local backup
+    try {
+      localStorage.setItem(`exam_answers_${student.id}`, JSON.stringify(updated));
+    } catch (e) {}
     student.answers = updated;
     if (onAnswersUpdate) {
       onAnswersUpdate(updated);
@@ -486,18 +513,42 @@ export default function StudentExam({
   };
 
   const handleAutoSubmit = () => {
+    isSubmittingRef.current = true;
     // Escape fullscreen peacefully
     if (document.fullscreenElement) {
       document.exitFullscreen().catch(() => {});
     }
-    onSubmitAnswers(selectedAnswers);
+    // Read directly from localStorage backup to ensure all answers are included
+    let finalAnswers = selectedAnswers;
+    try {
+      const local = localStorage.getItem(`exam_answers_${student.id}`);
+      if (local) {
+        const parsed = JSON.parse(local);
+        if (parsed && typeof parsed === 'object') {
+          finalAnswers = { ...finalAnswers, ...parsed };
+        }
+      }
+    } catch (e) {}
+    onSubmitAnswers(finalAnswers);
   };
 
   const triggerDirectSubmit = () => {
+    isSubmittingRef.current = true;
     if (document.fullscreenElement) {
       document.exitFullscreen().catch(() => {});
     }
-    onSubmitAnswers(selectedAnswers);
+    // Read directly from localStorage backup to ensure all answers are included
+    let finalAnswers = selectedAnswers;
+    try {
+      const local = localStorage.getItem(`exam_answers_${student.id}`);
+      if (local) {
+        const parsed = JSON.parse(local);
+        if (parsed && typeof parsed === 'object') {
+          finalAnswers = { ...finalAnswers, ...parsed };
+        }
+      }
+    } catch (e) {}
+    onSubmitAnswers(finalAnswers);
   };
 
   const activeTokens = config.unlockTokens && config.unlockTokens.length > 0

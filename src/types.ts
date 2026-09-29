@@ -76,4 +76,5 @@ export interface ExamConfig {
   enableRandomSampling?: boolean; // Randomly sample questions from bank
   sampleQuestionCount?: number; // Number of questions to randomly pick (e.g. 50 out of 100)
   requireStudentLogin?: boolean; // Require username & password from database
+  proctorPassword?: string; // Kata sandi khusus login akun Pengawas Ruang (default: pengawas)
 }

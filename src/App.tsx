@@ -17,6 +17,7 @@ import { Student, Question, ExamConfig, StudentStatus, StudentUser } from './typ
 import StudentRegistration from './components/StudentRegistration';
 import StudentExam from './components/StudentExam';
 import AdminPanel from './components/AdminPanel';
+import ProctorPanel from './components/ProctorPanel';
 import { ShieldCheck, GraduationCap, Award, RefreshCw, XCircle, ArrowRight, CheckCircle2, ChevronRight, AlertTriangle, BookOpen } from 'lucide-react';
 
 // Shared helper to calculate actual slot/subject questions, score, and correct count for a student
@@ -81,7 +82,7 @@ export function getStudentMetrics(s: Student, questionsList: Question[]) {
 }
 
 export default function App() {
-  const [role, setRole] = useState<'SETUP' | 'STUDENT_EXAM' | 'STUDENT_FINISHED' | 'ADMIN'>('SETUP');
+  const [role, setRole] = useState<'SETUP' | 'STUDENT_EXAM' | 'STUDENT_FINISHED' | 'ADMIN' | 'PROCTOR'>('SETUP');
   const [students, setStudents] = useState<Student[]>([]);
   const [questions, setQuestions] = useState<Question[]>([]);
   const [studentUsers, setStudentUsers] = useState<StudentUser[]>([]);
@@ -491,6 +492,7 @@ export default function App() {
           studentUsers={studentUsers}
           onRegister={handleRegisterStudent}
           onAdminLogin={() => setRole('ADMIN')}
+          onProctorLogin={() => setRole('PROCTOR')}
           examTitle={config.examTitle || 'Ujian Digital'}
           durationMinutes={config.durationMinutes}
           totalQuestions={questions.length}
@@ -522,11 +524,8 @@ export default function App() {
           onStartExam={handleStartExam}
           onSubmitAnswers={handleStudentSubmit}
           onAnswersUpdate={handleStudentAnswersUpdate}
-          onExit={async () => {
-            // Delete incomplete record & exit
-            if (currentStudentId) {
-              await deleteSingleStudent(currentStudentId);
-            }
+          onExit={() => {
+            // Exit to menu without deleting student exam record
             setCurrentStudentId('');
             localStorage.removeItem('active_student_id');
             setRole('SETUP');
@@ -605,6 +604,57 @@ export default function App() {
           onUpdateStudentUsers={(users) => {
             setStudentUsers(users);
             saveStudentUsers(users);
+          }}
+          onExit={() => setRole('SETUP')}
+        />
+      )}
+
+      {/* 5. PROCTOR (PENGAWAS RUANG) CONSOLE */}
+      {role === 'PROCTOR' && (
+        <ProctorPanel
+          students={students}
+          questions={questions}
+          config={config}
+          onUnlockStudent={(studentId) => {
+            const updated = students.map((s) => {
+              if (s.id === studentId) {
+                const refreshed: Student = {
+                  ...s,
+                  status: 'SEDANG_MENGERJAKAN',
+                  lockedReason: undefined,
+                  violationCount: 0,
+                  tokenUnlockCount: (s.tokenUnlockCount || 0) + 1,
+                  lastActive: new Date().toISOString()
+                };
+                saveSingleStudent(refreshed);
+                return refreshed;
+              }
+              return s;
+            });
+            setStudents(updated);
+          }}
+          onUnlockAllStudents={() => {
+            const locked = students.filter(s => s.status === 'TERKUNCI');
+            if (locked.length === 0) {
+              alert('Tidak ada siswa yang berstatus TERKUNCI saat ini.');
+              return;
+            }
+            const updated = students.map(s => {
+              if (s.status === 'TERKUNCI') {
+                const refreshed: Student = {
+                  ...s,
+                  status: 'SEDANG_MENGERJAKAN',
+                  lockedReason: undefined,
+                  violationCount: 0,
+                  tokenUnlockCount: (s.tokenUnlockCount || 0) + 1,
+                  lastActive: new Date().toISOString()
+                };
+                saveSingleStudent(refreshed);
+                return refreshed;
+              }
+              return s;
+            });
+            setStudents(updated);
           }}
           onExit={() => setRole('SETUP')}
         />

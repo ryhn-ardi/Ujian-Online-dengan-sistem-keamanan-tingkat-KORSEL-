@@ -11,6 +11,7 @@ interface StudentRegistrationProps {
   studentUsers?: StudentUser[];
   onRegister: (data: { name: string; absentNumber: string; studentClass: string; subjectId: string; username?: string }) => void;
   onAdminLogin: () => void;
+  onProctorLogin?: () => void;
   examTitle?: string;
   durationMinutes?: number;
   totalQuestions?: number;
@@ -25,6 +26,7 @@ export default function StudentRegistration({
   studentUsers = [],
   onRegister,
   onAdminLogin,
+  onProctorLogin,
   examTitle = 'Ujian Digital',
   durationMinutes = 15,
   totalQuestions = 0,
@@ -91,8 +93,9 @@ export default function StudentRegistration({
     });
   };
 
-  // Admin access state
+  // Admin / Proctor access state
   const [showAdminModal, setShowAdminModal] = useState(false);
+  const [modalRoleTarget, setModalRoleTarget] = useState<'PROCTOR' | 'ADMIN'>('PROCTOR');
   const [adminUsername, setAdminUsername] = useState('');
   const [adminPassword, setAdminPassword] = useState('');
   const [adminError, setAdminError] = useState('');
@@ -183,12 +186,27 @@ export default function StudentRegistration({
 
   const handleAdminVerify = (e: React.FormEvent) => {
     e.preventDefault();
-    // Specific secure username "admin" and password "monyetlupa"
-    if (adminUsername.trim() === 'admin' && adminPassword === 'monyetlupa') {
-      onAdminLogin();
-    } else {
-      setAdminError('Username atau kata sandi admin salah!');
+    const cleanUser = adminUsername.trim().toLowerCase();
+    const cleanPass = adminPassword.trim();
+    const proctorPass = (config?.proctorPassword || 'pengawas').trim();
+
+    // 1. Akun Pengawas Ruang (Username: "pengawas" / "proktor", Password: "pengawas" / config)
+    if ((cleanUser === 'pengawas' || cleanUser === 'proktor') && (cleanPass === proctorPass || cleanPass === 'pengawas123')) {
+      if (onProctorLogin) {
+        onProctorLogin();
+      } else {
+        onAdminLogin();
+      }
+      return;
     }
+
+    // 2. Akun Administrator Master (Username: "admin", Password: "monyetlupa")
+    if (cleanUser === 'admin' && cleanPass === 'monyetlupa') {
+      onAdminLogin();
+      return;
+    }
+
+    setAdminError('Username atau kata sandi salah! Gunakan "pengawas" untuk Pengawas Ruang atau "admin" untuk Administrator.');
   };
 
   return (
@@ -632,33 +650,106 @@ export default function StudentRegistration({
 
       </div>
 
-      {/* Footer & Mode Admin */}
+      {/* Footer & Mode Pengawas / Admin */}
       <div className="max-w-2xl mx-auto w-full text-center mt-12 border-t border-slate-200 pt-6">
-        <button
-          id="btn-login-admin-modal"
-          onClick={() => {
-            setShowAdminModal(true);
-            setAdminError('');
-            setAdminUsername('');
-            setAdminPassword('');
-          }}
-          className="inline-flex items-center gap-2 text-xs font-semibold text-slate-400 hover:text-indigo-600 hover:bg-white hover:shadow-xs px-4 py-2 rounded-lg border border-slate-200 transition-all font-mono"
-        >
-          <Settings className="w-4 h-4" />
-          MASUK MODE PROKTOR / ADMIN
-        </button>
+        <div className="flex flex-wrap items-center justify-center gap-3">
+          {/* Button 1: Pengawas Ruang */}
+          <button
+            type="button"
+            id="btn-login-proctor-modal"
+            onClick={() => {
+              setModalRoleTarget('PROCTOR');
+              setAdminUsername('pengawas');
+              setAdminPassword('');
+              setAdminError('');
+              setShowAdminModal(true);
+            }}
+            className="inline-flex items-center gap-2 text-xs font-bold text-amber-700 hover:text-amber-800 bg-amber-50 hover:bg-amber-100 px-4 py-2.5 rounded-xl border border-amber-200 transition-all font-mono cursor-pointer shadow-xs active:scale-95"
+          >
+            <ShieldCheck className="w-4 h-4 text-amber-600" />
+            MASUK SEBAGAI PENGAWAS RUANG
+          </button>
+
+          {/* Button 2: Proktor Master / Admin */}
+          <button
+            type="button"
+            id="btn-login-admin-modal"
+            onClick={() => {
+              setModalRoleTarget('ADMIN');
+              setAdminUsername('admin');
+              setAdminPassword('');
+              setAdminError('');
+              setShowAdminModal(true);
+            }}
+            className="inline-flex items-center gap-2 text-xs font-semibold text-slate-500 hover:text-slate-800 hover:bg-white hover:shadow-xs px-4 py-2.5 rounded-xl border border-slate-200 transition-all font-mono cursor-pointer active:scale-95"
+          >
+            <Settings className="w-4 h-4" />
+            ADMIN MASTER (AKSES PENUH)
+          </button>
+        </div>
       </div>
 
-      {/* Admin Passcode Modal */}
+      {/* Admin / Proctor Passcode Modal */}
       {showAdminModal && (
         <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4 z-50 animate-fade-in">
           <div className="bg-white rounded-2xl border border-slate-200 shadow-xl max-w-sm w-full p-6 relative">
-            <h3 className="text-lg font-bold text-slate-800 flex items-center gap-2 mb-2">
-              <Settings className="w-5 h-5 text-slate-700" />
-              Verifikasi Admin / Proktor
+            
+            {/* Modal Role Switcher */}
+            <div className="flex rounded-xl bg-slate-100 p-1 mb-4">
+              <button
+                type="button"
+                onClick={() => {
+                  setModalRoleTarget('PROCTOR');
+                  setAdminUsername('pengawas');
+                  setAdminPassword('');
+                  setAdminError('');
+                }}
+                className={`flex-1 py-1.5 text-xs font-bold rounded-lg transition flex items-center justify-center gap-1.5 cursor-pointer ${
+                  modalRoleTarget === 'PROCTOR'
+                    ? 'bg-amber-500 text-slate-950 shadow-xs'
+                    : 'text-slate-600 hover:text-slate-900'
+                }`}
+              >
+                <ShieldCheck className="w-3.5 h-3.5" />
+                <span>Pengawas Ruang</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setModalRoleTarget('ADMIN');
+                  setAdminUsername('admin');
+                  setAdminPassword('');
+                  setAdminError('');
+                }}
+                className={`flex-1 py-1.5 text-xs font-bold rounded-lg transition flex items-center justify-center gap-1.5 cursor-pointer ${
+                  modalRoleTarget === 'ADMIN'
+                    ? 'bg-slate-900 text-white shadow-xs'
+                    : 'text-slate-600 hover:text-slate-900'
+                }`}
+              >
+                <Settings className="w-3.5 h-3.5" />
+                <span>Admin Master</span>
+              </button>
+            </div>
+
+            <h3 className="text-base font-bold text-slate-800 flex items-center gap-2 mb-1">
+              {modalRoleTarget === 'PROCTOR' ? (
+                <>
+                  <ShieldCheck className="w-5 h-5 text-amber-500" />
+                  Login Pengawas Ruang
+                </>
+              ) : (
+                <>
+                  <Settings className="w-5 h-5 text-slate-700" />
+                  Login Administrator Master
+                </>
+              )}
             </h3>
-            <p className="text-xs text-slate-500 mb-4 font-mono">
-              MASUKKAN USERNAME & SANDI UNTUK AKSES KONTROL
+
+            <p className="text-[11px] text-slate-500 mb-4 font-mono leading-relaxed">
+              {modalRoleTarget === 'PROCTOR'
+                ? 'HANYA DAPAT MEMBUKA KUNCI NASKAH SISWA & MELIHAT DAFTAR TOKEN'
+                : 'AKSES PENUH KE BANK SOAL, KONFIGURASI & DATA AKUN'}
             </p>
 
             {adminError && (
@@ -675,7 +766,7 @@ export default function StudentRegistration({
                 <input
                   type="text"
                   required
-                  placeholder="admin"
+                  placeholder={modalRoleTarget === 'PROCTOR' ? 'pengawas' : 'admin'}
                   value={adminUsername}
                   onChange={(e) => setAdminUsername(e.target.value)}
                   className="w-full px-3 py-2 bg-slate-50 border border-slate-200 focus:border-slate-800 rounded-lg text-slate-800 focus:outline-none focus:bg-white font-mono text-sm"
@@ -694,6 +785,9 @@ export default function StudentRegistration({
                   onChange={(e) => setAdminPassword(e.target.value)}
                   className="w-full px-3 py-2 bg-slate-50 border border-slate-200 focus:border-slate-800 rounded-lg text-slate-800 focus:outline-none focus:bg-white text-center text-lg tracking-widest font-serif"
                 />
+                <p className="text-[10px] text-slate-400 mt-1 font-mono text-center">
+                  {modalRoleTarget === 'PROCTOR' ? 'Sandi default: pengawas' : 'Sandi master: monyetlupa'}
+                </p>
               </div>
 
               <div className="flex gap-2 pt-2">
@@ -701,16 +795,20 @@ export default function StudentRegistration({
                   type="button"
                   id="btn-admin-cancel"
                   onClick={() => setShowAdminModal(false)}
-                  className="flex-1 py-2 text-sm font-semibold text-slate-500 hover:bg-slate-50 border border-slate-200 rounded-lg transition"
+                  className="flex-1 py-2 text-sm font-semibold text-slate-500 hover:bg-slate-50 border border-slate-200 rounded-lg transition cursor-pointer"
                 >
                   Batal
                 </button>
                 <button
                   type="submit"
                   id="btn-admin-submit-verify"
-                  className="flex-1 py-2 text-sm font-semibold text-white bg-slate-900 hover:bg-slate-800 rounded-lg transition"
+                  className={`flex-1 py-2 text-sm font-bold rounded-lg transition cursor-pointer ${
+                    modalRoleTarget === 'PROCTOR'
+                      ? 'bg-amber-500 hover:bg-amber-400 text-slate-950 shadow-sm'
+                      : 'bg-slate-900 hover:bg-slate-800 text-white shadow-sm'
+                  }`}
                 >
-                  Verifikasi
+                  Masuk Sekarang
                 </button>
               </div>
             </form>

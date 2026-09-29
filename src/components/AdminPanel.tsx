@@ -1,5 +1,5 @@
 import React, { useState, useRef } from 'react';
-import { Users, FileSpreadsheet, RefreshCw, KeyRound, Edit, Trash2, Plus, Save, BookOpen, Clock, X, ChevronRight, Check, AlertTriangle, ShieldCheck, Search, Eye, EyeOff, Layers, Settings2, Sparkles, Ticket, Download, Upload, Shuffle, UserCheck, Lock, CheckCircle2, ChevronLeft, Image as ImageIcon, AlignLeft, HelpCircle, FileText, Calendar, Timer, CheckSquare, Radio } from 'lucide-react';
+import { Users, FileSpreadsheet, RefreshCw, KeyRound, Edit, Trash2, Plus, Save, BookOpen, Clock, X, ChevronRight, Check, AlertTriangle, ShieldCheck, Search, Eye, EyeOff, Layers, Settings2, Sparkles, Ticket, Download, Upload, Shuffle, UserCheck, Lock, CheckCircle2, ChevronLeft, Image as ImageIcon, AlignLeft, HelpCircle, FileText, Calendar, Timer, CheckSquare, Radio, BarChart3 } from 'lucide-react';
 import * as XLSX from 'xlsx';
 import { Student, Question, ExamConfig, ExamSubject, StudentUser } from '../types';
 import { getExamSubjects, saveSingleStudent } from '../utils/sync';
@@ -7,6 +7,8 @@ import { RichExamContent } from './RichExamContent';
 import { compressImageFile } from '../utils/imageCompressor';
 import { useRealtimeWIB, formatWIBDateTime, formatWIBShort, formatWIBTimeOnly, evaluateSubjectSchedule, toWIBDateTimeInputValue, parseWIBInputValueToISO, formatDurationCountdown } from '../utils/timeWib';
 import { parseDocxExamFile, WordImportResult } from '../utils/wordImporter';
+import AnalyticsCharts from './AnalyticsCharts';
+import ItemAnalysisTab from './ItemAnalysisTab';
 
 // Helper to calculate actual subject metrics for a student
 export function getStudentMetrics(s: Student, questionsList: Question[]) {
@@ -92,7 +94,7 @@ export default function AdminPanel({
   onExit
 }: AdminPanelProps) {
   // Tabs for the Admin Control Panel
-  const [activeTab, setActiveTab] = useState<'MONITOR' | 'QUESTIONS' | 'CONFIG' | 'ACCOUNTS'>('MONITOR');
+  const [activeTab, setActiveTab] = useState<'MONITOR' | 'CHARTS' | 'ITEM_ANALYSIS' | 'QUESTIONS' | 'CONFIG' | 'ACCOUNTS'>('MONITOR');
 
   // Search filter query
   const [studentSearch, setStudentSearch] = useState('');
@@ -101,6 +103,7 @@ export default function AdminPanel({
   const [selectedStatusFilter, setSelectedStatusFilter] = useState('all');
   const [minScoreFilter, setMinScoreFilter] = useState<string>('');
   const [maxScoreFilter, setMaxScoreFilter] = useState<string>('');
+  const [studentSortBy, setStudentSortBy] = useState<'name' | 'recent' | 'score_desc' | 'score_asc' | 'absen' | 'locked'>('recent');
 
   // Student editor modals state
   const [editingStudent, setEditingStudent] = useState<Student | null>(null);
@@ -681,6 +684,36 @@ export default function AdminPanel({
     }
 
     return matchesSearch && matchesClass && matchesSubject && matchesStatus && matchesScore;
+  });
+
+  const sortedStudents = [...filteredStudents].sort((a, b) => {
+    if (studentSortBy === 'recent') {
+      const timeA = new Date(a.lastActive || a.startTime || 0).getTime();
+      const timeB = new Date(b.lastActive || b.startTime || 0).getTime();
+      return timeB - timeA;
+    }
+    if (studentSortBy === 'locked') {
+      if (a.status === 'TERKUNCI' && b.status !== 'TERKUNCI') return -1;
+      if (b.status === 'TERKUNCI' && a.status !== 'TERKUNCI') return 1;
+      return a.name.localeCompare(b.name);
+    }
+    if (studentSortBy === 'absen') {
+      const numA = parseInt(a.absentNumber || '0', 10);
+      const numB = parseInt(b.absentNumber || '0', 10);
+      if (numA !== numB) return numA - numB;
+      return (a.studentClass || '').localeCompare(b.studentClass || '');
+    }
+    if (studentSortBy === 'score_desc') {
+      const sA = typeof a.score === 'number' ? a.score : -1;
+      const sB = typeof b.score === 'number' ? b.score : -1;
+      return sB - sA;
+    }
+    if (studentSortBy === 'score_asc') {
+      const sA = typeof a.score === 'number' ? a.score : 999;
+      const sB = typeof b.score === 'number' ? b.score : 999;
+      return sA - sB;
+    }
+    return a.name.localeCompare(b.name);
   });
 
   const isFilterActive = studentSearch.trim() !== '' || 
@@ -1547,13 +1580,16 @@ export default function AdminPanel({
     const targetIds = new Set(lockedStudents.map(s => s.id));
     const updated = students.map((s) => {
       if (targetIds.has(s.id)) {
-        return {
+        const unlocked: Student = {
           ...s,
           status: 'SEDANG_MENGERJAKAN' as const,
           violationCount: 0, // Reset violation count on unlock!
           lockedReason: undefined,
-          answers: s.answers || {} // Preserve answers already typed
+          answers: s.answers || {}, // Preserve answers already typed
+          lastActive: new Date().toISOString()
         };
+        saveSingleStudent(unlocked);
+        return unlocked;
       }
       return s;
     });
@@ -1598,20 +1634,18 @@ export default function AdminPanel({
       return;
     }
     const metrics = getStudentMetrics(target, questions);
-    const updated = students.map((s) => {
-      if (s.id === studentId) {
-        return {
-          ...s,
-          status: 'SELESAI' as const,
-          score: metrics.score,
-          correctAnswersCount: metrics.correctAnswersCount,
-          totalQuestions: metrics.totalQuestions,
-          endTime: s.endTime || new Date().toISOString(),
-          lastActive: new Date().toISOString()
-        };
-      }
-      return s;
-    });
+    const updatedStudent: Student = {
+      ...target,
+      status: 'SELESAI' as const,
+      score: metrics.score,
+      correctAnswersCount: metrics.correctAnswersCount,
+      totalQuestions: metrics.totalQuestions,
+      endTime: target.endTime || new Date().toISOString(),
+      lastActive: new Date().toISOString()
+    };
+    saveSingleStudent(updatedStudent);
+
+    const updated = students.map((s) => (s.id === studentId ? updatedStudent : s));
     onUpdateStudents(updated);
     alert(`Ujian siswa ${target.name} berhasil dikumpulkan! Nilai akhir: ${metrics.score.toFixed(1)} (${metrics.correctAnswersCount}/${metrics.totalQuestions} Benar).`);
   };
@@ -1631,7 +1665,7 @@ export default function AdminPanel({
     const updated = students.map((s) => {
       if (ongoingIds.has(s.id)) {
         const metrics = getStudentMetrics(s, questions);
-        return {
+        const finished: Student = {
           ...s,
           status: 'SELESAI' as const,
           score: metrics.score,
@@ -1640,6 +1674,8 @@ export default function AdminPanel({
           endTime: s.endTime || new Date().toISOString(),
           lastActive: new Date().toISOString()
         };
+        saveSingleStudent(finished);
+        return finished;
       }
       return s;
     });
@@ -1951,11 +1987,11 @@ export default function AdminPanel({
       </header>
 
       {/* Primary Sub Tabs */}
-      <div className="bg-white border-b border-slate-200">
-        <div className="max-w-6xl mx-auto flex">
+      <div className="bg-white border-b border-slate-200 overflow-x-auto">
+        <div className="max-w-6xl mx-auto flex min-w-max">
           <button
             onClick={() => setActiveTab('MONITOR')}
-            className={`px-6 py-4 font-bold text-sm border-b-2 flex items-center gap-2 transition ${
+            className={`px-5 py-4 font-bold text-sm border-b-2 flex items-center gap-2 transition cursor-pointer ${
               activeTab === 'MONITOR'
                 ? 'border-indigo-600 text-indigo-600'
                 : 'border-transparent text-slate-500 hover:text-slate-800'
@@ -1965,8 +2001,30 @@ export default function AdminPanel({
             Monitoring Siswa ({students.length})
           </button>
           <button
+            onClick={() => setActiveTab('CHARTS')}
+            className={`px-5 py-4 font-bold text-sm border-b-2 flex items-center gap-2 transition cursor-pointer ${
+              activeTab === 'CHARTS'
+                ? 'border-indigo-600 text-indigo-600'
+                : 'border-transparent text-slate-500 hover:text-slate-800'
+            }`}
+          >
+            <BarChart3 className="w-4 h-4 text-indigo-600" />
+            Grafik Monitoring
+          </button>
+          <button
+            onClick={() => setActiveTab('ITEM_ANALYSIS')}
+            className={`px-5 py-4 font-bold text-sm border-b-2 flex items-center gap-2 transition cursor-pointer ${
+              activeTab === 'ITEM_ANALYSIS'
+                ? 'border-indigo-600 text-indigo-600'
+                : 'border-transparent text-slate-500 hover:text-slate-800'
+            }`}
+          >
+            <FileSpreadsheet className="w-4 h-4 text-emerald-600" />
+            Analisis Butir Soal & Excel
+          </button>
+          <button
             onClick={() => setActiveTab('QUESTIONS')}
-            className={`px-6 py-4 font-bold text-sm border-b-2 flex items-center gap-2 transition ${
+            className={`px-5 py-4 font-bold text-sm border-b-2 flex items-center gap-2 transition cursor-pointer ${
               activeTab === 'QUESTIONS'
                 ? 'border-indigo-600 text-indigo-600'
                 : 'border-transparent text-slate-500 hover:text-slate-800'
@@ -1977,7 +2035,7 @@ export default function AdminPanel({
           </button>
           <button
             onClick={() => setActiveTab('CONFIG')}
-            className={`px-6 py-4 font-bold text-sm border-b-2 flex items-center gap-2 transition ${
+            className={`px-5 py-4 font-bold text-sm border-b-2 flex items-center gap-2 transition cursor-pointer ${
               activeTab === 'CONFIG'
                 ? 'border-indigo-600 text-indigo-600'
                 : 'border-transparent text-slate-500 hover:text-slate-800'
@@ -1988,7 +2046,7 @@ export default function AdminPanel({
           </button>
           <button
             onClick={() => setActiveTab('ACCOUNTS')}
-            className={`px-6 py-4 font-bold text-sm border-b-2 flex items-center gap-2 transition ${
+            className={`px-5 py-4 font-bold text-sm border-b-2 flex items-center gap-2 transition cursor-pointer ${
               activeTab === 'ACCOUNTS'
                 ? 'border-indigo-600 text-indigo-600'
                 : 'border-transparent text-slate-500 hover:text-slate-800'
@@ -2035,6 +2093,42 @@ export default function AdminPanel({
                 </div>
               </div>
             </div>
+
+            {/* URGENT LOCKED STUDENTS ACTION BANNER */}
+            {students.filter(s => s.status === 'TERKUNCI').length > 0 && (
+              <div className="bg-rose-600 text-white p-5 rounded-2xl shadow-xl border border-rose-700 flex flex-col sm:flex-row sm:items-center justify-between gap-4 animate-fade-in">
+                <div className="flex items-center gap-4">
+                  <div className="p-3 bg-white/20 rounded-2xl shrink-0">
+                    <AlertTriangle className="w-7 h-7 text-white animate-bounce" />
+                  </div>
+                  <div>
+                    <div className="flex items-center gap-2">
+                      <span className="text-[10px] bg-white text-rose-700 font-black font-mono px-2 py-0.5 rounded-full uppercase tracking-wider">
+                        PERINGATAN PROKTOR
+                      </span>
+                      <span className="text-xs font-mono font-bold text-rose-200">
+                        {students.filter(s => s.status === 'TERKUNCI').length} Siswa Terkunci
+                      </span>
+                    </div>
+                    <h4 className="text-base sm:text-lg font-black tracking-tight mt-0.5">
+                      Ada {students.filter(s => s.status === 'TERKUNCI').length} siswa yang sedang terblokir / terkunci!
+                    </h4>
+                    <p className="text-xs text-rose-100 mt-0.5">
+                      Tombol unlock kini dapat langsung diklik pada kolom status siswa di bawah atau buka sekaligus seluruh kunci siswa dengan tombol di samping.
+                    </p>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  id="btn-alert-unlock-all"
+                  onClick={handleUnlockAllStudents}
+                  className="px-5 py-3 bg-white hover:bg-rose-50 text-rose-700 font-black text-xs sm:text-sm rounded-xl shadow-md transition flex items-center justify-center gap-2 cursor-pointer active:scale-95 shrink-0"
+                >
+                  <KeyRound className="w-4 h-4 text-rose-600" />
+                  Buka Kunci Semua ({students.filter(s => s.status === 'TERKUNCI').length})
+                </button>
+              </div>
+            )}
 
              {/* Panel Kontrol Masal Pengawas / Proktor */}
             <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-xs space-y-4">
@@ -2174,6 +2268,45 @@ export default function AdminPanel({
                   </button>
                 </div>
                 
+                {/* Quick Subject Pill Tabs for 1-click filtering */}
+                <div className="flex flex-wrap items-center gap-1.5 p-1 bg-slate-100/90 rounded-2xl border border-slate-200/80 mb-3 w-full">
+                  <button
+                    type="button"
+                    onClick={() => setSelectedSubjectFilter('all')}
+                    className={`px-3 py-1.5 rounded-xl text-xs font-bold transition flex items-center gap-1.5 cursor-pointer ${
+                      selectedSubjectFilter === 'all'
+                        ? 'bg-indigo-600 text-white shadow-xs'
+                        : 'text-slate-600 hover:text-slate-900 hover:bg-white/60'
+                    }`}
+                  >
+                    <span>Semua Naskah</span>
+                    <span className={`text-[10px] px-1.5 py-0.2 rounded-full font-mono ${selectedSubjectFilter === 'all' ? 'bg-indigo-700 text-white' : 'bg-slate-200 text-slate-700'}`}>
+                      {students.length}
+                    </span>
+                  </button>
+                  {subjects.map((sub) => {
+                    const count = students.filter(s => (!s.subjectId && sub.id === 'sub1') || s.subjectId === sub.id).length;
+                    const isActive = selectedSubjectFilter === sub.id;
+                    return (
+                      <button
+                        key={sub.id}
+                        type="button"
+                        onClick={() => setSelectedSubjectFilter(sub.id)}
+                        className={`px-3 py-1.5 rounded-xl text-xs font-bold transition flex items-center gap-1.5 cursor-pointer ${
+                          isActive
+                            ? 'bg-indigo-600 text-white shadow-xs'
+                            : 'text-slate-600 hover:text-slate-900 hover:bg-white/60'
+                        }`}
+                      >
+                        <span>{sub.name}</span>
+                        <span className={`text-[10px] px-1.5 py-0.2 rounded-full font-mono ${isActive ? 'bg-indigo-700 text-white' : 'bg-slate-200 text-slate-700'}`}>
+                          {count}
+                        </span>
+                      </button>
+                    );
+                  })}
+                </div>
+
                 {/* Search & Filter Controls Grid */}
                 <div className="flex flex-col sm:flex-row flex-wrap items-center gap-3">
                   {/* Search Bar Input */}
@@ -2248,6 +2381,24 @@ export default function AdminPanel({
                       <option value="BELUM_MULAI">Belum Mulai ({students.filter(s => s.status === 'BELUM_MULAI').length})</option>
                     </select>
                   </div>
+
+                  {/* Sort Order Drops */}
+                  <div className="flex items-center gap-1.5 w-full sm:w-auto shrink-0">
+                    <span className="text-[11px] font-bold text-slate-400 uppercase font-mono sm:inline hidden">Urutkan:</span>
+                    <select
+                      value={studentSortBy}
+                      onChange={(e: any) => setStudentSortBy(e.target.value)}
+                      className="w-full sm:w-auto px-3 py-2 bg-white border border-slate-200 rounded-xl text-xs font-semibold text-slate-700 focus:outline-none focus:border-indigo-500"
+                    >
+                      <option value="recent">Waktu Terbaru / Terakhir Aktif</option>
+                      <option value="locked">Prioritas Terkunci (Perlu Unlock)</option>
+                      <option value="name">Nama Siswa (A - Z)</option>
+                      <option value="absen">Nomor Absen</option>
+                      <option value="score_desc">Nilai Tertinggi</option>
+                      <option value="score_asc">Nilai Terendah</option>
+                    </select>
+                  </div>
+
                   {/* Filter Rentang Nilai Manual */}
                   <div className="flex items-center gap-1.5 w-full sm:w-auto shrink-0">
                     <span className="text-[11px] font-bold text-slate-400 uppercase font-mono sm:inline hidden">Nilai:</span>
@@ -2260,7 +2411,7 @@ export default function AdminPanel({
                         placeholder="Min (0)"
                         min="0"
                         max="100"
-                        className="w-24 px-2 py-2 bg-white border border-slate-200 rounded-xl text-xs font-semibold text-slate-700 placeholder:text-slate-300 focus:outline-none focus:border-indigo-500 font-mono text-center"
+                        className="w-20 px-2 py-2 bg-white border border-slate-200 rounded-xl text-xs font-semibold text-slate-700 placeholder:text-slate-300 focus:outline-none focus:border-indigo-500 font-mono text-center"
                       />
                       <span className="text-slate-400 font-mono text-xs">-</span>
                       <input
@@ -2271,7 +2422,7 @@ export default function AdminPanel({
                         placeholder="Maks (100)"
                         min="0"
                         max="100"
-                        className="w-24 px-2 py-2 bg-white border border-slate-200 rounded-xl text-xs font-semibold text-slate-700 placeholder:text-slate-300 focus:outline-none focus:border-indigo-500 font-mono text-center"
+                        className="w-20 px-2 py-2 bg-white border border-slate-200 rounded-xl text-xs font-semibold text-slate-700 placeholder:text-slate-300 focus:outline-none focus:border-indigo-500 font-mono text-center"
                       />
                     </div>
                   </div>
@@ -2305,7 +2456,7 @@ export default function AdminPanel({
                   <h4 className="font-bold text-slate-700">Belum ada siswa yang mendaftar</h4>
                   <p className="text-xs text-slate-400 mt-1">Siswa akan muncul di sini secara real-time setelah mereka menginput nama di lembar depan ujian.</p>
                 </div>
-              ) : filteredStudents.length === 0 ? (
+              ) : sortedStudents.length === 0 ? (
                 <div className="text-center py-16 px-4">
                   <div className="inline-flex p-3 bg-indigo-50 rounded-full text-indigo-500 mb-2 animate-pulse">
                     <Search className="w-8 h-8" />
@@ -2330,7 +2481,7 @@ export default function AdminPanel({
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-100">
-                      {filteredStudents.map((s) => {
+                      {sortedStudents.map((s) => {
                         const metrics = getStudentMetrics(s, questions);
                         const displayScore = s.status === 'SELESAI'
                           ? (s.score !== undefined ? s.score : metrics.score)
@@ -2338,7 +2489,7 @@ export default function AdminPanel({
                         const scoreBg = displayScore !== undefined && displayScore >= 70 ? 'bg-green-100 text-green-800' : 'bg-rose-100 text-rose-800';
                         
                         return (
-                          <tr key={s.id} className="hover:bg-slate-50/50 transition duration-150">
+                          <tr key={s.id} className={`transition duration-150 ${s.status === 'TERKUNCI' ? 'bg-rose-50/90 border-l-4 border-rose-500 hover:bg-rose-100/70' : 'hover:bg-slate-50/50'}`}>
                             <td className="px-6 py-4 font-mono font-bold text-slate-500">
                               {s.absentNumber.padStart(2, '0')}
                             </td>
@@ -2370,14 +2521,24 @@ export default function AdminPanel({
                                 <span className="px-2.5 py-1 text-xs font-semibold bg-emerald-150 text-emerald-800 rounded-full font-mono font-bold">SELESAI</span>
                               )}
                               {s.status === 'TERKUNCI' && (
-                                <div className="space-y-1">
-                                  <span className="px-2.5 py-1 text-xs font-bold bg-rose-600 text-white rounded-md font-mono inline-flex items-center gap-1">
+                                <div className="space-y-1.5">
+                                  <span className="px-2.5 py-1 text-xs font-bold bg-rose-600 text-white rounded-md font-mono inline-flex items-center gap-1 shadow-xs">
                                     <AlertTriangle className="w-3.5 h-3.5" />
                                     TERKUNCI
                                   </span>
                                   <div className="text-[10px] text-red-650 font-bold max-w-[150px] leading-tight">
                                     {s.lockedReason || 'Ganti screen tab'}
                                   </div>
+                                  <button
+                                    type="button"
+                                    id={`btn-direct-unlock-${s.id}`}
+                                    onClick={() => handleUnlockStudent(s.id)}
+                                    className="px-3 py-1.5 bg-amber-400 hover:bg-amber-300 active:scale-95 text-slate-950 font-extrabold text-xs rounded-xl shadow-md transition flex items-center gap-1.5 cursor-pointer animate-pulse"
+                                    title="Langsung buka kunci untuk siswa ini"
+                                  >
+                                    <KeyRound className="w-3.5 h-3.5 text-slate-900" />
+                                    <span>Buka Kunci (Unlock)</span>
+                                  </button>
                                 </div>
                               )}
                             </td>
@@ -2517,6 +2678,24 @@ export default function AdminPanel({
               )}
             </div>
           </div>
+        )}
+
+        {/* TAB: GRAFIK & STATISTIK MONITORING */}
+        {activeTab === 'CHARTS' && (
+          <AnalyticsCharts
+            students={students}
+            questions={questions}
+            config={config}
+          />
+        )}
+
+        {/* TAB: ANALISIS BUTIR SOAL & EXCEL */}
+        {activeTab === 'ITEM_ANALYSIS' && (
+          <ItemAnalysisTab
+            questions={questions}
+            students={students}
+            config={config}
+          />
         )}
 
         {/* TAB 2: BANK SOAL */}
