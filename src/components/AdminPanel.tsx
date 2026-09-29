@@ -146,6 +146,9 @@ export default function AdminPanel({
   // Live WIB clock hook
   const wibClock = useRealtimeWIB();
 
+  // Vertical Navigation Tab in CONFIG tab
+  const [configSectionTab, setConfigSectionTab] = useState<'GENERAL' | 'SECURITY' | 'ALARM' | 'TOKENS' | 'STUDENT_ACCESS' | 'STAFF_PASSWORDS'>('GENERAL');
+
   // Password Management with Ultimate Authorization Code
   const [authCodeInput, setAuthCodeInput] = useState('');
   const [passwordTargetRole, setPasswordTargetRole] = useState<'PROCTOR' | 'ADMIN' | 'BOTH'>('PROCTOR');
@@ -2031,6 +2034,410 @@ export default function AdminPanel({
     setQScore(20);
   };
 
+  
+  // Helper to render Question Editor Form (supports creating at top and editing inline right at question slot)
+  const renderQuestionEditorForm = (mode: 'CREATE' | 'EDIT', questionIndex?: number) => {
+    const isEdit = mode === 'EDIT';
+    return (
+      <div 
+        id={isEdit && editingQuestion ? `edit-question-box-${editingQuestion.id}` : 'create-question-box'}
+        className="bg-white rounded-2xl border-2 border-indigo-300 p-6 shadow-md ring-4 ring-indigo-50/70 animate-fade-in transition-all"
+      >
+        <div className="flex items-center justify-between border-b border-indigo-100 pb-4 mb-5">
+          <div className="flex items-center gap-3">
+            <div className="w-9 h-9 rounded-xl bg-indigo-100 text-indigo-700 flex items-center justify-center font-bold text-sm shadow-2xs">
+              {isEdit && typeof questionIndex === 'number' ? `#${questionIndex + 1}` : <BookOpen className="w-5 h-5 text-indigo-600" />}
+            </div>
+            <div>
+              <h4 className="font-extrabold text-indigo-950 flex items-center gap-2 text-base">
+                {isEdit 
+                  ? `Edit Soal Ujian (Nomor #${typeof questionIndex === 'number' ? questionIndex + 1 : ''})` 
+                  : `Buat Soal Ujian Baru ke Mapel "${effectiveActiveSubject.name}"`}
+              </h4>
+              <p className="text-xs text-indigo-600 font-medium">
+                {isEdit 
+                  ? `Mengedit langsung pada posisi nomor urut #${typeof questionIndex === 'number' ? questionIndex + 1 : ''} di naskah "${effectiveActiveSubject.name}".` 
+                  : `Soal baru akan ditambahkan ke bank soal mata pelajaran aktif.`}
+              </p>
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={() => {
+              setIsCreatingQuestion(false);
+              setEditingQuestion(null);
+            }}
+            className="p-1.5 hover:bg-slate-100 rounded-full transition text-slate-400 hover:text-slate-600 cursor-pointer"
+            title="Tutup / Batalkan"
+          >
+            <X className="w-5 h-5" />
+          </button>
+        </div>
+<form onSubmit={handleSaveQuestion} className="space-y-5">
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-500 uppercase font-mono tracking-wider mb-2">Pilih Naskah Ujian (Mata Pelajaran)</label>
+                    <select
+                      value={qSubjectId}
+                      onChange={(e) => setQSubjectId(e.target.value)}
+                      className="w-full px-4 py-3 bg-slate-50 border border-slate-200 focus:border-indigo-500 focus:bg-white rounded-xl text-slate-800 text-sm focus:outline-none transition font-semibold"
+                    >
+                      {subjects.map(s => (
+                        <option key={s.id} value={s.id}>
+                          {s.name} {s.code ? `(${s.code})` : ''}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+
+                  <div>
+                    <div className="flex flex-wrap items-center justify-between gap-2 mb-2">
+                      <label className="text-xs font-semibold text-slate-700 uppercase font-mono tracking-wider">
+                        Teks Soal / Pertanyaan
+                      </label>
+                      <div className="text-[11px] text-slate-500 flex items-center gap-1">
+                        <Sparkles className="w-3.5 h-3.5 text-indigo-500" />
+                        <span>Pintasan Simbol Matematika SMP:</span>
+                      </div>
+                    </div>
+
+                    {/* SMP Math Symbols Toolbar */}
+                    <div className="mb-2 p-2 bg-slate-100 rounded-xl border border-slate-200 flex flex-wrap items-center gap-1.5 text-xs">
+                      <span className="text-[10px] font-mono font-bold text-slate-500 uppercase px-1">Sisipkan:</span>
+                      <button type="button" onClick={() => insertSymbolIntoQText('π')} className="px-2 py-1 bg-white hover:bg-indigo-50 hover:text-indigo-600 rounded-lg border border-slate-200 font-bold transition shadow-2xs cursor-pointer" title="Simbol Pi (π)">π</button>
+                      <button type="button" onClick={() => insertSymbolIntoQText('²')} className="px-2 py-1 bg-white hover:bg-indigo-50 hover:text-indigo-600 rounded-lg border border-slate-200 font-bold transition shadow-2xs cursor-pointer" title="Pangkat Dua / Kuadrat (²)">x²</button>
+                      <button type="button" onClick={() => insertSymbolIntoQText('³')} className="px-2 py-1 bg-white hover:bg-indigo-50 hover:text-indigo-600 rounded-lg border border-slate-200 font-bold transition shadow-2xs cursor-pointer" title="Pangkat Tiga / Kubik (³)">x³</button>
+                      <button type="button" onClick={() => insertSymbolIntoQText('½')} className="px-2 py-1 bg-white hover:bg-indigo-50 hover:text-indigo-600 rounded-lg border border-slate-200 font-bold transition shadow-2xs cursor-pointer" title="Pecahan Setengah (½)">½</button>
+                      <button type="button" onClick={() => insertSymbolIntoQText('\\frac{a}{b}')} className="px-2 py-1 bg-white hover:bg-indigo-50 hover:text-indigo-600 rounded-lg border border-slate-200 font-bold transition shadow-2xs cursor-pointer font-mono" title="Pecahan TeX (\frac{a}{b})">\frac&#123;a&#125;&#123;b&#125;</button>
+                      <button type="button" onClick={() => insertSymbolIntoQText('√')} className="px-2 py-1 bg-white hover:bg-indigo-50 hover:text-indigo-600 rounded-lg border border-slate-200 font-bold transition shadow-2xs cursor-pointer" title="Akar Kuadrat (√)">√</button>
+                      <button type="button" onClick={() => insertSymbolIntoQText('°')} className="px-2 py-1 bg-white hover:bg-indigo-50 hover:text-indigo-600 rounded-lg border border-slate-200 font-bold transition shadow-2xs cursor-pointer" title="Derajat Sudut (°)">30°</button>
+                      <button type="button" onClick={() => insertSymbolIntoQText('×')} className="px-2 py-1 bg-white hover:bg-indigo-50 hover:text-indigo-600 rounded-lg border border-slate-200 font-bold transition shadow-2xs cursor-pointer" title="Simbol Kali (×)">×</button>
+                      <button type="button" onClick={() => insertSymbolIntoQText('÷')} className="px-2 py-1 bg-white hover:bg-indigo-50 hover:text-indigo-600 rounded-lg border border-slate-200 font-bold transition shadow-2xs cursor-pointer" title="Simbol Bagi (÷)">÷</button>
+                      <button type="button" onClick={() => insertSymbolIntoQText('±')} className="px-2 py-1 bg-white hover:bg-indigo-50 hover:text-indigo-600 rounded-lg border border-slate-200 font-bold transition shadow-2xs cursor-pointer" title="Plus Minus (±)">±</button>
+                      <button type="button" onClick={() => insertSymbolIntoQText('≤')} className="px-2 py-1 bg-white hover:bg-indigo-50 hover:text-indigo-600 rounded-lg border border-slate-200 font-bold transition shadow-2xs cursor-pointer" title="Kurang dari sama dengan (≤)">≤</button>
+                      <button type="button" onClick={() => insertSymbolIntoQText('≥')} className="px-2 py-1 bg-white hover:bg-indigo-50 hover:text-indigo-600 rounded-lg border border-slate-200 font-bold transition shadow-2xs cursor-pointer" title="Lebih dari sama dengan (≥)">≥</button>
+                      <button type="button" onClick={() => insertSymbolIntoQText('≠')} className="px-2 py-1 bg-white hover:bg-indigo-50 hover:text-indigo-600 rounded-lg border border-slate-200 font-bold transition shadow-2xs cursor-pointer" title="Tidak sama dengan (≠)">≠</button>
+                      <button type="button" onClick={() => insertSymbolIntoQText('∠')} className="px-2 py-1 bg-white hover:bg-indigo-50 hover:text-indigo-600 rounded-lg border border-slate-200 font-bold transition shadow-2xs cursor-pointer" title="Simbol Sudut (∠)">∠</button>
+                      <button type="button" onClick={() => insertSymbolIntoQText('$x^2 + 5x + 6 = 0$')} className="px-2 py-1 bg-indigo-50 text-indigo-700 hover:bg-indigo-100 rounded-lg border border-indigo-200 font-mono font-bold transition shadow-2xs cursor-pointer" title="Contoh Rumus KaTeX ($...$)">$rumus$</button>
+                    </div>
+
+                    <textarea
+                      ref={qTextAreaRef}
+                      required
+                      placeholder="Tuliskan pertanyaan ujian di sini... (Untuk soal matematika, gunakan simbol di atas atau format $...$. Untuk teks bacaan/paragraf, tekan Enter 2x untuk paragraf baru yang menjorok)"
+                      value={qText}
+                      onChange={(e) => setQText(e.target.value)}
+                      rows={4}
+                      className="w-full px-4 py-3 bg-slate-50 border border-slate-200 focus:border-indigo-500 focus:bg-white rounded-xl text-slate-800 text-sm focus:outline-none transition leading-relaxed"
+                    />
+                  </div>
+
+                  {/* Indonesian Reading Passage Toggle */}
+                  <div className="p-3.5 bg-amber-50/60 border border-amber-200/80 rounded-xl flex items-start gap-3">
+                    <input
+                      type="checkbox"
+                      id="checkbox-is-passage"
+                      checked={qIsReadingPassage}
+                      onChange={(e) => setQIsReadingPassage(e.target.checked)}
+                      className="mt-0.5 w-4 h-4 rounded text-amber-600 focus:ring-amber-500 border-amber-300 cursor-pointer"
+                    />
+                    <label htmlFor="checkbox-is-passage" className="text-xs text-slate-700 cursor-pointer select-none">
+                      <span className="font-bold text-amber-950 flex items-center gap-1.5">
+                        <AlignLeft className="w-3.5 h-3.5 text-amber-700" />
+                        Format Teks Wacana / Bacaan Panjang (Bahasa Indonesia)
+                      </span>
+                      <span className="text-slate-500 block mt-0.5">
+                        Mengaktifkan gaya paragraf menjorok ke dalam (*indent* awal kalimat) dan jarak antar baris (*line-height*) yang renggang dan nyaman dibaca siswa. Pisahkan antar paragraf dengan menekan <strong>Enter 2 kali</strong>.
+                      </span>
+                    </label>
+                  </div>
+
+                  {/* Question Image / Diagram (Math & Geometry) */}
+                  <div className="p-4 bg-indigo-50/50 border border-indigo-100 rounded-xl space-y-3">
+                    <div className="flex items-center justify-between">
+                      <label className="text-xs font-bold text-indigo-950 flex items-center gap-1.5 font-mono uppercase tracking-wider">
+                        <ImageIcon className="w-4 h-4 text-indigo-600" />
+                        Gambar / Diagram / Ilustrasi Soal (Opsional)
+                      </label>
+                      {qImageUrl && (
+                        <button
+                          type="button"
+                          onClick={() => setQImageUrl('')}
+                          className="text-[11px] font-bold text-rose-600 hover:text-rose-700 flex items-center gap-1 cursor-pointer"
+                        >
+                          <Trash2 className="w-3 h-3" />
+                          Hapus Gambar
+                        </button>
+                      )}
+                    </div>
+
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 items-center">
+                      {/* File upload from device */}
+                      <div>
+                        <label className="block text-[11px] font-bold text-slate-600 mb-1">
+                          1. Pilih Berkas Gambar (Otomatis Dioptimasi):
+                        </label>
+                        <input
+                          type="file"
+                          accept="image/*"
+                          disabled={isUploadingQImage}
+                          onChange={async (e) => {
+                            const file = e.target.files?.[0];
+                            if (!file) return;
+                            setIsUploadingQImage(true);
+                            try {
+                              const base64 = await compressImageFile(file, 1000, 0.82);
+                              setQImageUrl(base64);
+                            } catch (err: any) {
+                              alert(`Gagal memproses gambar: ${err.message || err}`);
+                            } finally {
+                              setIsUploadingQImage(false);
+                              e.target.value = '';
+                            }
+                          }}
+                          className="block w-full text-xs text-slate-500 file:mr-2 file:py-1.5 file:px-3 file:rounded-lg file:border-0 file:text-xs file:font-bold file:bg-indigo-600 file:text-white hover:file:bg-indigo-500 cursor-pointer"
+                        />
+                      </div>
+
+                      {/* Direct URL input */}
+                      <div>
+                        <label className="block text-[11px] font-bold text-slate-600 mb-1">
+                          2. Atau Tempelkan Tautan / URL Gambar Web:
+                        </label>
+                        <input
+                          type="url"
+                          placeholder="https://.../diagram-geometri.png"
+                          value={qImageUrl.startsWith('data:') ? '' : qImageUrl}
+                          onChange={(e) => setQImageUrl(e.target.value)}
+                          className="w-full px-3 py-1.5 bg-white border border-slate-200 rounded-lg text-xs text-slate-800 placeholder:text-slate-400 focus:outline-none focus:border-indigo-500"
+                        />
+                      </div>
+                    </div>
+
+                    {/* Image Thumbnail Preview */}
+                    {qImageUrl && (
+                      <div className="mt-2 p-2 bg-white rounded-xl border border-indigo-200 flex items-center gap-3">
+                        <img
+                          src={qImageUrl}
+                          alt="Preview Gambar Soal"
+                          className="h-20 w-auto max-w-[140px] object-contain rounded-lg border border-slate-200 bg-slate-50"
+                        />
+                        <div className="text-xs text-slate-600 flex-1">
+                          <span className="font-bold text-emerald-600 flex items-center gap-1">
+                            <Check className="w-3.5 h-3.5" /> Gambar siap ditampilkan
+                          </span>
+                          <p className="text-[11px] text-slate-400 mt-0.5">
+                            Siswa dapat mengklik gambar ini untuk memperbesar (zoom modal) saat mengerjakan ujian.
+                          </p>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Live Student View Preview Box */}
+                  {(qText || qImageUrl) && (
+                    <div className="p-4 bg-slate-50 border border-slate-200 rounded-xl space-y-2">
+                      <div className="flex items-center gap-1.5 text-xs font-bold text-slate-600 font-mono uppercase">
+                        <Eye className="w-3.5 h-3.5 text-indigo-600" />
+                        Pratinjau Tampilan Siswa (Live Preview)
+                      </div>
+                      <div className="p-4 bg-white rounded-xl border border-slate-200 shadow-2xs">
+                        <RichExamContent
+                          text={qText}
+                          imageUrl={qImageUrl}
+                          isReadingPassage={qIsReadingPassage}
+                          className="text-sm font-medium text-slate-800"
+                        />
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Question Type Selector (Single Choice vs Multiple Choice / MR) */}
+                  <div className="p-4 bg-slate-50 border border-slate-200 rounded-xl space-y-3">
+                    <label className="block text-xs font-bold text-slate-700 uppercase font-mono tracking-wider">
+                      Model / Tipe Jawaban Soal Ujian:
+                    </label>
+                    
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                      {/* Option 1: Pilihan Ganda Tunggal */}
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setQType('MC');
+                          const first = qCorrectIndices[0] ?? 0;
+                          setQCorrect(first);
+                          setQCorrectIndices([first]);
+                        }}
+                        className={`p-3.5 rounded-xl border text-left transition flex items-start gap-3 cursor-pointer ${
+                          qType === 'MC'
+                            ? 'bg-blue-50/80 border-blue-500 ring-2 ring-blue-500/20 text-blue-950'
+                            : 'bg-white border-slate-200 hover:bg-slate-100 text-slate-700'
+                        }`}
+                      >
+                        <div className={`mt-0.5 p-1.5 rounded-lg shrink-0 ${qType === 'MC' ? 'bg-blue-600 text-white' : 'bg-slate-100 text-slate-400'}`}>
+                          <Radio className="w-4 h-4" />
+                        </div>
+                        <div>
+                          <div className="font-extrabold text-xs flex items-center gap-1.5">
+                            Pilihan Ganda Tunggal
+                            {qType === 'MC' && <span className="text-[10px] bg-blue-600 text-white px-1.5 py-0.2 rounded font-mono font-bold">AKTIF</span>}
+                          </div>
+                          <p className="text-[11px] text-slate-500 mt-1 leading-snug">
+                            Hanya ada <strong>1 jawaban benar</strong>. Siswa hanya dapat memilih 1 opsi radio.
+                          </p>
+                        </div>
+                      </button>
+
+                      {/* Option 2: Pilihan Ganda Kompleks */}
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setQType('MR');
+                          if (qCorrectIndices.length < 2) {
+                            // Automatically select second option if only 1 is currently chosen
+                            const next = qCorrectIndices.length === 0 ? [0, 1] : [qCorrectIndices[0], (qCorrectIndices[0] + 1) % 4];
+                            setQCorrectIndices(next.sort((a, b) => a - b));
+                          }
+                        }}
+                        className={`p-3.5 rounded-xl border text-left transition flex items-start gap-3 cursor-pointer ${
+                          qType === 'MR'
+                            ? 'bg-amber-50/80 border-amber-500 ring-2 ring-amber-500/20 text-amber-950'
+                            : 'bg-white border-slate-200 hover:bg-slate-100 text-slate-700'
+                        }`}
+                      >
+                        <div className={`mt-0.5 p-1.5 rounded-lg shrink-0 ${qType === 'MR' ? 'bg-amber-500 text-white' : 'bg-slate-100 text-slate-400'}`}>
+                          <CheckSquare className="w-4 h-4" />
+                        </div>
+                        <div>
+                          <div className="font-extrabold text-xs flex items-center gap-1.5">
+                            Pilihan Ganda Kompleks (Ganda)
+                            {qType === 'MR' && <span className="text-[10px] bg-amber-500 text-white px-1.5 py-0.2 rounded font-mono font-bold">AKTIF</span>}
+                          </div>
+                          <p className="text-[11px] text-slate-500 mt-1 leading-snug">
+                            Ada <strong>2 atau lebih jawaban benar</strong>. Siswa dapat mencentang beberapa opsi sekaligus.
+                          </p>
+                        </div>
+                      </button>
+                    </div>
+
+                    <div className="text-[11px] text-slate-500 px-1 flex items-center gap-1.5 font-medium">
+                      <span>💡</span>
+                      <span>
+                        {qType === 'MC' 
+                          ? 'Klik huruf A/B/C/D di bawah untuk memilih 1 kunci jawaban yang benar.'
+                          : 'Klik huruf A/B/C/D di bawah untuk mencentang 2 atau lebih kunci jawaban benar (Pilihan Ganda Kompleks).'
+                        }
+                      </span>
+                    </div>
+                  </div>
+
+                  <div className="space-y-3">
+                    <div className="flex items-center justify-between">
+                      <label className="block text-xs font-semibold text-slate-500 uppercase font-mono tracking-wider">
+                        {qType === 'MC' ? 'Pilih Opsi Jawaban & 1 Kunci' : 'Pilih Opsi Jawaban & Kunci Ganda (Minimal 2 Kunci)'}
+                      </label>
+                      <span className="text-xs font-mono font-bold text-indigo-600 bg-indigo-50 px-2 py-0.5 rounded">
+                        Kunci Terpilih: {qCorrectIndices.map(i => String.fromCharCode(65 + i)).join(', ') || '-'}
+                      </span>
+                    </div>
+                    
+                    {qOptions.map((opt, oIdx) => {
+                      const letter = String.fromCharCode(65 + oIdx);
+                      const isCorrect = qCorrectIndices.includes(oIdx);
+
+                      const handleToggleOptionKey = () => {
+                        if (qType === 'MC') {
+                          setQCorrect(oIdx);
+                          setQCorrectIndices([oIdx]);
+                        } else {
+                          // Toggle in MR
+                          if (qCorrectIndices.includes(oIdx)) {
+                            if (qCorrectIndices.length <= 1) {
+                              alert('Minimal 1 kunci jawaban harus tetap dipilih!');
+                              return;
+                            }
+                            const updated = qCorrectIndices.filter(i => i !== oIdx);
+                            setQCorrectIndices(updated);
+                            setQCorrect(updated[0] ?? 0);
+                          } else {
+                            const updated = [...qCorrectIndices, oIdx].sort((a, b) => a - b);
+                            setQCorrectIndices(updated);
+                            setQCorrect(updated[0] ?? 0);
+                          }
+                        }
+                      };
+
+                      return (
+                        <div key={oIdx} className="flex items-center gap-3">
+                          <button
+                            type="button"
+                            onClick={handleToggleOptionKey}
+                            className={`min-w-14 h-10 px-2 rounded-xl flex items-center justify-center gap-1.5 font-bold font-mono text-sm border shrink-0 transition-all cursor-pointer ${
+                              isCorrect
+                                ? 'bg-emerald-500 border-emerald-600 text-white shadow-sm'
+                                : 'bg-slate-50 hover:bg-slate-100 border-slate-200 text-slate-500 hover:text-slate-800'
+                            }`}
+                            title={isCorrect ? 'Opsi ini aktif sebagai kunci jawaban (Klik untuk ubah)' : 'Jadikan ini sebagai kunci jawaban'}
+                          >
+                            {isCorrect ? <Check className="w-4 h-4 shrink-0" /> : null}
+                            <span>{letter}</span>
+                            {isCorrect && <span className="text-[10px] uppercase font-bold tracking-tight">Kunci</span>}
+                          </button>
+                          <input
+                            type="text"
+                            required
+                            placeholder={`Tulis pilihan jawaban untuk opsi ${letter}...`}
+                            value={opt}
+                            onChange={(e) => {
+                              const updated = [...qOptions];
+                              updated[oIdx] = e.target.value;
+                              setQOptions(updated);
+                            }}
+                            className="flex-1 px-4 py-2.5 bg-slate-50 border border-slate-200 focus:border-indigo-500 focus:bg-white rounded-xl text-slate-800 text-sm focus:outline-none transition"
+                          />
+                        </div>
+                      );
+                    })}
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-500 uppercase font-mono tracking-wider mb-2">Skor / Bobot Nilai Soal (Angka)</label>
+                    <input
+                      type="number"
+                      required
+                      min={0}
+                      step="any"
+                      placeholder="Masukkan bobot skor soal (contoh: 20)..."
+                      value={qScore}
+                      onChange={(e) => setQScore(Number(e.target.value) || 0)}
+                      className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 focus:border-indigo-500 focus:bg-white rounded-xl text-slate-800 text-sm focus:outline-none transition font-semibold"
+                    />
+                  </div>
+
+                  <div className="border-t border-slate-100 pt-5 flex justify-end gap-2 text-sm pt-4">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setIsCreatingQuestion(false);
+                        setEditingQuestion(null);
+                      }}
+                      className="px-4 py-2.5 font-bold text-slate-500 hover:bg-slate-50 rounded-xl transition border border-slate-200"
+                    >
+                      Batal
+                    </button>
+                    <button
+                      type="submit"
+                      id="btn-save-questions-db"
+                      className="px-5 py-2.5 bg-indigo-600 hover:bg-indigo-500 text-white font-extrabold rounded-xl transition duration-150 flex items-center gap-1 shadow-sm"
+                    >
+                      <Save className="w-4 h-4" />
+                      Simpan Soal
+                    </button>
+                  </div>
+                </form>
+      </div>
+    );
+  };
+
   const handleDeleteQuestion = (questionId: string) => {
     if (questions.length <= 1) {
       alert('Sistem membutuhkan minimal 1 soal dalam bank soal ujian!');
@@ -3445,387 +3852,8 @@ export default function AdminPanel({
             )}
 
             {/* Editing / Creating state view */}
-            {(isCreatingQuestion || editingQuestion) && (
-              <div className="bg-white rounded-2xl border border-indigo-200 p-6 shadow-sm ring-1 ring-indigo-100 animate-fade-in">
-                <div className="flex items-center justify-between border-b border-indigo-100 pb-4 mb-5">
-                  <h4 className="font-bold text-indigo-900 flex items-center gap-2">
-                    <BookOpen className="w-5 h-5 text-indigo-600" />
-                    {isCreatingQuestion ? 'Buat Soal Ujian Baru' : 'Edit Soal Ujian'}
-                  </h4>
-                  <button
-                    onClick={() => {
-                      setIsCreatingQuestion(false);
-                      setEditingQuestion(null);
-                    }}
-                    className="p-1 hover:bg-slate-100 rounded-full transition text-slate-400 hover:text-slate-600"
-                  >
-                    <X className="w-5 h-5" />
-                  </button>
-                </div>
-
-                <form onSubmit={handleSaveQuestion} className="space-y-5">
-                  <div>
-                    <label className="block text-xs font-semibold text-slate-500 uppercase font-mono tracking-wider mb-2">Pilih Naskah Ujian (Mata Pelajaran)</label>
-                    <select
-                      value={qSubjectId}
-                      onChange={(e) => setQSubjectId(e.target.value)}
-                      className="w-full px-4 py-3 bg-slate-50 border border-slate-200 focus:border-indigo-500 focus:bg-white rounded-xl text-slate-800 text-sm focus:outline-none transition font-semibold"
-                    >
-                      {subjects.map(s => (
-                        <option key={s.id} value={s.id}>
-                          {s.name} {s.code ? `(${s.code})` : ''}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-
-                  <div>
-                    <div className="flex flex-wrap items-center justify-between gap-2 mb-2">
-                      <label className="text-xs font-semibold text-slate-700 uppercase font-mono tracking-wider">
-                        Teks Soal / Pertanyaan
-                      </label>
-                      <div className="text-[11px] text-slate-500 flex items-center gap-1">
-                        <Sparkles className="w-3.5 h-3.5 text-indigo-500" />
-                        <span>Pintasan Simbol Matematika SMP:</span>
-                      </div>
-                    </div>
-
-                    {/* SMP Math Symbols Toolbar */}
-                    <div className="mb-2 p-2 bg-slate-100 rounded-xl border border-slate-200 flex flex-wrap items-center gap-1.5 text-xs">
-                      <span className="text-[10px] font-mono font-bold text-slate-500 uppercase px-1">Sisipkan:</span>
-                      <button type="button" onClick={() => insertSymbolIntoQText('π')} className="px-2 py-1 bg-white hover:bg-indigo-50 hover:text-indigo-600 rounded-lg border border-slate-200 font-bold transition shadow-2xs cursor-pointer" title="Simbol Pi (π)">π</button>
-                      <button type="button" onClick={() => insertSymbolIntoQText('²')} className="px-2 py-1 bg-white hover:bg-indigo-50 hover:text-indigo-600 rounded-lg border border-slate-200 font-bold transition shadow-2xs cursor-pointer" title="Pangkat Dua / Kuadrat (²)">x²</button>
-                      <button type="button" onClick={() => insertSymbolIntoQText('³')} className="px-2 py-1 bg-white hover:bg-indigo-50 hover:text-indigo-600 rounded-lg border border-slate-200 font-bold transition shadow-2xs cursor-pointer" title="Pangkat Tiga / Kubik (³)">x³</button>
-                      <button type="button" onClick={() => insertSymbolIntoQText('½')} className="px-2 py-1 bg-white hover:bg-indigo-50 hover:text-indigo-600 rounded-lg border border-slate-200 font-bold transition shadow-2xs cursor-pointer" title="Pecahan Setengah (½)">½</button>
-                      <button type="button" onClick={() => insertSymbolIntoQText('\\frac{a}{b}')} className="px-2 py-1 bg-white hover:bg-indigo-50 hover:text-indigo-600 rounded-lg border border-slate-200 font-bold transition shadow-2xs cursor-pointer font-mono" title="Pecahan TeX (\frac{a}{b})">\frac&#123;a&#125;&#123;b&#125;</button>
-                      <button type="button" onClick={() => insertSymbolIntoQText('√')} className="px-2 py-1 bg-white hover:bg-indigo-50 hover:text-indigo-600 rounded-lg border border-slate-200 font-bold transition shadow-2xs cursor-pointer" title="Akar Kuadrat (√)">√</button>
-                      <button type="button" onClick={() => insertSymbolIntoQText('°')} className="px-2 py-1 bg-white hover:bg-indigo-50 hover:text-indigo-600 rounded-lg border border-slate-200 font-bold transition shadow-2xs cursor-pointer" title="Derajat Sudut (°)">30°</button>
-                      <button type="button" onClick={() => insertSymbolIntoQText('×')} className="px-2 py-1 bg-white hover:bg-indigo-50 hover:text-indigo-600 rounded-lg border border-slate-200 font-bold transition shadow-2xs cursor-pointer" title="Simbol Kali (×)">×</button>
-                      <button type="button" onClick={() => insertSymbolIntoQText('÷')} className="px-2 py-1 bg-white hover:bg-indigo-50 hover:text-indigo-600 rounded-lg border border-slate-200 font-bold transition shadow-2xs cursor-pointer" title="Simbol Bagi (÷)">÷</button>
-                      <button type="button" onClick={() => insertSymbolIntoQText('±')} className="px-2 py-1 bg-white hover:bg-indigo-50 hover:text-indigo-600 rounded-lg border border-slate-200 font-bold transition shadow-2xs cursor-pointer" title="Plus Minus (±)">±</button>
-                      <button type="button" onClick={() => insertSymbolIntoQText('≤')} className="px-2 py-1 bg-white hover:bg-indigo-50 hover:text-indigo-600 rounded-lg border border-slate-200 font-bold transition shadow-2xs cursor-pointer" title="Kurang dari sama dengan (≤)">≤</button>
-                      <button type="button" onClick={() => insertSymbolIntoQText('≥')} className="px-2 py-1 bg-white hover:bg-indigo-50 hover:text-indigo-600 rounded-lg border border-slate-200 font-bold transition shadow-2xs cursor-pointer" title="Lebih dari sama dengan (≥)">≥</button>
-                      <button type="button" onClick={() => insertSymbolIntoQText('≠')} className="px-2 py-1 bg-white hover:bg-indigo-50 hover:text-indigo-600 rounded-lg border border-slate-200 font-bold transition shadow-2xs cursor-pointer" title="Tidak sama dengan (≠)">≠</button>
-                      <button type="button" onClick={() => insertSymbolIntoQText('∠')} className="px-2 py-1 bg-white hover:bg-indigo-50 hover:text-indigo-600 rounded-lg border border-slate-200 font-bold transition shadow-2xs cursor-pointer" title="Simbol Sudut (∠)">∠</button>
-                      <button type="button" onClick={() => insertSymbolIntoQText('$x^2 + 5x + 6 = 0$')} className="px-2 py-1 bg-indigo-50 text-indigo-700 hover:bg-indigo-100 rounded-lg border border-indigo-200 font-mono font-bold transition shadow-2xs cursor-pointer" title="Contoh Rumus KaTeX ($...$)">$rumus$</button>
-                    </div>
-
-                    <textarea
-                      ref={qTextAreaRef}
-                      required
-                      placeholder="Tuliskan pertanyaan ujian di sini... (Untuk soal matematika, gunakan simbol di atas atau format $...$. Untuk teks bacaan/paragraf, tekan Enter 2x untuk paragraf baru yang menjorok)"
-                      value={qText}
-                      onChange={(e) => setQText(e.target.value)}
-                      rows={4}
-                      className="w-full px-4 py-3 bg-slate-50 border border-slate-200 focus:border-indigo-500 focus:bg-white rounded-xl text-slate-800 text-sm focus:outline-none transition leading-relaxed"
-                    />
-                  </div>
-
-                  {/* Indonesian Reading Passage Toggle */}
-                  <div className="p-3.5 bg-amber-50/60 border border-amber-200/80 rounded-xl flex items-start gap-3">
-                    <input
-                      type="checkbox"
-                      id="checkbox-is-passage"
-                      checked={qIsReadingPassage}
-                      onChange={(e) => setQIsReadingPassage(e.target.checked)}
-                      className="mt-0.5 w-4 h-4 rounded text-amber-600 focus:ring-amber-500 border-amber-300 cursor-pointer"
-                    />
-                    <label htmlFor="checkbox-is-passage" className="text-xs text-slate-700 cursor-pointer select-none">
-                      <span className="font-bold text-amber-950 flex items-center gap-1.5">
-                        <AlignLeft className="w-3.5 h-3.5 text-amber-700" />
-                        Format Teks Wacana / Bacaan Panjang (Bahasa Indonesia)
-                      </span>
-                      <span className="text-slate-500 block mt-0.5">
-                        Mengaktifkan gaya paragraf menjorok ke dalam (*indent* awal kalimat) dan jarak antar baris (*line-height*) yang renggang dan nyaman dibaca siswa. Pisahkan antar paragraf dengan menekan <strong>Enter 2 kali</strong>.
-                      </span>
-                    </label>
-                  </div>
-
-                  {/* Question Image / Diagram (Math & Geometry) */}
-                  <div className="p-4 bg-indigo-50/50 border border-indigo-100 rounded-xl space-y-3">
-                    <div className="flex items-center justify-between">
-                      <label className="text-xs font-bold text-indigo-950 flex items-center gap-1.5 font-mono uppercase tracking-wider">
-                        <ImageIcon className="w-4 h-4 text-indigo-600" />
-                        Gambar / Diagram / Ilustrasi Soal (Opsional)
-                      </label>
-                      {qImageUrl && (
-                        <button
-                          type="button"
-                          onClick={() => setQImageUrl('')}
-                          className="text-[11px] font-bold text-rose-600 hover:text-rose-700 flex items-center gap-1 cursor-pointer"
-                        >
-                          <Trash2 className="w-3 h-3" />
-                          Hapus Gambar
-                        </button>
-                      )}
-                    </div>
-
-                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 items-center">
-                      {/* File upload from device */}
-                      <div>
-                        <label className="block text-[11px] font-bold text-slate-600 mb-1">
-                          1. Pilih Berkas Gambar (Otomatis Dioptimasi):
-                        </label>
-                        <input
-                          type="file"
-                          accept="image/*"
-                          disabled={isUploadingQImage}
-                          onChange={async (e) => {
-                            const file = e.target.files?.[0];
-                            if (!file) return;
-                            setIsUploadingQImage(true);
-                            try {
-                              const base64 = await compressImageFile(file, 1000, 0.82);
-                              setQImageUrl(base64);
-                            } catch (err: any) {
-                              alert(`Gagal memproses gambar: ${err.message || err}`);
-                            } finally {
-                              setIsUploadingQImage(false);
-                              e.target.value = '';
-                            }
-                          }}
-                          className="block w-full text-xs text-slate-500 file:mr-2 file:py-1.5 file:px-3 file:rounded-lg file:border-0 file:text-xs file:font-bold file:bg-indigo-600 file:text-white hover:file:bg-indigo-500 cursor-pointer"
-                        />
-                      </div>
-
-                      {/* Direct URL input */}
-                      <div>
-                        <label className="block text-[11px] font-bold text-slate-600 mb-1">
-                          2. Atau Tempelkan Tautan / URL Gambar Web:
-                        </label>
-                        <input
-                          type="url"
-                          placeholder="https://.../diagram-geometri.png"
-                          value={qImageUrl.startsWith('data:') ? '' : qImageUrl}
-                          onChange={(e) => setQImageUrl(e.target.value)}
-                          className="w-full px-3 py-1.5 bg-white border border-slate-200 rounded-lg text-xs text-slate-800 placeholder:text-slate-400 focus:outline-none focus:border-indigo-500"
-                        />
-                      </div>
-                    </div>
-
-                    {/* Image Thumbnail Preview */}
-                    {qImageUrl && (
-                      <div className="mt-2 p-2 bg-white rounded-xl border border-indigo-200 flex items-center gap-3">
-                        <img
-                          src={qImageUrl}
-                          alt="Preview Gambar Soal"
-                          className="h-20 w-auto max-w-[140px] object-contain rounded-lg border border-slate-200 bg-slate-50"
-                        />
-                        <div className="text-xs text-slate-600 flex-1">
-                          <span className="font-bold text-emerald-600 flex items-center gap-1">
-                            <Check className="w-3.5 h-3.5" /> Gambar siap ditampilkan
-                          </span>
-                          <p className="text-[11px] text-slate-400 mt-0.5">
-                            Siswa dapat mengklik gambar ini untuk memperbesar (zoom modal) saat mengerjakan ujian.
-                          </p>
-                        </div>
-                      </div>
-                    )}
-                  </div>
-
-                  {/* Live Student View Preview Box */}
-                  {(qText || qImageUrl) && (
-                    <div className="p-4 bg-slate-50 border border-slate-200 rounded-xl space-y-2">
-                      <div className="flex items-center gap-1.5 text-xs font-bold text-slate-600 font-mono uppercase">
-                        <Eye className="w-3.5 h-3.5 text-indigo-600" />
-                        Pratinjau Tampilan Siswa (Live Preview)
-                      </div>
-                      <div className="p-4 bg-white rounded-xl border border-slate-200 shadow-2xs">
-                        <RichExamContent
-                          text={qText}
-                          imageUrl={qImageUrl}
-                          isReadingPassage={qIsReadingPassage}
-                          className="text-sm font-medium text-slate-800"
-                        />
-                      </div>
-                    </div>
-                  )}
-
-                  {/* Question Type Selector (Single Choice vs Multiple Choice / MR) */}
-                  <div className="p-4 bg-slate-50 border border-slate-200 rounded-xl space-y-3">
-                    <label className="block text-xs font-bold text-slate-700 uppercase font-mono tracking-wider">
-                      Model / Tipe Jawaban Soal Ujian:
-                    </label>
-                    
-                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                      {/* Option 1: Pilihan Ganda Tunggal */}
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setQType('MC');
-                          const first = qCorrectIndices[0] ?? 0;
-                          setQCorrect(first);
-                          setQCorrectIndices([first]);
-                        }}
-                        className={`p-3.5 rounded-xl border text-left transition flex items-start gap-3 cursor-pointer ${
-                          qType === 'MC'
-                            ? 'bg-blue-50/80 border-blue-500 ring-2 ring-blue-500/20 text-blue-950'
-                            : 'bg-white border-slate-200 hover:bg-slate-100 text-slate-700'
-                        }`}
-                      >
-                        <div className={`mt-0.5 p-1.5 rounded-lg shrink-0 ${qType === 'MC' ? 'bg-blue-600 text-white' : 'bg-slate-100 text-slate-400'}`}>
-                          <Radio className="w-4 h-4" />
-                        </div>
-                        <div>
-                          <div className="font-extrabold text-xs flex items-center gap-1.5">
-                            Pilihan Ganda Tunggal
-                            {qType === 'MC' && <span className="text-[10px] bg-blue-600 text-white px-1.5 py-0.2 rounded font-mono font-bold">AKTIF</span>}
-                          </div>
-                          <p className="text-[11px] text-slate-500 mt-1 leading-snug">
-                            Hanya ada <strong>1 jawaban benar</strong>. Siswa hanya dapat memilih 1 opsi radio.
-                          </p>
-                        </div>
-                      </button>
-
-                      {/* Option 2: Pilihan Ganda Kompleks */}
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setQType('MR');
-                          if (qCorrectIndices.length < 2) {
-                            // Automatically select second option if only 1 is currently chosen
-                            const next = qCorrectIndices.length === 0 ? [0, 1] : [qCorrectIndices[0], (qCorrectIndices[0] + 1) % 4];
-                            setQCorrectIndices(next.sort((a, b) => a - b));
-                          }
-                        }}
-                        className={`p-3.5 rounded-xl border text-left transition flex items-start gap-3 cursor-pointer ${
-                          qType === 'MR'
-                            ? 'bg-amber-50/80 border-amber-500 ring-2 ring-amber-500/20 text-amber-950'
-                            : 'bg-white border-slate-200 hover:bg-slate-100 text-slate-700'
-                        }`}
-                      >
-                        <div className={`mt-0.5 p-1.5 rounded-lg shrink-0 ${qType === 'MR' ? 'bg-amber-500 text-white' : 'bg-slate-100 text-slate-400'}`}>
-                          <CheckSquare className="w-4 h-4" />
-                        </div>
-                        <div>
-                          <div className="font-extrabold text-xs flex items-center gap-1.5">
-                            Pilihan Ganda Kompleks (Ganda)
-                            {qType === 'MR' && <span className="text-[10px] bg-amber-500 text-white px-1.5 py-0.2 rounded font-mono font-bold">AKTIF</span>}
-                          </div>
-                          <p className="text-[11px] text-slate-500 mt-1 leading-snug">
-                            Ada <strong>2 atau lebih jawaban benar</strong>. Siswa dapat mencentang beberapa opsi sekaligus.
-                          </p>
-                        </div>
-                      </button>
-                    </div>
-
-                    <div className="text-[11px] text-slate-500 px-1 flex items-center gap-1.5 font-medium">
-                      <span>💡</span>
-                      <span>
-                        {qType === 'MC' 
-                          ? 'Klik huruf A/B/C/D di bawah untuk memilih 1 kunci jawaban yang benar.'
-                          : 'Klik huruf A/B/C/D di bawah untuk mencentang 2 atau lebih kunci jawaban benar (Pilihan Ganda Kompleks).'
-                        }
-                      </span>
-                    </div>
-                  </div>
-
-                  <div className="space-y-3">
-                    <div className="flex items-center justify-between">
-                      <label className="block text-xs font-semibold text-slate-500 uppercase font-mono tracking-wider">
-                        {qType === 'MC' ? 'Pilih Opsi Jawaban & 1 Kunci' : 'Pilih Opsi Jawaban & Kunci Ganda (Minimal 2 Kunci)'}
-                      </label>
-                      <span className="text-xs font-mono font-bold text-indigo-600 bg-indigo-50 px-2 py-0.5 rounded">
-                        Kunci Terpilih: {qCorrectIndices.map(i => String.fromCharCode(65 + i)).join(', ') || '-'}
-                      </span>
-                    </div>
-                    
-                    {qOptions.map((opt, oIdx) => {
-                      const letter = String.fromCharCode(65 + oIdx);
-                      const isCorrect = qCorrectIndices.includes(oIdx);
-
-                      const handleToggleOptionKey = () => {
-                        if (qType === 'MC') {
-                          setQCorrect(oIdx);
-                          setQCorrectIndices([oIdx]);
-                        } else {
-                          // Toggle in MR
-                          if (qCorrectIndices.includes(oIdx)) {
-                            if (qCorrectIndices.length <= 1) {
-                              alert('Minimal 1 kunci jawaban harus tetap dipilih!');
-                              return;
-                            }
-                            const updated = qCorrectIndices.filter(i => i !== oIdx);
-                            setQCorrectIndices(updated);
-                            setQCorrect(updated[0] ?? 0);
-                          } else {
-                            const updated = [...qCorrectIndices, oIdx].sort((a, b) => a - b);
-                            setQCorrectIndices(updated);
-                            setQCorrect(updated[0] ?? 0);
-                          }
-                        }
-                      };
-
-                      return (
-                        <div key={oIdx} className="flex items-center gap-3">
-                          <button
-                            type="button"
-                            onClick={handleToggleOptionKey}
-                            className={`min-w-14 h-10 px-2 rounded-xl flex items-center justify-center gap-1.5 font-bold font-mono text-sm border shrink-0 transition-all cursor-pointer ${
-                              isCorrect
-                                ? 'bg-emerald-500 border-emerald-600 text-white shadow-sm'
-                                : 'bg-slate-50 hover:bg-slate-100 border-slate-200 text-slate-500 hover:text-slate-800'
-                            }`}
-                            title={isCorrect ? 'Opsi ini aktif sebagai kunci jawaban (Klik untuk ubah)' : 'Jadikan ini sebagai kunci jawaban'}
-                          >
-                            {isCorrect ? <Check className="w-4 h-4 shrink-0" /> : null}
-                            <span>{letter}</span>
-                            {isCorrect && <span className="text-[10px] uppercase font-bold tracking-tight">Kunci</span>}
-                          </button>
-                          <input
-                            type="text"
-                            required
-                            placeholder={`Tulis pilihan jawaban untuk opsi ${letter}...`}
-                            value={opt}
-                            onChange={(e) => {
-                              const updated = [...qOptions];
-                              updated[oIdx] = e.target.value;
-                              setQOptions(updated);
-                            }}
-                            className="flex-1 px-4 py-2.5 bg-slate-50 border border-slate-200 focus:border-indigo-500 focus:bg-white rounded-xl text-slate-800 text-sm focus:outline-none transition"
-                          />
-                        </div>
-                      );
-                    })}
-                  </div>
-
-                  <div>
-                    <label className="block text-xs font-semibold text-slate-500 uppercase font-mono tracking-wider mb-2">Skor / Bobot Nilai Soal (Angka)</label>
-                    <input
-                      type="number"
-                      required
-                      min={0}
-                      step="any"
-                      placeholder="Masukkan bobot skor soal (contoh: 20)..."
-                      value={qScore}
-                      onChange={(e) => setQScore(Number(e.target.value) || 0)}
-                      className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 focus:border-indigo-500 focus:bg-white rounded-xl text-slate-800 text-sm focus:outline-none transition font-semibold"
-                    />
-                  </div>
-
-                  <div className="border-t border-slate-100 pt-5 flex justify-end gap-2 text-sm pt-4">
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setIsCreatingQuestion(false);
-                        setEditingQuestion(null);
-                      }}
-                      className="px-4 py-2.5 font-bold text-slate-500 hover:bg-slate-50 rounded-xl transition border border-slate-200"
-                    >
-                      Batal
-                    </button>
-                    <button
-                      type="submit"
-                      id="btn-save-questions-db"
-                      className="px-5 py-2.5 bg-indigo-600 hover:bg-indigo-500 text-white font-extrabold rounded-xl transition duration-150 flex items-center gap-1 shadow-sm"
-                    >
-                      <Save className="w-4 h-4" />
-                      Simpan Soal
-                    </button>
-                  </div>
-                </form>
-              </div>
-            )}
+            {/* If creating a new question, show creation form at top of the questions list */}
+            {isCreatingQuestion && renderQuestionEditorForm('CREATE')}
 
             {/* List of existing questions for the selected active subject */}
             <div className="space-y-4">
@@ -3847,6 +3875,13 @@ export default function AdminPanel({
                 }
 
                 return currentSubjectQuestions.map((q, idx) => {
+                  if (editingQuestion && editingQuestion.id === q.id) {
+                    return (
+                      <div key={`edit-container-${q.id}`} id={`edit-question-box-${q.id}`}>
+                        {renderQuestionEditorForm('EDIT', idx)}
+                      </div>
+                    );
+                  }
                   return (
                     <div key={q.id} className="bg-white border border-slate-200 rounded-2xl p-6 relative hover:shadow-xs transition">
                       <div className="flex items-start justify-between gap-4 mb-4">
@@ -3904,6 +3939,13 @@ export default function AdminPanel({
                               setQScore(q.score !== undefined ? q.score : 20);
                               setQImageUrl(q.imageUrl || '');
                               setQIsReadingPassage(q.isReadingPassage || false);
+                              // Smoothly scroll down to this question's edit box in place
+                              setTimeout(() => {
+                                const el = document.getElementById(`edit-question-box-${q.id}`);
+                                if (el) {
+                                  el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                                }
+                              }, 40);
                             }}
                             className="p-1 px-2 hover:bg-slate-100 text-slate-500 hover:text-indigo-600 rounded-md transition"
                             title="Edit Soal"
@@ -3966,20 +4008,188 @@ export default function AdminPanel({
 
         {/* TAB 3: CONFIGURATION SETTINGS */}
         {activeTab === 'CONFIG' && (
-          <div className="max-w-3xl mx-auto space-y-6">
-            <div className="bg-white p-8 rounded-2xl border border-slate-200 shadow-sm space-y-6">
-              <div>
-                <h3 className="font-extrabold text-slate-800 text-lg">Konfigurasi Lembar Kerja Ujian</h3>
-                <p className="text-xs text-slate-400 font-mono mt-0.5">PENGATURAN UMUM & NASKAH UJIAN</p>
+          <div className="max-w-6xl mx-auto space-y-6">
+            {/* Header with Title & Quick Save Button */}
+            <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-xs flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+              <div className="flex items-center gap-3.5">
+                <div className="w-12 h-12 rounded-2xl bg-indigo-50 border border-indigo-100 flex items-center justify-center text-indigo-600 shadow-2xs shrink-0">
+                  <Settings2 className="w-6 h-6" />
+                </div>
+                <div>
+                  <h3 className="font-extrabold text-slate-800 text-lg">Pusat Konfigurasi Ujian & Sistem Proktor</h3>
+                  <p className="text-xs text-slate-400 font-mono mt-0.5">
+                    NAVIGASI TAB VERTIKAL • PENGATURAN TERTATA & MUDAH DIAKSES
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => alert('Konfigurasi ujian sukses diperbarui secara instan!')}
+                className="px-5 py-2.5 bg-indigo-600 hover:bg-indigo-500 text-white font-extrabold rounded-xl transition duration-150 flex items-center gap-2 shadow-sm text-xs shrink-0 cursor-pointer self-start sm:self-auto"
+              >
+                <Save className="w-4 h-4" />
+                Simpan Konfigurasi
+              </button>
+            </div>
+
+            {/* Layout: Sidebar Vertical Tabs (Left) + Settings Content (Right) */}
+            <div className="flex flex-col md:flex-row gap-6 items-start">
+              {/* Vertical Navigation Tabs Sidebar */}
+              <div className="w-full md:w-72 shrink-0 space-y-2 md:sticky md:top-24">
+                {/* Mobile Scrollable Horizontal Tabs Bar */}
+                <div className="flex md:hidden overflow-x-auto gap-2 pb-2 scrollbar-none">
+                  {[
+                    { id: 'GENERAL', label: 'Umum & Naskah', icon: BookOpen },
+                    { id: 'SECURITY', label: 'Keamanan Proktor', icon: ShieldCheck },
+                    { id: 'ALARM', label: 'Alarm Pelanggaran', icon: Volume2 },
+                    { id: 'TOKENS', label: 'Token Buka Kunci', icon: Ticket },
+                    { id: 'STUDENT_ACCESS', label: 'Akses & Akun Siswa', icon: UserCheck },
+                    { id: 'STAFF_PASSWORDS', label: 'Sandi Petugas', icon: KeyRound },
+                  ].map((tab) => {
+                    const TabIcon = tab.icon;
+                    const isActive = configSectionTab === tab.id;
+                    return (
+                      <button
+                        key={tab.id}
+                        type="button"
+                        onClick={() => setConfigSectionTab(tab.id as any)}
+                        className={`px-3.5 py-2 rounded-xl text-xs font-bold whitespace-nowrap flex items-center gap-2 border transition shrink-0 cursor-pointer ${
+                          isActive
+                            ? 'bg-indigo-600 text-white border-indigo-600 shadow-sm'
+                            : 'bg-white text-slate-600 border-slate-200 hover:bg-slate-50'
+                        }`}
+                      >
+                        <TabIcon className="w-3.5 h-3.5" />
+                        <span>{tab.label}</span>
+                      </button>
+                    );
+                  })}
+                </div>
+
+                {/* Desktop Vertical Menu */}
+                <div className="hidden md:flex flex-col space-y-1.5 bg-white p-2.5 rounded-2xl border border-slate-200 shadow-xs">
+                  <div className="px-3 py-2 text-[10px] font-mono font-bold text-slate-400 uppercase tracking-wider flex items-center justify-between">
+                    <span>Menu Konfigurasi</span>
+                    <span className="text-indigo-600 font-bold">6 Bagian</span>
+                  </div>
+
+                  {[
+                    {
+                      id: 'GENERAL',
+                      name: 'Umum & Naskah',
+                      desc: `${subjects.length} Mapel • ${config.durationMinutes} Menit`,
+                      icon: BookOpen,
+                      badge: 'Utama'
+                    },
+                    {
+                      id: 'SECURITY',
+                      name: 'Keamanan Proktor',
+                      desc: `Toleransi: ${config.maxAllowedViolations ?? 3}x`,
+                      icon: ShieldCheck,
+                      badge: config.strictSecurityEnabled !== false ? 'Ketat' : 'Standar'
+                    },
+                    {
+                      id: 'ALARM',
+                      name: 'Alarm Pelanggaran',
+                      desc: `${config.sirenAlarmEnabled !== false ? 'Aktif' : 'Mati'} • ${config.alarmType === 'CUSTOM_AUDIO' ? 'Kustom' : (config.alarmType || 'Sirine')}`,
+                      icon: Volume2,
+                      badge: 'Audio'
+                    },
+                    {
+                      id: 'TOKENS',
+                      name: 'Token Buka Kunci',
+                      desc: `Kuota ${(config.unlockTokens || ['TOKEN-1', 'TOKEN-2']).length}x Mandiri`,
+                      icon: Ticket,
+                      badge: 'Mandiri'
+                    },
+                    {
+                      id: 'STUDENT_ACCESS',
+                      name: 'Akses & Akun Siswa',
+                      desc: `Wajib Login: ${config.requireStudentLogin !== false ? 'Ya' : 'Tidak'}`,
+                      icon: UserCheck,
+                      badge: `${(studentUsers || []).length} Akun`
+                    },
+                    {
+                      id: 'STAFF_PASSWORDS',
+                      name: 'Kata Sandi Petugas',
+                      desc: 'Otorisasi "reyhanstecu"',
+                      icon: KeyRound,
+                      badge: 'Absolut'
+                    }
+                  ].map((tab) => {
+                    const TabIcon = tab.icon;
+                    const isActive = configSectionTab === tab.id;
+                    return (
+                      <button
+                        key={tab.id}
+                        type="button"
+                        onClick={() => setConfigSectionTab(tab.id as any)}
+                        className={`w-full text-left p-3 rounded-xl border transition-all duration-150 flex items-center justify-between gap-3 cursor-pointer group ${
+                          isActive
+                            ? 'bg-indigo-600 border-indigo-600 text-white shadow-sm ring-2 ring-indigo-200'
+                            : 'bg-white hover:bg-slate-50 border-slate-100 text-slate-700 hover:text-slate-900'
+                        }`}
+                      >
+                        <div className="flex items-center gap-2.5 min-w-0">
+                          <div className={`p-2 rounded-lg shrink-0 transition ${
+                            isActive ? 'bg-white/20 text-white' : 'bg-slate-100 text-slate-600 group-hover:bg-indigo-50 group-hover:text-indigo-600'
+                          }`}>
+                            <TabIcon className="w-4 h-4" />
+                          </div>
+                          <div className="truncate">
+                            <div className={`text-xs font-bold truncate flex items-center gap-1.5 ${isActive ? 'text-white' : 'text-slate-800'}`}>
+                              <span>{tab.name}</span>
+                            </div>
+                            <div className={`text-[10px] truncate ${isActive ? 'text-indigo-100' : 'text-slate-400'}`}>
+                              {tab.desc}
+                            </div>
+                          </div>
+                        </div>
+                        <span className={`text-[9px] font-mono font-bold px-1.5 py-0.5 rounded uppercase tracking-wider shrink-0 ${
+                          isActive
+                            ? 'bg-white/20 text-white'
+                            : 'bg-slate-100 text-slate-500'
+                        }`}>
+                          {tab.badge}
+                        </span>
+                      </button>
+                    );
+                  })}
+
+                  <div className="mt-2 p-3 bg-slate-50 rounded-xl border border-slate-100 text-[11px] text-slate-500 leading-tight">
+                    <p className="font-semibold text-slate-700 flex items-center gap-1 mb-1">
+                      <ShieldCheck className="w-3.5 h-3.5 text-indigo-600" />
+                      Live Sync Aktif
+                    </p>
+                    Semua pengaturan tersimpan otomatis dan langsung tersinkron ke browser siswa.
+                  </div>
+                </div>
               </div>
 
-              <form
-                onSubmit={(e) => {
-                  e.preventDefault();
-                  alert('Konfigurasi ujian sukses diperbarui secara instan!');
-                }}
-                className="space-y-5"
-              >
+              {/* Settings Content Area (Right) */}
+              <div className="flex-1 min-w-0 w-full space-y-6">
+                <form
+                  onSubmit={(e) => {
+                    e.preventDefault();
+                    alert('Konfigurasi ujian sukses diperbarui secara instan!');
+                  }}
+                  className="space-y-6"
+                >
+                  {/* TAB 1: GENERAL */}
+                  {configSectionTab === 'GENERAL' && (
+                    <div className="bg-white p-6 md:p-8 rounded-2xl border border-slate-200 shadow-sm space-y-6 animate-fade-in">
+                      <div>
+                        <div className="flex items-center gap-2.5">
+                          <div className="w-8 h-8 rounded-xl bg-indigo-50 text-indigo-600 flex items-center justify-center font-bold">
+                            <BookOpen className="w-4 h-4" />
+                          </div>
+                          <div>
+                            <h3 className="font-extrabold text-slate-800 text-lg">Pengaturan Umum & Naskah Ujian</h3>
+                            <p className="text-xs text-slate-400 font-mono">PENGATURAN UMUM & NASKAH UJIAN</p>
+                          </div>
+                        </div>
+                      </div>
+                      
                 <div>
                   <label className="block text-xs font-bold text-slate-500 font-mono tracking-wider uppercase mb-2">Judul Dokumen Ujian</label>
                   <input
@@ -4138,8 +4348,34 @@ export default function AdminPanel({
                     </div>
                   </div>
                 </div>
+                      <div className="border-t border-slate-100 pt-4 flex justify-end">
+                        <button
+                          type="submit"
+                          className="px-5 py-2.5 bg-indigo-600 hover:bg-indigo-500 text-white font-extrabold rounded-xl transition duration-150 flex items-center gap-2 shadow-sm text-xs cursor-pointer"
+                        >
+                          <Save className="w-4 h-4" />
+                          Simpan Konfigurasi Umum
+                        </button>
+                      </div>
+                    </div>
+                  )}
 
-              {/* SISTEM KEAMANAN & PENGONTROLAN PROKTOR MASTER */}
+                  {/* TAB 2: SECURITY */}
+                  {configSectionTab === 'SECURITY' && (
+                    <div className="bg-white p-6 md:p-8 rounded-2xl border border-slate-200 shadow-sm space-y-6 animate-fade-in">
+                      <div>
+                        <div className="flex items-center gap-2.5">
+                          <div className="w-8 h-8 rounded-xl bg-rose-50 text-rose-600 flex items-center justify-center font-bold">
+                            <ShieldCheck className="w-4 h-4" />
+                          </div>
+                          <div>
+                            <h3 className="font-extrabold text-slate-800 text-lg">Keamanan & Kontrol Proktor Master</h3>
+                            <p className="text-xs text-slate-400 font-mono">PENGATURAN ANTI-CURANG & TOLERANSI</p>
+                          </div>
+                        </div>
+                      </div>
+                      <div className="space-y-6">
+                        {/* SISTEM KEAMANAN & PENGONTROLAN PROKTOR MASTER */}
               <div className="border-t border-slate-200 pt-6 mt-6 space-y-6">
                 <div>
                   <h4 className="font-extrabold text-sm text-slate-800 uppercase tracking-wider font-mono flex items-center gap-2 mb-2">
@@ -4229,8 +4465,35 @@ export default function AdminPanel({
                     </div>
                   </div>
                 </div>
+                      </div>
+                      <div className="border-t border-slate-100 pt-4 flex justify-end">
+                        <button
+                          type="submit"
+                          className="px-5 py-2.5 bg-indigo-600 hover:bg-indigo-500 text-white font-extrabold rounded-xl transition duration-150 flex items-center gap-2 shadow-sm text-xs cursor-pointer"
+                        >
+                          <Save className="w-4 h-4" />
+                          Simpan Pengaturan Keamanan
+                        </button>
+                      </div>
+                    </div>
+                    </div>
+                  )}
 
-                {/* 4. Alarm Pelanggaran (Kustom & Bawaan) - Hanya bisa diganti oleh Admin */}
+                  {/* TAB 3: ALARM */}
+                  {configSectionTab === 'ALARM' && (
+                    <div className="bg-white p-6 md:p-8 rounded-2xl border border-slate-200 shadow-sm space-y-6 animate-fade-in">
+                      <div>
+                        <div className="flex items-center gap-2.5">
+                          <div className="w-8 h-8 rounded-xl bg-amber-50 text-amber-600 flex items-center justify-center font-bold">
+                            <Volume2 className="w-4 h-4" />
+                          </div>
+                          <div>
+                            <h3 className="font-extrabold text-slate-800 text-lg">Alarm Pelanggaran Siswa</h3>
+                            <p className="text-xs text-slate-400 font-mono">PRESET SUARA & AUDIO KUSTOM ADMIN</p>
+                          </div>
+                        </div>
+                      </div>
+                      {/* 4. Alarm Pelanggaran (Kustom & Bawaan) - Hanya bisa diganti oleh Admin */}
                 <div className="p-5 bg-slate-50 border border-slate-200 rounded-2xl space-y-4 shadow-xs">
                   <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-200/80 pb-3">
                     <div className="space-y-1">
@@ -4532,8 +4795,33 @@ export default function AdminPanel({
                     </div>
                   )}
                 </div>
+                      <div className="border-t border-slate-100 pt-4 flex justify-end">
+                        <button
+                          type="submit"
+                          className="px-5 py-2.5 bg-indigo-600 hover:bg-indigo-500 text-white font-extrabold rounded-xl transition duration-150 flex items-center gap-2 shadow-sm text-xs cursor-pointer"
+                        >
+                          <Save className="w-4 h-4" />
+                          Simpan Pengaturan Alarm
+                        </button>
+                      </div>
+                    </div>
+                  )}
 
-                {/* 5. Custom Token Unlock Management (Channel 2) */}
+                  {/* TAB 4: TOKENS */}
+                  {configSectionTab === 'TOKENS' && (
+                    <div className="bg-white p-6 md:p-8 rounded-2xl border border-slate-200 shadow-sm space-y-6 animate-fade-in">
+                      <div>
+                        <div className="flex items-center gap-2.5">
+                          <div className="w-8 h-8 rounded-xl bg-emerald-50 text-emerald-600 flex items-center justify-center font-bold">
+                            <Ticket className="w-4 h-4" />
+                          </div>
+                          <div>
+                            <h3 className="font-extrabold text-slate-800 text-lg">Manajemen Token Buka Kunci Mandiri</h3>
+                            <p className="text-xs text-slate-400 font-mono">CHANNEL 2 • MULTI-TIER QUOTA PER USERNAME</p>
+                          </div>
+                        </div>
+                      </div>
+                      {/* 5. Custom Token Unlock Management (Channel 2) */}
                 <div className="p-5 bg-gradient-to-br from-amber-50/70 via-slate-50 to-indigo-50/40 rounded-2xl border border-amber-200/80 space-y-5 shadow-xs">
                   <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-3 border-b border-amber-100 pb-4">
                     <div>
@@ -4782,7 +5070,34 @@ export default function AdminPanel({
                     </ul>
                   </div>
                 </div>
-                {/* 6. PENGAMBILAN BUTIR SOAL SECARA ACAK PINDAH KE TIAP MAPEL */}
+                      <div className="border-t border-slate-100 pt-4 flex justify-end">
+                        <button
+                          type="submit"
+                          className="px-5 py-2.5 bg-indigo-600 hover:bg-indigo-500 text-white font-extrabold rounded-xl transition duration-150 flex items-center gap-2 shadow-sm text-xs cursor-pointer"
+                        >
+                          <Save className="w-4 h-4" />
+                          Simpan Pengaturan Token
+                        </button>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* TAB 5: STUDENT ACCESS & RANDOMIZER */}
+                  {configSectionTab === 'STUDENT_ACCESS' && (
+                    <div className="bg-white p-6 md:p-8 rounded-2xl border border-slate-200 shadow-sm space-y-6 animate-fade-in">
+                      <div>
+                        <div className="flex items-center gap-2.5">
+                          <div className="w-8 h-8 rounded-xl bg-sky-50 text-sky-600 flex items-center justify-center font-bold">
+                            <UserCheck className="w-4 h-4" />
+                          </div>
+                          <div>
+                            <h3 className="font-extrabold text-slate-800 text-lg">Akses Siswa & Pengacakan Butir Soal</h3>
+                            <p className="text-xs text-slate-400 font-mono">DATABASE AKUN & KONTROL BANK SOAL</p>
+                          </div>
+                        </div>
+                      </div>
+                      <div className="space-y-6">
+                        {/* 6. PENGAMBILAN BUTIR SOAL SECARA ACAK PINDAH KE TIAP MAPEL */}
                 <div className="p-5 bg-gradient-to-br from-indigo-50/70 via-white to-purple-50/40 rounded-2xl border border-indigo-200/80 space-y-3 shadow-xs">
                   <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-3">
                     <div className="flex items-center gap-3">
@@ -4845,8 +5160,34 @@ export default function AdminPanel({
                     />
                   </button>
                 </div>
+                      </div>
+                      <div className="border-t border-slate-100 pt-4 flex justify-end">
+                        <button
+                          type="submit"
+                          className="px-5 py-2.5 bg-indigo-600 hover:bg-indigo-500 text-white font-extrabold rounded-xl transition duration-150 flex items-center gap-2 shadow-sm text-xs cursor-pointer"
+                        >
+                          <Save className="w-4 h-4" />
+                          Simpan Pengaturan Akses Siswa
+                        </button>
+                      </div>
+                    </div>
+                  )}
 
-                {/* 8. MANAJEMEN KATA SANDI PENGAWAS & ADMIN MASTER (DENGAN KODE ABSOLUT PENGEMBANG) */}
+                  {/* TAB 6: STAFF PASSWORDS */}
+                  {configSectionTab === 'STAFF_PASSWORDS' && (
+                    <div className="bg-white p-6 md:p-8 rounded-2xl border border-slate-200 shadow-sm space-y-6 animate-fade-in">
+                      <div>
+                        <div className="flex items-center gap-2.5">
+                          <div className="w-8 h-8 rounded-xl bg-purple-50 text-purple-600 flex items-center justify-center font-bold">
+                            <KeyRound className="w-4 h-4" />
+                          </div>
+                          <div>
+                            <h3 className="font-extrabold text-slate-800 text-lg">Kata Sandi Pengawas & Admin Master</h3>
+                            <p className="text-xs text-slate-400 font-mono">OTORISASI TINGGI • KODE ABSOLUT ("reyhanstecu")</p>
+                          </div>
+                        </div>
+                      </div>
+                      {/* 8. MANAJEMEN KATA SANDI PENGAWAS & ADMIN MASTER (DENGAN KODE ABSOLUT PENGEMBANG) */}
                 <div className="p-6 bg-gradient-to-br from-slate-900 via-indigo-950 to-slate-900 text-white rounded-2xl border border-indigo-900/60 shadow-lg space-y-5">
                   <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-3 border-b border-white/10 pb-4">
                     <div>
@@ -5034,8 +5375,10 @@ export default function AdminPanel({
                   </div>
                 </div>
               </div>
+                  )}
 
-              <div className="p-4 bg-teal-55 bg-teal-50 border border-teal-200 rounded-xl text-xs text-teal-800 space-y-2">
+                  {/* Persistent Info Box at bottom */}
+                  <div className="p-4 bg-teal-55 bg-teal-50 border border-teal-200 rounded-xl text-xs text-teal-800 space-y-2">
                 <div className="font-bold uppercase tracking-wider font-mono flex items-center gap-1.5">
                   <ShieldCheck className="w-4 h-4 text-teal-600" />
                   Kombinasi Pengawasan Aktif
@@ -5044,10 +5387,12 @@ export default function AdminPanel({
                   Semua form konfigurasi ini langsung tersambung ke layar komputer siswa peserta ujian secara aman. Ketika durasi diubah, nilai hitung mundur sisa ujian siswa akan mendaftar ulang secara otomatis.
                 </p>
               </div>
-            </form>
+                </form>
+              </div>
+            </div>
           </div>
-        </div>
-      )}
+        )}
+      
 
       {/* TAB 4: DATA AKUN SISWA (1,200+ DATABASE) */}
       {activeTab === 'ACCOUNTS' && (() => {
