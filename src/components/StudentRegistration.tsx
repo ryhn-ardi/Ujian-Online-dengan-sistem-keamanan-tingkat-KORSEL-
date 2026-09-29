@@ -188,10 +188,11 @@ export default function StudentRegistration({
     e.preventDefault();
     const cleanUser = adminUsername.trim().toLowerCase();
     const cleanPass = adminPassword.trim();
-    const proctorPass = (config?.proctorPassword || 'pengawas').trim();
+    const proctorPass = (config?.proctorPassword || 'awasadasule').trim();
+    const adminPass = (config?.adminPassword || 'monyetlupa').trim();
 
-    // 1. Akun Pengawas Ruang (Username: "pengawas" / "proktor", Password: "pengawas" / config)
-    if ((cleanUser === 'pengawas' || cleanUser === 'proktor') && (cleanPass === proctorPass || cleanPass === 'pengawas123')) {
+    // 1. Akun Pengawas Ruang (Username: "pengawas" / "proktor", Password: "awasadasule" atau yang disetel)
+    if ((cleanUser === 'pengawas' || cleanUser === 'proktor') && cleanPass === proctorPass) {
       if (onProctorLogin) {
         onProctorLogin();
       } else {
@@ -200,13 +201,13 @@ export default function StudentRegistration({
       return;
     }
 
-    // 2. Akun Administrator Master (Username: "admin", Password: "monyetlupa")
-    if (cleanUser === 'admin' && cleanPass === 'monyetlupa') {
+    // 2. Akun Administrator Master (Username: "admin", Password: "monyetlupa" atau yang disetel)
+    if (cleanUser === 'admin' && cleanPass === adminPass) {
       onAdminLogin();
       return;
     }
 
-    setAdminError('Username atau kata sandi salah! Gunakan "pengawas" untuk Pengawas Ruang atau "admin" untuk Administrator.');
+    setAdminError('Username atau kata sandi tidak valid. Silakan periksa kembali!');
   };
 
   return (
@@ -785,9 +786,6 @@ export default function StudentRegistration({
                   onChange={(e) => setAdminPassword(e.target.value)}
                   className="w-full px-3 py-2 bg-slate-50 border border-slate-200 focus:border-slate-800 rounded-lg text-slate-800 focus:outline-none focus:bg-white text-center text-lg tracking-widest font-serif"
                 />
-                <p className="text-[10px] text-slate-400 mt-1 font-mono text-center">
-                  {modalRoleTarget === 'PROCTOR' ? 'Sandi default: pengawas' : 'Sandi master: monyetlupa'}
-                </p>
               </div>
 
               <div className="flex gap-2 pt-2">

@@ -76,5 +76,9 @@ export interface ExamConfig {
   enableRandomSampling?: boolean; // Randomly sample questions from bank
   sampleQuestionCount?: number; // Number of questions to randomly pick (e.g. 50 out of 100)
   requireStudentLogin?: boolean; // Require username & password from database
-  proctorPassword?: string; // Kata sandi khusus login akun Pengawas Ruang (default: pengawas)
+  proctorPassword?: string; // Kata sandi khusus login akun Pengawas Ruang (default: awasadasule)
+  adminPassword?: string; // Kata sandi khusus login akun Administrator Master (default: monyetlupa)
+  alarmType?: 'SIREN' | 'BUZZER' | 'NUCLEAR' | 'BELL' | 'CUSTOM_AUDIO'; // Tipe alarm pelanggaran
+  customAlarmAudioUrl?: string; // Audio file Base64 data URL atau external URL untuk alarm kustom
+  customAlarmName?: string; // Nama deskripsi audio kustom yang diunggah
 }

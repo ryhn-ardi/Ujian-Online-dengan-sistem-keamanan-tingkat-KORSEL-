@@ -4,6 +4,7 @@ import { Student, Question, ExamConfig } from '../types';
 import { getStudentFromServer } from '../utils/sync';
 import { RichExamContent } from './RichExamContent';
 import { useRealtimeWIB } from '../utils/timeWib';
+import { playAlarmSound } from '../utils/alarmAudio';
 
 let sharedAudioContext: AudioContext | null = null;
 
@@ -296,9 +297,9 @@ export default function StudentExam({
     if (now - lastViolationTime.current < 1500) return; // Prevent double trigger
     lastViolationTime.current = now;
 
-    // Siren alarm if enabled in config
+    // Alarm sound if enabled in config
     if (config.sirenAlarmEnabled !== false) {
-      playSirenAlarm();
+      playAlarmSound(config);
     }
 
     const tolerance = config.maxAllowedViolations !== undefined ? config.maxAllowedViolations : 3;

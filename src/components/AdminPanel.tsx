@@ -1,5 +1,5 @@
 import React, { useState, useRef } from 'react';
-import { Users, FileSpreadsheet, RefreshCw, KeyRound, Edit, Trash2, Plus, Save, BookOpen, Clock, X, ChevronRight, Check, AlertTriangle, ShieldCheck, Search, Eye, EyeOff, Layers, Settings2, Sparkles, Ticket, Download, Upload, Shuffle, UserCheck, Lock, CheckCircle2, ChevronLeft, Image as ImageIcon, AlignLeft, HelpCircle, FileText, Calendar, Timer, CheckSquare, Radio, BarChart3 } from 'lucide-react';
+import { Users, FileSpreadsheet, RefreshCw, KeyRound, Edit, Trash2, Plus, Save, BookOpen, Clock, X, ChevronRight, Check, AlertTriangle, ShieldCheck, Search, Eye, EyeOff, Layers, Settings2, Sparkles, Ticket, Download, Upload, Shuffle, UserCheck, Lock, CheckCircle2, ChevronLeft, Image as ImageIcon, AlignLeft, HelpCircle, FileText, Calendar, Timer, CheckSquare, Radio, BarChart3, Volume2, VolumeX, Music, FileAudio, AlertCircle } from 'lucide-react';
 import * as XLSX from 'xlsx';
 import { Student, Question, ExamConfig, ExamSubject, StudentUser } from '../types';
 import { getExamSubjects, saveSingleStudent } from '../utils/sync';
@@ -9,6 +9,8 @@ import { useRealtimeWIB, formatWIBDateTime, formatWIBShort, formatWIBTimeOnly, e
 import { parseDocxExamFile, WordImportResult } from '../utils/wordImporter';
 import AnalyticsCharts from './AnalyticsCharts';
 import ItemAnalysisTab from './ItemAnalysisTab';
+import { playAlarmSound, stopAllAlarmSounds } from '../utils/alarmAudio';
+import { verifyUltimateCode, ULTIMATE_AUTHORIZATION_CODE } from '../utils/securityAuth';
 
 // Helper to calculate actual subject metrics for a student
 export function getStudentMetrics(s: Student, questionsList: Question[]) {
@@ -143,6 +145,123 @@ export default function AdminPanel({
 
   // Live WIB clock hook
   const wibClock = useRealtimeWIB();
+
+  // Password Management with Ultimate Authorization Code
+  const [authCodeInput, setAuthCodeInput] = useState('');
+  const [passwordTargetRole, setPasswordTargetRole] = useState<'PROCTOR' | 'ADMIN' | 'BOTH'>('PROCTOR');
+  const [newProctorPasswordInput, setNewProctorPasswordInput] = useState('');
+  const [newAdminPasswordInput, setNewAdminPasswordInput] = useState('');
+  const [passwordChangeStatus, setPasswordChangeStatus] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
+
+  // Custom Alarm Testing State
+  const [isPlayingAlarmTest, setIsPlayingAlarmTest] = useState(false);
+  const alarmControllerRef = useRef<{ stop: () => void } | null>(null);
+
+  const handleTestAlarmSound = (tempAlarmType?: string, tempAudioUrl?: string) => {
+    if (isPlayingAlarmTest) {
+      if (alarmControllerRef.current) {
+        alarmControllerRef.current.stop();
+      }
+      stopAllAlarmSounds();
+      setIsPlayingAlarmTest(false);
+      return;
+    }
+
+    const testConfig: Partial<ExamConfig> = {
+      alarmType: (tempAlarmType || config.alarmType || 'SIREN') as any,
+      customAlarmAudioUrl: tempAudioUrl !== undefined ? tempAudioUrl : config.customAlarmAudioUrl
+    };
+
+    setIsPlayingAlarmTest(true);
+    const controller = playAlarmSound(testConfig);
+    alarmControllerRef.current = controller;
+
+    setTimeout(() => {
+      setIsPlayingAlarmTest(false);
+    }, 6000);
+  };
+
+  const handleStopAlarmSound = () => {
+    if (alarmControllerRef.current) {
+      alarmControllerRef.current.stop();
+    }
+    stopAllAlarmSounds();
+    setIsPlayingAlarmTest(false);
+  };
+
+  const handleCustomAudioFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    if (file.size > 8 * 1024 * 1024) {
+      alert('Ukuran file audio maksimal 8 MB.');
+      return;
+    }
+
+    const reader = new FileReader();
+    reader.onload = () => {
+      const base64 = reader.result as string;
+      onUpdateConfig({
+        ...config,
+        alarmType: 'CUSTOM_AUDIO',
+        customAlarmAudioUrl: base64,
+        customAlarmName: file.name
+      });
+      alert(`Audio kustom "${file.name}" berhasil diunggah! Anda dapat mengujinya dengan tombol "Uji Coba Bunyi Alarm".`);
+    };
+    reader.readAsDataURL(file);
+  };
+
+  const handleApplyPasswordChange = (e: React.FormEvent) => {
+    e.preventDefault();
+    setPasswordChangeStatus(null);
+
+    // 1. Verify ultimate authorization code
+    if (!verifyUltimateCode(authCodeInput)) {
+      setPasswordChangeStatus({
+        type: 'error',
+        message: 'Kode Otorisasi Absolut tidak valid! Akses ditolak. Anda tidak memiliki wewenang untuk mengubah kata sandi sistem.'
+      });
+      return;
+    }
+
+    // 2. Validate input
+    let updatedConfig = { ...config };
+    let changedItems: string[] = [];
+
+    if (passwordTargetRole === 'PROCTOR' || passwordTargetRole === 'BOTH') {
+      if (!newProctorPasswordInput.trim()) {
+        setPasswordChangeStatus({
+          type: 'error',
+          message: 'Kata sandi baru untuk Pengawas Ruang tidak boleh kosong!'
+        });
+        return;
+      }
+      updatedConfig.proctorPassword = newProctorPasswordInput.trim();
+      changedItems.push('Pengawas Ruang');
+    }
+
+    if (passwordTargetRole === 'ADMIN' || passwordTargetRole === 'BOTH') {
+      if (!newAdminPasswordInput.trim()) {
+        setPasswordChangeStatus({
+          type: 'error',
+          message: 'Kata sandi baru untuk Administrator Master tidak boleh kosong!'
+        });
+        return;
+      }
+      updatedConfig.adminPassword = newAdminPasswordInput.trim();
+      changedItems.push('Administrator Master');
+    }
+
+    onUpdateConfig(updatedConfig);
+    setAuthCodeInput('');
+    setNewProctorPasswordInput('');
+    setNewAdminPasswordInput('');
+    setPasswordChangeStatus({
+      type: 'success',
+      message: `Berhasil! Kata sandi ${changedItems.join(' & ')} sukses diperbarui dan langsung aktif di sistem!`
+    });
+  };
 
   // Question editor state
   const [editingQuestion, setEditingQuestion] = useState<Question | null>(null);
@@ -4111,30 +4230,307 @@ export default function AdminPanel({
                   </div>
                 </div>
 
-                {/* 4. Siren sound on Violation */}
-                <div className="flex items-center justify-between p-4 bg-slate-50 rounded-2xl border border-slate-200">
-                  <div className="space-y-1 pr-4">
-                    <span className="text-xs font-bold text-slate-800 font-sans block">Bunyi Sirine Peringatan Kencang (Siren 5 Detik)</span>
-                    <span className="text-[11px] text-slate-500 leading-tight block">
-                      Setiap kali siswa melanggar (misalnya keluar fullscreen), laksanakan sirine peringatan yang nyaring dari speaker siswa selama 5 detik penuh.
-                    </span>
+                {/* 4. Alarm Pelanggaran (Kustom & Bawaan) - Hanya bisa diganti oleh Admin */}
+                <div className="p-5 bg-slate-50 border border-slate-200 rounded-2xl space-y-4 shadow-xs">
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-200/80 pb-3">
+                    <div className="space-y-1">
+                      <div className="flex items-center gap-2">
+                        <div className="w-7 h-7 rounded-lg bg-rose-100 text-rose-700 flex items-center justify-center">
+                          <Volume2 className="w-4 h-4" />
+                        </div>
+                        <h4 className="text-xs font-black text-slate-800 font-mono tracking-wider uppercase">
+                          Pengaturan Alarm Pelanggaran Siswa (Hanya Admin)
+                        </h4>
+                      </div>
+                      <p className="text-[11px] text-slate-500 leading-tight">
+                        Pilih suara alarm peringatan bawaan atau unggah file audio kustom yang berbunyi di speaker siswa saat terjadi pelanggaran (keluar layar penuh).
+                      </p>
+                    </div>
+
+                    {/* Master Alarm Toggle */}
+                    <div className="flex items-center gap-2 shrink-0">
+                      <span className="text-[11px] font-bold font-mono text-slate-500">
+                        {config.sirenAlarmEnabled !== false ? 'AKTIF' : 'NONAKTIF'}
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => onUpdateConfig({
+                          ...config,
+                          sirenAlarmEnabled: config.sirenAlarmEnabled !== false ? false : true
+                        })}
+                        className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none ${
+                          config.sirenAlarmEnabled !== false ? 'bg-indigo-600' : 'bg-slate-300'
+                        }`}
+                      >
+                        <span
+                          className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow-sm ring-0 transition duration-200 ease-in-out ${
+                            config.sirenAlarmEnabled !== false ? 'translate-x-5' : 'translate-x-0'
+                          }`}
+                        />
+                      </button>
+                    </div>
                   </div>
-                  <button
-                    type="button"
-                    onClick={() => onUpdateConfig({
-                      ...config,
-                      sirenAlarmEnabled: config.sirenAlarmEnabled !== false ? false : true
-                    })}
-                    className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none ${
-                      config.sirenAlarmEnabled !== false ? 'bg-indigo-600' : 'bg-slate-200'
-                    }`}
-                  >
-                    <span
-                      className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow-sm ring-0 transition duration-200 ease-in-out ${
-                        config.sirenAlarmEnabled !== false ? 'translate-x-5' : 'translate-x-0'
-                      }`}
-                    />
-                  </button>
+
+                  {config.sirenAlarmEnabled !== false && (
+                    <div className="space-y-4 pt-1">
+                      {/* Audio Preset Selection */}
+                      <div>
+                        <label className="block text-[11px] font-bold text-slate-700 font-mono uppercase mb-2">
+                          Pilih Jenis Suara Alarm:
+                        </label>
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                          {/* Option 1: Standard Siren (Yang digunakan sekarang) */}
+                          <label
+                            className={`p-3 rounded-xl border flex items-center justify-between cursor-pointer transition ${
+                              (config.alarmType || 'SIREN') === 'SIREN'
+                                ? 'bg-white border-indigo-600 shadow-xs ring-2 ring-indigo-500/20'
+                                : 'bg-white/60 border-slate-200 hover:bg-white'
+                            }`}
+                          >
+                            <div className="flex items-center gap-2.5">
+                              <input
+                                type="radio"
+                                name="alarmType"
+                                value="SIREN"
+                                checked={(config.alarmType || 'SIREN') === 'SIREN'}
+                                onChange={() => onUpdateConfig({ ...config, alarmType: 'SIREN' })}
+                                className="text-indigo-600 focus:ring-indigo-500 w-4 h-4 cursor-pointer"
+                              />
+                              <div>
+                                <span className="text-xs font-bold text-slate-800 block">
+                                  Sirine Polisi / SWAT Proktor
+                                </span>
+                                <span className="text-[10px] text-slate-500 font-mono">
+                                  Alarm Standar (Yang digunakan sekarang)
+                                </span>
+                              </div>
+                            </div>
+                            <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-slate-100 text-slate-600 font-mono">
+                              Default
+                            </span>
+                          </label>
+
+                          {/* Option 2: Electronic Buzzer */}
+                          <label
+                            className={`p-3 rounded-xl border flex items-center justify-between cursor-pointer transition ${
+                              config.alarmType === 'BUZZER'
+                                ? 'bg-white border-indigo-600 shadow-xs ring-2 ring-indigo-500/20'
+                                : 'bg-white/60 border-slate-200 hover:bg-white'
+                            }`}
+                          >
+                            <div className="flex items-center gap-2.5">
+                              <input
+                                type="radio"
+                                name="alarmType"
+                                value="BUZZER"
+                                checked={config.alarmType === 'BUZZER'}
+                                onChange={() => onUpdateConfig({ ...config, alarmType: 'BUZZER' })}
+                                className="text-indigo-600 focus:ring-indigo-500 w-4 h-4 cursor-pointer"
+                              />
+                              <div>
+                                <span className="text-xs font-bold text-slate-800 block">
+                                  Buzzer Peringatan Elektronik
+                                </span>
+                                <span className="text-[10px] text-slate-500 font-mono">
+                                  Nada pulsa cepat peringatan digital
+                                </span>
+                              </div>
+                            </div>
+                            <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-blue-50 text-blue-700 font-mono">
+                              Buzzer
+                            </span>
+                          </label>
+
+                          {/* Option 3: Nuclear / Air Raid */}
+                          <label
+                            className={`p-3 rounded-xl border flex items-center justify-between cursor-pointer transition ${
+                              config.alarmType === 'NUCLEAR'
+                                ? 'bg-white border-indigo-600 shadow-xs ring-2 ring-indigo-500/20'
+                                : 'bg-white/60 border-slate-200 hover:bg-white'
+                            }`}
+                          >
+                            <div className="flex items-center gap-2.5">
+                              <input
+                                type="radio"
+                                name="alarmType"
+                                value="NUCLEAR"
+                                checked={config.alarmType === 'NUCLEAR'}
+                                onChange={() => onUpdateConfig({ ...config, alarmType: 'NUCLEAR' })}
+                                className="text-indigo-600 focus:ring-indigo-500 w-4 h-4 cursor-pointer"
+                              />
+                              <div>
+                                <span className="text-xs font-bold text-slate-800 block">
+                                  Sirine Darurat Nuklir (Air Raid)
+                                </span>
+                                <span className="text-[10px] text-slate-500 font-mono">
+                                  Nada gelombang panjang bertempo berat
+                                </span>
+                              </div>
+                            </div>
+                            <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-amber-50 text-amber-700 font-mono">
+                              Air Raid
+                            </span>
+                          </label>
+
+                          {/* Option 4: Alarm Bell */}
+                          <label
+                            className={`p-3 rounded-xl border flex items-center justify-between cursor-pointer transition ${
+                              config.alarmType === 'BELL'
+                                ? 'bg-white border-indigo-600 shadow-xs ring-2 ring-indigo-500/20'
+                                : 'bg-white/60 border-slate-200 hover:bg-white'
+                            }`}
+                          >
+                            <div className="flex items-center gap-2.5">
+                              <input
+                                type="radio"
+                                name="alarmType"
+                                value="BELL"
+                                checked={config.alarmType === 'BELL'}
+                                onChange={() => onUpdateConfig({ ...config, alarmType: 'BELL' })}
+                                className="text-indigo-600 focus:ring-indigo-500 w-4 h-4 cursor-pointer"
+                              />
+                              <div>
+                                <span className="text-xs font-bold text-slate-800 block">
+                                  Lonceng Peringatan (Alarm Bell)
+                                </span>
+                                <span className="text-[10px] text-slate-500 font-mono">
+                                  Dentang keras berulang
+                                </span>
+                              </div>
+                            </div>
+                            <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-purple-50 text-purple-700 font-mono">
+                              Bell
+                            </span>
+                          </label>
+
+                          {/* Option 5: Custom Audio Upload */}
+                          <label
+                            className={`p-3 rounded-xl border flex items-center justify-between cursor-pointer transition sm:col-span-2 ${
+                              config.alarmType === 'CUSTOM_AUDIO'
+                                ? 'bg-white border-emerald-600 shadow-xs ring-2 ring-emerald-500/20'
+                                : 'bg-white/60 border-slate-200 hover:bg-white'
+                            }`}
+                          >
+                            <div className="flex items-center gap-2.5">
+                              <input
+                                type="radio"
+                                name="alarmType"
+                                value="CUSTOM_AUDIO"
+                                checked={config.alarmType === 'CUSTOM_AUDIO'}
+                                onChange={() => onUpdateConfig({ ...config, alarmType: 'CUSTOM_AUDIO' })}
+                                className="text-emerald-600 focus:ring-emerald-500 w-4 h-4 cursor-pointer"
+                              />
+                              <div>
+                                <span className="text-xs font-bold text-slate-800 flex items-center gap-1.5">
+                                  <Music className="w-3.5 h-3.5 text-emerald-600" />
+                                  Opsi Alarm Kustom (Unggah Audio Sendiri)
+                                </span>
+                                <span className="text-[10px] text-slate-500 font-mono">
+                                  Gunakan file audio rekaman sekolah atau MP3 khusus yang Anda unggah
+                                </span>
+                              </div>
+                            </div>
+                            <span className="text-[10px] font-bold px-2 py-0.5 rounded bg-emerald-100 text-emerald-800 font-mono">
+                              Kustom
+                            </span>
+                          </label>
+                        </div>
+                      </div>
+
+                      {/* Custom Audio Upload Area */}
+                      {config.alarmType === 'CUSTOM_AUDIO' && (
+                        <div className="p-4 bg-emerald-50/60 rounded-xl border border-emerald-200 space-y-3 animate-fade-in">
+                          <div className="flex items-center justify-between">
+                            <span className="text-xs font-bold text-emerald-900 font-mono flex items-center gap-1.5">
+                              <FileAudio className="w-4 h-4 text-emerald-700" />
+                              Unggah Berkas Audio Kustom (.mp3, .wav, .ogg):
+                            </span>
+                            {config.customAlarmAudioUrl && (
+                              <button
+                                type="button"
+                                onClick={() => onUpdateConfig({
+                                  ...config,
+                                  customAlarmAudioUrl: undefined,
+                                  customAlarmName: undefined,
+                                  alarmType: 'SIREN'
+                                })}
+                                className="text-[10px] font-bold text-rose-600 hover:text-rose-800 font-mono cursor-pointer"
+                              >
+                                Hapus Audio Kustom
+                              </button>
+                            )}
+                          </div>
+
+                          <div className="flex flex-col sm:flex-row sm:items-center gap-3">
+                            <label className="px-4 py-2 bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl text-xs font-bold cursor-pointer transition flex items-center justify-center gap-2 shadow-xs shrink-0 active:scale-95">
+                              <Upload className="w-3.5 h-3.5" />
+                              <span>Pilih File Audio Dari Komputer</span>
+                              <input
+                                type="file"
+                                accept="audio/*"
+                                onChange={handleCustomAudioFileUpload}
+                                className="hidden"
+                              />
+                            </label>
+
+                            <div className="text-xs text-slate-600 font-mono truncate">
+                              {config.customAlarmName ? (
+                                <span className="text-emerald-800 font-bold flex items-center gap-1">
+                                  <Check className="w-3.5 h-3.5 text-emerald-600" />
+                                  Terpasang: {config.customAlarmName}
+                                </span>
+                              ) : config.customAlarmAudioUrl ? (
+                                <span className="text-emerald-800 font-bold">
+                                  Audio kustom tersimpan aktif
+                                </span>
+                              ) : (
+                                <span className="text-slate-400 italic">
+                                  Belum ada file audio yang diunggah (Maks. 8 MB)
+                                </span>
+                              )}
+                            </div>
+                          </div>
+                        </div>
+                      )}
+
+                      {/* Test Sound Button Toolbar */}
+                      <div className="flex flex-wrap items-center gap-2 pt-2 border-t border-slate-200/70">
+                        <button
+                          type="button"
+                          id="btn-test-alarm-sound"
+                          onClick={() => handleTestAlarmSound()}
+                          className={`px-4 py-2 rounded-xl text-xs font-extrabold transition flex items-center gap-1.5 cursor-pointer shadow-xs active:scale-95 ${
+                            isPlayingAlarmTest
+                              ? 'bg-rose-600 hover:bg-rose-500 text-white animate-pulse'
+                              : 'bg-indigo-600 hover:bg-indigo-500 text-white'
+                          }`}
+                        >
+                          {isPlayingAlarmTest ? (
+                            <>
+                              <VolumeX className="w-4 h-4 text-white" />
+                              <span>Hentikan Uji Coba</span>
+                            </>
+                          ) : (
+                            <>
+                              <Volume2 className="w-4 h-4 text-white" />
+                              <span>Uji Coba Bunyi Alarm Sekarang</span>
+                            </>
+                          )}
+                        </button>
+
+                        {isPlayingAlarmTest && (
+                          <span className="text-xs font-bold font-mono text-rose-600 flex items-center gap-1.5 bg-rose-50 px-2.5 py-1 rounded-lg border border-rose-200">
+                            <span className="w-2 h-2 rounded-full bg-rose-600 animate-ping"></span>
+                            Alarm Sedang Berbunyi...
+                          </span>
+                        )}
+
+                        <span className="text-[11px] text-slate-400 font-mono ml-auto hidden sm:inline">
+                          *Suara ini akan berbunyi di komputer siswa saat siswa keluar layar penuh
+                        </span>
+                      </div>
+                    </div>
+                  )}
                 </div>
 
                 {/* 5. Custom Token Unlock Management (Channel 2) */}
@@ -4448,6 +4844,194 @@ export default function AdminPanel({
                       }`}
                     />
                   </button>
+                </div>
+
+                {/* 8. MANAJEMEN KATA SANDI PENGAWAS & ADMIN MASTER (DENGAN KODE ABSOLUT PENGEMBANG) */}
+                <div className="p-6 bg-gradient-to-br from-slate-900 via-indigo-950 to-slate-900 text-white rounded-2xl border border-indigo-900/60 shadow-lg space-y-5">
+                  <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-3 border-b border-white/10 pb-4">
+                    <div>
+                      <div className="flex items-center gap-2">
+                        <div className="w-8 h-8 rounded-xl bg-amber-400 text-slate-950 flex items-center justify-center font-black shadow-xs">
+                          <KeyRound className="w-4 h-4" />
+                        </div>
+                        <div>
+                          <h4 className="font-extrabold text-sm text-white tracking-wide font-sans">
+                            Ganti Kata Sandi Pengawas & Admin Master
+                          </h4>
+                          <span className="text-[10px] font-mono text-amber-300 font-bold uppercase tracking-wider">
+                            OTORISASI KODE ABSOLUT ("reyhanstecu")
+                          </span>
+                        </div>
+                      </div>
+                      <p className="text-xs text-indigo-200/80 mt-2 leading-relaxed max-w-xl">
+                        Untuk menjaga keamanan integritas sistem ujian sekolah, penggantian kata sandi Pengawas maupun Admin Master <strong>wajib menyertakan Kode Otorisasi Absolut</strong>. Kode ultimate ini bersifat permanen dan hanya dapat diubah dari repository kode sumber sistem ini saja.
+                      </p>
+                    </div>
+
+                    <div className="flex flex-col sm:items-end gap-1 shrink-0">
+                      <span className="text-[10px] font-mono text-indigo-300 uppercase">Status Kredensial</span>
+                      <div className="flex items-center gap-1.5 bg-white/10 px-2.5 py-1 rounded-lg text-xs font-mono text-emerald-300 border border-emerald-500/30">
+                        <ShieldCheck className="w-3.5 h-3.5 text-emerald-400" />
+                        <span>Tersandi & Aman</span>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Feedback Notification Banner */}
+                  {passwordChangeStatus && (
+                    <div
+                      className={`p-3.5 rounded-xl text-xs font-medium flex items-center gap-2.5 border ${
+                        passwordChangeStatus.type === 'success'
+                          ? 'bg-emerald-950/80 text-emerald-200 border-emerald-500/50'
+                          : 'bg-rose-950/80 text-rose-200 border-rose-500/50 animate-shake'
+                      }`}
+                    >
+                      {passwordChangeStatus.type === 'success' ? (
+                        <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
+                      ) : (
+                        <AlertCircle className="w-4 h-4 text-rose-400 shrink-0" />
+                      )}
+                      <span>{passwordChangeStatus.message}</span>
+                    </div>
+                  )}
+
+                  {/* Form Ganti Sandi */}
+                  <div className="space-y-4 pt-1">
+                    {/* Input 1: Kode Otorisasi Absolut */}
+                    <div className="space-y-1">
+                      <label className="block text-xs font-black text-amber-300 font-mono tracking-wider uppercase">
+                        Kode Otorisasi Absolut (Ultimate Security Key) *
+                      </label>
+                      <input
+                        type="password"
+                        required
+                        placeholder="Ketik kode absolut dariku..."
+                        value={authCodeInput}
+                        onChange={(e) => setAuthCodeInput(e.target.value)}
+                        className="w-full px-4 py-2.5 bg-white/10 border border-white/20 focus:border-amber-400 focus:bg-white/15 rounded-xl text-white text-sm font-mono focus:outline-hidden transition"
+                      />
+                      <p className="text-[11px] text-indigo-200/70 font-mono">
+                        * Kode absolut ini adalah "reyhanstecu" dan hanya bisa diubah langsung dari berkas sistem repository.
+                      </p>
+                    </div>
+
+                    {/* Radio: Target Akun */}
+                    <div className="space-y-1.5">
+                      <label className="block text-xs font-bold text-slate-200 font-mono uppercase">
+                        Pilih Sandi yang Ingin Diperbarui:
+                      </label>
+                      <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                        <label
+                          className={`p-2.5 rounded-xl border flex items-center gap-2 cursor-pointer transition text-xs font-bold ${
+                            passwordTargetRole === 'PROCTOR'
+                              ? 'bg-amber-400 text-slate-950 border-amber-300 shadow-xs'
+                              : 'bg-white/10 text-white border-white/15 hover:bg-white/15'
+                          }`}
+                        >
+                          <input
+                            type="radio"
+                            name="targetRole"
+                            value="PROCTOR"
+                            checked={passwordTargetRole === 'PROCTOR'}
+                            onChange={() => setPasswordTargetRole('PROCTOR')}
+                            className="hidden"
+                          />
+                          <ShieldCheck className="w-3.5 h-3.5" />
+                          <span>Pengawas Ruang</span>
+                        </label>
+
+                        <label
+                          className={`p-2.5 rounded-xl border flex items-center gap-2 cursor-pointer transition text-xs font-bold ${
+                            passwordTargetRole === 'ADMIN'
+                              ? 'bg-amber-400 text-slate-950 border-amber-300 shadow-xs'
+                              : 'bg-white/10 text-white border-white/15 hover:bg-white/15'
+                          }`}
+                        >
+                          <input
+                            type="radio"
+                            name="targetRole"
+                            value="ADMIN"
+                            checked={passwordTargetRole === 'ADMIN'}
+                            onChange={() => setPasswordTargetRole('ADMIN')}
+                            className="hidden"
+                          />
+                          <Settings2 className="w-3.5 h-3.5" />
+                          <span>Admin Master</span>
+                        </label>
+
+                        <label
+                          className={`p-2.5 rounded-xl border flex items-center gap-2 cursor-pointer transition text-xs font-bold ${
+                            passwordTargetRole === 'BOTH'
+                              ? 'bg-amber-400 text-slate-950 border-amber-300 shadow-xs'
+                              : 'bg-white/10 text-white border-white/15 hover:bg-white/15'
+                          }`}
+                        >
+                          <input
+                            type="radio"
+                            name="targetRole"
+                            value="BOTH"
+                            checked={passwordTargetRole === 'BOTH'}
+                            onChange={() => setPasswordTargetRole('BOTH')}
+                            className="hidden"
+                          />
+                          <KeyRound className="w-3.5 h-3.5" />
+                          <span>Keduanya Sekaligus</span>
+                        </label>
+                      </div>
+                    </div>
+
+                    {/* Inputs Sandi Baru */}
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1">
+                      {(passwordTargetRole === 'PROCTOR' || passwordTargetRole === 'BOTH') && (
+                        <div className="space-y-1">
+                          <label className="block text-xs font-bold text-amber-300 font-mono">
+                            Kata Sandi Baru Pengawas Ruang (Username: pengawas):
+                          </label>
+                          <input
+                            type="text"
+                            placeholder="Ketik kata sandi baru pengawas..."
+                            value={newProctorPasswordInput}
+                            onChange={(e) => setNewProctorPasswordInput(e.target.value)}
+                            className="w-full px-3.5 py-2.5 bg-white/10 border border-white/20 focus:border-amber-400 rounded-xl text-white text-xs font-mono focus:outline-hidden transition"
+                          />
+                          <span className="text-[10px] text-slate-400 font-mono block">
+                            Saat ini aktif: {config.proctorPassword ? 'Sandi Khusus' : 'awasadasule'}
+                          </span>
+                        </div>
+                      )}
+
+                      {(passwordTargetRole === 'ADMIN' || passwordTargetRole === 'BOTH') && (
+                        <div className="space-y-1">
+                          <label className="block text-xs font-bold text-indigo-300 font-mono">
+                            Kata Sandi Baru Admin Master (Username: admin):
+                          </label>
+                          <input
+                            type="text"
+                            placeholder="Ketik kata sandi baru admin..."
+                            value={newAdminPasswordInput}
+                            onChange={(e) => setNewAdminPasswordInput(e.target.value)}
+                            className="w-full px-3.5 py-2.5 bg-white/10 border border-white/20 focus:border-indigo-400 rounded-xl text-white text-xs font-mono focus:outline-hidden transition"
+                          />
+                          <span className="text-[10px] text-slate-400 font-mono block">
+                            Saat ini aktif: {config.adminPassword ? 'Sandi Khusus' : 'monyetlupa'}
+                          </span>
+                        </div>
+                      )}
+                    </div>
+
+                    {/* Submit Button */}
+                    <div className="pt-2">
+                      <button
+                        type="button"
+                        id="btn-apply-password-change"
+                        onClick={handleApplyPasswordChange}
+                        className="w-full sm:w-auto px-6 py-2.5 bg-amber-400 hover:bg-amber-300 active:scale-95 text-slate-950 font-black text-xs font-mono rounded-xl shadow-md transition flex items-center justify-center gap-2 cursor-pointer"
+                      >
+                        <ShieldCheck className="w-4 h-4 text-slate-900" />
+                        <span>Verifikasi Kode Absolut & Simpan Perubahan Sandi</span>
+                      </button>
+                    </div>
+                  </div>
                 </div>
               </div>
 

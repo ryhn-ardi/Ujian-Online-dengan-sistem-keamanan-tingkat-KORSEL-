@@ -168,7 +168,7 @@ export default function ProctorPanel({
                   }`}
                 >
                   <Users className="w-3.5 h-3.5" />
-                  <span>Monitoring ({students.length})</span>
+                  <span>Monitoring Siswa ({students.length})</span>
                   {lockedStudents.length > 0 && (
                     <span className="w-2 h-2 rounded-full bg-rose-500 animate-ping"></span>
                   )}
@@ -185,7 +185,7 @@ export default function ProctorPanel({
                   }`}
                 >
                   <BarChart3 className="w-3.5 h-3.5 text-indigo-600" />
-                  <span>Grafik</span>
+                  <span>Grafik Monitoring</span>
                 </button>
 
                 <button
@@ -199,7 +199,7 @@ export default function ProctorPanel({
                   }`}
                 >
                   <FileSpreadsheet className="w-3.5 h-3.5 text-emerald-600" />
-                  <span>Analisis Soal & Excel</span>
+                  <span>Analisis Butir Soal</span>
                 </button>
               </nav>
 
