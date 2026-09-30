@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Play, AlertTriangle, ShieldAlert, KeyRound, Clock, ChevronLeft, ChevronRight, CheckSquare, Send, CheckCircle, RefreshCw, Check, Radio, Ticket, Lock, Unlock, BellOff, Smartphone, Volume2, Info } from 'lucide-react';
+import { Play, AlertTriangle, Wifi, WifiOff, CloudOff, ShieldAlert, KeyRound, Clock, ChevronLeft, ChevronRight, CheckSquare, Send, CheckCircle, RefreshCw, Check, Radio, Ticket, Lock, Unlock, BellOff, Smartphone, Volume2, Info } from 'lucide-react';
 import { Student, Question, ExamConfig } from '../types';
 import { getStudentFromServer } from '../utils/sync';
 import { RichExamContent } from './RichExamContent';
@@ -115,6 +115,29 @@ export default function StudentExam({
   config
 }: StudentExamProps) {
   const [currentQuestionIndex, setCurrentQuestionIndex] = useState(0);
+  const [isOnline, setIsOnline] = useState<boolean>(() => typeof navigator !== 'undefined' ? navigator.onLine : true);
+  const [syncStatus, setSyncStatus] = useState<'SYNCED' | 'SAVING' | 'OFFLINE'>('SYNCED');
+
+  // Network online/offline listener for unobtrusive real-time indicator
+  useEffect(() => {
+    const handleOnline = () => {
+      setIsOnline(true);
+      setSyncStatus('SYNCED');
+    };
+    const handleOffline = () => {
+      setIsOnline(false);
+      setSyncStatus('OFFLINE');
+    };
+
+    window.addEventListener('online', handleOnline);
+    window.addEventListener('offline', handleOffline);
+
+    return () => {
+      window.removeEventListener('online', handleOnline);
+      window.removeEventListener('offline', handleOffline);
+    };
+  }, []);
+
   const [selectedAnswers, setSelectedAnswers] = useState<Record<string, number | number[]>>(() => {
     try {
       const local = localStorage.getItem(`exam_answers_${student.id}`);
@@ -1038,6 +1061,24 @@ export default function StudentExam({
         </div>
       )}
 
+            {/* Unobtrusive Offline Warning Indicator */}
+      {!isOnline && (
+        <div className="bg-amber-500 text-slate-950 px-4 py-2 text-xs font-semibold shadow-sm border-b border-amber-600/40 sticky top-0 z-50 animate-fade-in select-none">
+          <div className="max-w-5xl mx-auto flex items-center justify-between gap-3">
+            <div className="flex items-center gap-2">
+              <div className="w-2 h-2 rounded-full bg-amber-950 animate-ping shrink-0" />
+              <WifiOff className="w-4 h-4 text-amber-950 shrink-0" />
+              <span>
+                <strong>Mode Offline / Sinkronisasi Terputus:</strong> Jawaban Anda tetap aman tersimpan di browser ini & otomatis disinkronkan ke server saat jaringan terhubung kembali.
+              </span>
+            </div>
+            <span className="text-[10px] font-mono bg-amber-950/15 text-amber-950 px-2 py-0.5 rounded font-bold uppercase shrink-0 hidden sm:inline-block">
+              Penyimpanan Lokal Aktif
+            </span>
+          </div>
+        </div>
+      )}
+
       {/* Header Panel */}
       <header className="bg-slate-900 text-white shadow-sm border-b border-slate-800 px-6 py-4 sticky top-0 z-40">
         <div className="max-w-5xl mx-auto flex flex-col sm:flex-row sm:items-center justify-between gap-4">
@@ -1305,8 +1346,9 @@ export default function StudentExam({
       </main>
 
       {/* Strict Guardian Warning watermark at bottom */}
-      <footer className="bg-slate-100 text-center py-3 text-[10px] text-slate-400 font-mono tracking-wider border-t border-slate-200 select-none">
-        PROKTOR AKTIF • KUNCI MANDIRI • JANGAN KELUAR FULLSCREEN ATAU BERPINDAH TAB
+            <footer className="bg-slate-100 text-center py-3 text-[10px] text-slate-500 font-mono tracking-wider border-t border-slate-200 select-none space-y-0.5">
+        <div>{config.examTitle} • SISTEM UJIAN BERBASIS KOMPUTER</div>
+        <div className="text-[11px] font-sans font-medium text-slate-600">Created &amp; Developed by <span className="font-bold text-slate-800">@ryhnn.hannn</span></div>
       </footer>
 
       {/* Manual Submit Confirmation Dialog */}

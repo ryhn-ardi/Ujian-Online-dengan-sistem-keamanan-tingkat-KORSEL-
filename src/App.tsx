@@ -571,7 +571,7 @@ export default function App() {
               </div>
 
               {/* Navigation Back */}
-              <div className="text-center">
+              <div className="text-center space-y-4">
                 <button
                   id="btn-return-home"
                   onClick={() => {
@@ -584,6 +584,9 @@ export default function App() {
                   Selesai & Kerjakan Naskah Ujian Lain / Keluar
                   <ArrowRight className="w-4 h-4 text-slate-400 animate-pulse" />
                 </button>
+                <div className="text-xs text-slate-400 font-medium">
+                  Created &amp; Developed by <span className="font-bold text-slate-600">@ryhnn.hannn</span>
+                </div>
               </div>
 
             </div>

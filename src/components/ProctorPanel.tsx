@@ -1,4 +1,6 @@
 import React, { useState, useMemo } from 'react';
+import * as XLSX from 'xlsx';
+import { getStudentMetrics } from './AdminPanel';
 import { 
   KeyRound, 
   ShieldCheck, 
@@ -15,7 +17,10 @@ import {
   RefreshCw,
   Eye,
   SlidersHorizontal,
-  Info
+  Info,
+  Layers,
+  Download,
+  X
 } from 'lucide-react';
 import { Student, Question, ExamConfig, ExamSubject } from '../types';
 import { getExamSubjects } from '../utils/sync';
@@ -47,6 +52,146 @@ export default function ProctorPanel({
   const [selectedClassFilter, setSelectedClassFilter] = useState('all');
   const [selectedSubjectFilter, setSelectedSubjectFilter] = useState('all');
   const [selectedStatusFilter, setSelectedStatusFilter] = useState('all');
+  const [showExportGradesModal, setShowExportGradesModal] = useState(false);
+  const [exportClassFilter, setExportClassFilter] = useState('all');
+
+  // Multi-Sheet & Per-Subject Excel Export for Proctor
+  const generateStudentGradeRows = (studentList: Student[]) => {
+    const headers = [
+      'No',
+      'Nama Siswa',
+      'No Absen',
+      'Kelas',
+      'Naskah / Mata Pelajaran',
+      'Status Ujian',
+      'Pelanggaran (Lock Count)',
+      'Total Benar',
+      'Jumlah Soal',
+      'Nilai Akhir (%)',
+      'Waktu Mulai (WIB)',
+      'Waktu Selesai (WIB)'
+    ];
+
+    const rows = studentList.map((s, idx) => {
+      const metrics = getStudentMetrics(s, questions);
+      const correctCount = s.status === 'SELESAI' 
+        ? metrics.correctAnswersCount 
+        : (s.correctAnswersCount !== undefined ? s.correctAnswersCount : (metrics.correctAnswersCount || 0));
+      const totalCount = metrics.totalQuestions;
+      const finalScore = s.status === 'SELESAI' 
+        ? Number(metrics.score.toFixed(1)) 
+        : (s.score !== undefined ? Number(s.score.toFixed(1)) : (Object.keys(s.answers || {}).length > 0 ? Number(metrics.score.toFixed(1)) : 0));
+      
+      const formatTimeText = (isoStr?: string) => {
+        if (!isoStr) return '-';
+        const d = new Date(isoStr);
+        return `${d.toLocaleDateString('id-ID')} ${d.toLocaleTimeString('id-ID')}`;
+      };
+
+      const foundSub = subjects.find(sub => sub.id === s.subjectId || (!s.subjectId && sub.id === 'sub1'));
+      const subjectName = foundSub ? foundSub.name : (s.subjectId || 'Mata Pelajaran');
+
+      return [
+        idx + 1,
+        s.name,
+        s.absentNumber,
+        s.studentClass,
+        subjectName,
+        s.status === 'TERKUNCI' ? 'TERKOMPROMISI / TERKUNCI' : s.status,
+        s.violationCount || 0,
+        correctCount,
+        totalCount,
+        finalScore,
+        formatTimeText(s.startTime),
+        formatTimeText(s.endTime)
+      ];
+    });
+
+    return { headers, rows };
+  };
+
+  const applyExcelSheetStyles = (ws: XLSX.WorkSheet) => {
+    ws['!cols'] = [
+      { wch: 6 },  // No
+      { wch: 28 }, // Nama Siswa
+      { wch: 12 }, // No Absen
+      { wch: 12 }, // Kelas
+      { wch: 26 }, // Naskah Soal
+      { wch: 24 }, // Status Ujian
+      { wch: 16 }, // Pelanggaran
+      { wch: 12 }, // Total Benar
+      { wch: 12 }, // Jumlah Soal
+      { wch: 15 }, // Nilai Akhir
+      { wch: 20 }, // Mulai
+      { wch: 20 }  // Selesai
+    ];
+  };
+
+  const handleExportGradesToExcel = (targetSubjectId: string = 'all', targetClass: string = 'all') => {
+    let sourceStudents = students;
+    if (targetClass !== 'all') {
+      sourceStudents = sourceStudents.filter(s => s.studentClass === targetClass);
+    }
+
+    if (sourceStudents.length === 0) {
+      alert('Tidak ada data siswa untuk diekspor pada filter yang dipilih!');
+      return;
+    }
+
+    const dateStr = new Date().toISOString().slice(0, 10);
+    const safeTitle = (config.examTitle || 'Ujian').replace(/[^a-zA-Z0-9]/g, '_').toLowerCase();
+    const wb = XLSX.utils.book_new();
+
+    if (targetSubjectId === 'all') {
+      const masterData = generateStudentGradeRows(sourceStudents);
+      const wsMaster = XLSX.utils.aoa_to_sheet([masterData.headers, ...masterData.rows]);
+      applyExcelSheetStyles(wsMaster);
+      XLSX.utils.book_append_sheet(wb, wsMaster, 'Semua_Naskah');
+
+      const usedSheetNames = new Set<string>(['Semua_Naskah']);
+      subjects.forEach((sub, sIdx) => {
+        const subStudents = sourceStudents.filter(s => (!s.subjectId && sub.id === 'sub1') || s.subjectId === sub.id);
+        if (subStudents.length > 0) {
+          const subData = generateStudentGradeRows(subStudents);
+          const wsSub = XLSX.utils.aoa_to_sheet([subData.headers, ...subData.rows]);
+          applyExcelSheetStyles(wsSub);
+
+          let sheetName = sub.name.replace(/[:\\/?*\[\]]/g, '_').slice(0, 28);
+          if (usedSheetNames.has(sheetName)) {
+            sheetName = `${sheetName.slice(0, 24)}_${sIdx + 1}`;
+          }
+          usedSheetNames.add(sheetName);
+
+          XLSX.utils.book_append_sheet(wb, wsSub, sheetName);
+        }
+      });
+
+      const fileName = `rekap_nilai_pengawas_multi_mapel_${safeTitle}_${dateStr}.xlsx`;
+      XLSX.writeFile(wb, fileName);
+    } else {
+      const foundSub = subjects.find(s => s.id === targetSubjectId);
+      const subName = foundSub ? foundSub.name : 'Mapel';
+      const subStudents = sourceStudents.filter(s => (!s.subjectId && targetSubjectId === 'sub1') || s.subjectId === targetSubjectId);
+
+      if (subStudents.length === 0) {
+        alert(`Belum ada data siswa untuk mata pelajaran "${subName}"!`);
+        return;
+      }
+
+      const subData = generateStudentGradeRows(subStudents);
+      const ws = XLSX.utils.aoa_to_sheet([subData.headers, ...subData.rows]);
+      applyExcelSheetStyles(ws);
+
+      const sheetName = subName.replace(/[:\\/?*\[\]]/g, '_').slice(0, 28);
+      XLSX.utils.book_append_sheet(wb, ws, sheetName);
+
+      const cleanSubName = subName.replace(/[^a-zA-Z0-9]/g, '_');
+      const fileName = `rekap_nilai_${cleanSubName}_${safeTitle}_${dateStr}.xlsx`;
+      XLSX.writeFile(wb, fileName);
+    }
+
+    setShowExportGradesModal(false);
+  };
 
   // Token copy state
   const [copiedToken, setCopiedToken] = useState<string | null>(null);
@@ -203,6 +348,15 @@ export default function ProctorPanel({
                 </button>
               </nav>
 
+              <button
+                type="button"
+                onClick={() => setShowExportGradesModal(true)}
+                className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs rounded-xl transition flex items-center gap-1.5 shadow-xs cursor-pointer"
+                title="Ekspor rekap nilai siswa terpisah per naskah mata pelajaran ke Excel (.xlsx)"
+              >
+                <FileSpreadsheet className="w-3.5 h-3.5" />
+                <span className="hidden sm:inline">Ekspor Nilai (Excel)</span>
+              </button>
               <button
                 type="button"
                 id="btn-proctor-logout"
@@ -554,6 +708,150 @@ export default function ProctorPanel({
         )}
 
       </main>
+
+            {/* Modal Ekspor Nilai Siswa (Multi-Sheet & Terpisah per Mapel) */}
+      {showExportGradesModal && (
+        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4 z-50 animate-fade-in">
+          <div className="bg-white rounded-3xl border border-slate-200 shadow-2xl max-w-2xl w-full p-6 sm:p-8 space-y-6 max-h-[90vh] overflow-y-auto scrollbar-thin">
+            <div className="flex items-center justify-between border-b border-slate-100 pb-4">
+              <div className="flex items-center gap-3">
+                <div className="w-11 h-11 rounded-2xl bg-emerald-50 text-emerald-600 flex items-center justify-center font-bold shadow-2xs">
+                  <FileSpreadsheet className="w-6 h-6" />
+                </div>
+                <div>
+                  <h3 className="text-lg font-black text-slate-900 tracking-tight">
+                    Ekspor Nilai Siswa ke Excel (.xlsx)
+                  </h3>
+                  <p className="text-xs text-slate-400 font-medium">
+                    Pilih format ekspor nilai: unduh seluruh naskah dalam satu berkas multi-sheet, atau unduh per naskah mata pelajaran
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowExportGradesModal(false)}
+                className="p-2 text-slate-400 hover:bg-slate-100 rounded-full transition cursor-pointer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {/* Filter Kelas Options */}
+            <div className="p-4 bg-slate-50 rounded-2xl border border-slate-200 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+              <div className="text-xs font-bold text-slate-700 font-mono uppercase tracking-wider">
+                Filter Kelas yang Diekspor:
+              </div>
+              <select
+                value={exportClassFilter}
+                onChange={(e) => setExportClassFilter(e.target.value)}
+                className="px-3 py-2 bg-white border border-slate-200 rounded-xl text-xs font-bold text-slate-800 focus:outline-none focus:border-emerald-500 shadow-2xs"
+              >
+                <option value="all">Semua Kelas ({students.length} Siswa)</option>
+                {Array.from(new Set(students.map(s => s.studentClass).filter(Boolean))).sort().map(cls => (
+                  <option key={cls} value={cls}>
+                    Kelas {cls} ({students.filter(s => s.studentClass === cls).length} Siswa)
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            {/* OPTION 1: FULL MULTI-SHEET EXCEL */}
+            <div className="p-5 bg-gradient-to-br from-emerald-50/80 via-white to-teal-50/50 rounded-2xl border-2 border-emerald-300 shadow-xs space-y-3">
+              <div className="flex items-start justify-between gap-3">
+                <div className="flex items-center gap-2.5">
+                  <div className="w-9 h-9 rounded-xl bg-emerald-600 text-white flex items-center justify-center font-bold shadow-xs shrink-0">
+                    <Layers className="w-5 h-5" />
+                  </div>
+                  <div>
+                    <h4 className="font-extrabold text-sm text-emerald-950">
+                      Ekspor Semua Naskah (Multi-Sheet per Mapel)
+                    </h4>
+                    <span className="text-[10px] bg-emerald-200 text-emerald-900 font-mono font-bold px-2 py-0.5 rounded-full uppercase">
+                      Paling Praktis • 1 File Excel Lengkap
+                    </span>
+                  </div>
+                </div>
+              </div>
+              <p className="text-xs text-slate-650 leading-relaxed">
+                Menghasilkan <strong>1 file Excel (.xlsx)</strong> yang otomatis membagi dan memisahkan nilai siswa ke dalam <strong>lembar kerja (*sheet*) terpisah untuk tiap mata pelajaran</strong>, ditambah 1 lembar rekapitulasi utama (*Semua_Naskah*).
+              </p>
+              <button
+                type="button"
+                onClick={() => handleExportGradesToExcel('all', exportClassFilter)}
+                className="w-full py-3 bg-emerald-600 hover:bg-emerald-500 text-white font-extrabold text-xs rounded-xl transition flex items-center justify-center gap-2 shadow-sm cursor-pointer"
+              >
+                <FileSpreadsheet className="w-4 h-4" />
+                <span>Unduh Berkas Excel Multi-Sheet ({exportClassFilter === 'all' ? students.length : students.filter(s => s.studentClass === exportClassFilter).length} Siswa)</span>
+              </button>
+            </div>
+
+            {/* OPTION 2: EXPORT SPECIFIC SINGLE SUBJECT */}
+            <div className="space-y-3">
+              <h4 className="font-black text-xs text-slate-800 uppercase font-mono tracking-wider">
+                Atau Unduh Khusus Naskah Mata Pelajaran Tertentu:
+              </h4>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 max-h-[220px] overflow-y-auto p-1 scrollbar-thin">
+                {subjects.map((sub) => {
+                  let subStudents = students.filter(s => (!s.subjectId && sub.id === 'sub1') || s.subjectId === sub.id);
+                  if (exportClassFilter !== 'all') {
+                    subStudents = subStudents.filter(s => s.studentClass === exportClassFilter);
+                  }
+                  const hasData = subStudents.length > 0;
+
+                  return (
+                    <div
+                      key={sub.id}
+                      className={`p-3 rounded-xl border flex items-center justify-between gap-2 transition ${
+                        hasData ? 'bg-white border-slate-200 hover:border-emerald-300 shadow-2xs' : 'bg-slate-50 border-slate-100 opacity-60'
+                      }`}
+                    >
+                      <div className="min-w-0 flex-1">
+                        <div className="text-xs font-extrabold text-slate-800 truncate">
+                          {sub.name}
+                        </div>
+                        <div className="text-[10px] text-slate-400 font-mono">
+                          {subStudents.length} Siswa Mengerjakan
+                        </div>
+                      </div>
+                      <button
+                        type="button"
+                        disabled={!hasData}
+                        onClick={() => handleExportGradesToExcel(sub.id, exportClassFilter)}
+                        className={`px-3 py-1.5 rounded-lg text-xs font-bold transition flex items-center gap-1 shrink-0 ${
+                          hasData
+                            ? 'bg-emerald-50 hover:bg-emerald-600 text-emerald-800 hover:text-white border border-emerald-200 cursor-pointer'
+                            : 'bg-slate-100 text-slate-400 cursor-not-allowed border border-transparent'
+                        }`}
+                        title={hasData ? `Unduh Excel Nilai ${sub.name}` : 'Belum ada siswa di mapel ini'}
+                      >
+                        <Download className="w-3 h-3" />
+                        <span>Unduh</span>
+                      </button>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+
+            <div className="flex items-center justify-end pt-3 border-t border-slate-100">
+              <button
+                type="button"
+                onClick={() => setShowExportGradesModal(false)}
+                className="px-5 py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold text-xs rounded-xl transition cursor-pointer"
+              >
+                Tutup
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Footer Credit */}
+      <footer className="mt-12 py-6 text-center text-xs text-slate-400 font-medium select-none border-t border-slate-200 bg-white">
+        <div>Panel Pengawas Ruang Ujian</div>
+        <div className="mt-0.5 text-slate-500">Created &amp; Developed by <span className="font-bold text-slate-700">@ryhnn.hannn</span></div>
+      </footer>
     </div>
   );
 }

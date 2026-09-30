@@ -813,6 +813,12 @@ export default function StudentRegistration({
           </div>
         </div>
       )}
+
+      {/* Footer Credit */}
+      <footer className="mt-8 py-4 text-center text-xs text-slate-400 font-medium select-none">
+        <div>Sistem Ujian Berbasis Komputer</div>
+        <div className="mt-0.5 text-slate-500">Created &amp; Developed by <span className="font-bold text-slate-700">@ryhnn.hannn</span></div>
+      </footer>
     </div>
   );
 }

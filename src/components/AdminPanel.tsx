@@ -125,7 +125,7 @@ export default function AdminPanel({
     isActive: true
   };
 
-  // Modals for Subject Management (Maksimal 20 Slot)
+  // Modals for Subject Management (Maksimal 50 Slot)
   const [isAddingSubjectModal, setIsAddingSubjectModal] = useState(false);
   const [newSubjectName, setNewSubjectName] = useState('');
   const [newSubjectCode, setNewSubjectCode] = useState('');
@@ -325,6 +325,8 @@ export default function AdminPanel({
 
   // Modal for adding student manually in Monitor tab
   const [showAddStudentMonitorModal, setShowAddStudentMonitorModal] = useState(false);
+  const [showExportGradesModal, setShowExportGradesModal] = useState(false);
+  const [exportClassFilter, setExportClassFilter] = useState('all');
   const [newMonitorName, setNewMonitorName] = useState('');
   const [newMonitorAbsen, setNewMonitorAbsen] = useState('');
   const [newMonitorClass, setNewMonitorClass] = useState('8A');
@@ -1877,44 +1879,32 @@ export default function AdminPanel({
   };
 
   // --- ACTIONS: EXPORT NILAI TO EXCEL (CSV Format with excel compatibility) ---
-  const handleExportToExcel = () => {
-    if (students.length === 0) {
-      alert('Belum ada data siswa untuk diekspor!');
-      return;
-    }
-
-    // Helper to safely escape CSV cells
-    const escapeCsvCell = (val: any): string => {
-      if (val === null || val === undefined) return '';
-      const str = String(val);
-      // Replace any double quotes with standard double-double quotes for CSV standard
-      const escaped = str.replace(/"/g, '""');
-      return `"${escaped}"`;
-    };
-
-    // Header row
+  // --- ACTIONS: EXPORT NILAI TO EXCEL (MULTI-SHEET & PER-MATA PELAJARAN) ---
+  const generateStudentGradeRows = (studentList: Student[]) => {
     const headers = [
       'No',
       'Nama Siswa',
       'No Absen',
       'Kelas',
-      'Naskah Soal',
+      'Naskah / Mata Pelajaran',
       'Status Ujian',
-      'Pelanggaran Proktor (Lock Count)',
+      'Pelanggaran (Lock Count)',
       'Total Benar',
       'Jumlah Soal',
       'Nilai Akhir (%)',
-      'Waktu Mulai',
-      'Waktu Selesai'
+      'Waktu Mulai (WIB)',
+      'Waktu Selesai (WIB)'
     ];
 
-    const rows = students.map((s, idx) => {
+    const rows = studentList.map((s, idx) => {
       const metrics = getStudentMetrics(s, questions);
-      const correctCount = s.status === 'SELESAI' ? metrics.correctAnswersCount : (s.correctAnswersCount !== undefined ? s.correctAnswersCount : (metrics.correctAnswersCount || '-'));
+      const correctCount = s.status === 'SELESAI' 
+        ? metrics.correctAnswersCount 
+        : (s.correctAnswersCount !== undefined ? s.correctAnswersCount : (metrics.correctAnswersCount || 0));
       const totalCount = metrics.totalQuestions;
       const finalScore = s.status === 'SELESAI' 
-        ? metrics.score.toFixed(1) 
-        : (s.score !== undefined ? s.score.toFixed(1) : (Object.keys(s.answers || {}).length > 0 ? `${metrics.score.toFixed(1)} (Berjalan)` : '-'));
+        ? Number(metrics.score.toFixed(1)) 
+        : (s.score !== undefined ? Number(s.score.toFixed(1)) : (Object.keys(s.answers || {}).length > 0 ? Number(metrics.score.toFixed(1)) : 0));
       
       const formatTimeText = (isoStr?: string) => {
         if (!isoStr) return '-';
@@ -1923,7 +1913,7 @@ export default function AdminPanel({
       };
 
       const foundSub = subjects.find(sub => sub.id === s.subjectId || (!s.subjectId && sub.id === 'sub1'));
-      const subjectName = foundSub ? foundSub.name : (s.subjectId || 'Mata Pelajaran 1');
+      const subjectName = foundSub ? foundSub.name : (s.subjectId || 'Mata Pelajaran');
 
       return [
         idx + 1,
@@ -1932,7 +1922,7 @@ export default function AdminPanel({
         s.studentClass,
         subjectName,
         s.status === 'TERKUNCI' ? 'TERKOMPROMISI / TERKUNCI' : s.status,
-        s.violationCount,
+        s.violationCount || 0,
         correctCount,
         totalCount,
         finalScore,
@@ -1941,19 +1931,17 @@ export default function AdminPanel({
       ];
     });
 
-    // Generate native Excel workbook (.xlsx)
-    const wb = XLSX.utils.book_new();
-    const wsData = [headers, ...rows];
-    const ws = XLSX.utils.aoa_to_sheet(wsData);
+    return { headers, rows };
+  };
 
-    // Optimize column widths in Excel
+  const applyExcelSheetStyles = (ws: XLSX.WorkSheet) => {
     ws['!cols'] = [
       { wch: 6 },  // No
-      { wch: 28 }, // Nama
+      { wch: 28 }, // Nama Siswa
       { wch: 12 }, // No Absen
-      { wch: 14 }, // Kelas
-      { wch: 24 }, // Naskah Soal
-      { wch: 24 }, // Status
+      { wch: 12 }, // Kelas
+      { wch: 26 }, // Naskah Soal
+      { wch: 24 }, // Status Ujian
       { wch: 16 }, // Pelanggaran
       { wch: 12 }, // Total Benar
       { wch: 12 }, // Jumlah Soal
@@ -1961,10 +1949,116 @@ export default function AdminPanel({
       { wch: 20 }, // Mulai
       { wch: 20 }  // Selesai
     ];
+  };
 
-    XLSX.utils.book_append_sheet(wb, ws, 'Rekap_Nilai_Ujian');
-    const safeTitle = config.examTitle.replace(/[^a-zA-Z0-9]/g, '_').toLowerCase();
-    XLSX.writeFile(wb, `rekap_nilai_proktor_${safeTitle}.xlsx`);
+  // Export handler supporting multi-sheet and individual subject exports
+  const handleExportGradesToExcel = (targetSubjectId: string = 'all', targetClass: string = 'all') => {
+    let sourceStudents = students;
+    if (targetClass !== 'all') {
+      sourceStudents = sourceStudents.filter(s => s.studentClass === targetClass);
+    }
+
+    if (sourceStudents.length === 0) {
+      alert('Tidak ada data siswa untuk diekspor pada filter yang dipilih!');
+      return;
+    }
+
+    const dateStr = new Date().toISOString().slice(0, 10);
+    const safeTitle = (config.examTitle || 'Ujian').replace(/[^a-zA-Z0-9]/g, '_').toLowerCase();
+    const wb = XLSX.utils.book_new();
+
+    if (targetSubjectId === 'all') {
+      // 1. Sheet Master Rekap Semua Siswa
+      const masterData = generateStudentGradeRows(sourceStudents);
+      const wsMaster = XLSX.utils.aoa_to_sheet([masterData.headers, ...masterData.rows]);
+      applyExcelSheetStyles(wsMaster);
+      XLSX.utils.book_append_sheet(wb, wsMaster, 'Semua_Naskah');
+
+      // 2. Individual Sheet for EACH Subject (Memisahkan nilai tiap mapel)
+      const usedSheetNames = new Set<string>(['Semua_Naskah']);
+      subjects.forEach((sub, sIdx) => {
+        const subStudents = sourceStudents.filter(s => (!s.subjectId && sub.id === 'sub1') || s.subjectId === sub.id);
+        if (subStudents.length > 0) {
+          const subData = generateStudentGradeRows(subStudents);
+          const wsSub = XLSX.utils.aoa_to_sheet([subData.headers, ...subData.rows]);
+          applyExcelSheetStyles(wsSub);
+
+          let sheetName = sub.name.replace(/[:\\/?*\[\]]/g, '_').slice(0, 28);
+          if (usedSheetNames.has(sheetName)) {
+            sheetName = `${sheetName.slice(0, 24)}_${sIdx + 1}`;
+          }
+          usedSheetNames.add(sheetName);
+
+          XLSX.utils.book_append_sheet(wb, wsSub, sheetName);
+        }
+      });
+
+      const fileName = `rekap_nilai_multi_mapel_${safeTitle}_${dateStr}.xlsx`;
+      XLSX.writeFile(wb, fileName);
+    } else {
+      // Export specific single subject
+      const foundSub = subjects.find(s => s.id === targetSubjectId);
+      const subName = foundSub ? foundSub.name : 'Mapel';
+      const subStudents = sourceStudents.filter(s => (!s.subjectId && targetSubjectId === 'sub1') || s.subjectId === targetSubjectId);
+
+      if (subStudents.length === 0) {
+        alert(`Belum ada data siswa untuk mata pelajaran "${subName}"!`);
+        return;
+      }
+
+      const subData = generateStudentGradeRows(subStudents);
+      const ws = XLSX.utils.aoa_to_sheet([subData.headers, ...subData.rows]);
+      applyExcelSheetStyles(ws);
+
+      const sheetName = subName.replace(/[:\\/?*\[\]]/g, '_').slice(0, 28);
+      XLSX.utils.book_append_sheet(wb, ws, sheetName);
+
+      const cleanSubName = subName.replace(/[^a-zA-Z0-9]/g, '_');
+      const fileName = `rekap_nilai_${cleanSubName}_${safeTitle}_${dateStr}.xlsx`;
+      XLSX.writeFile(wb, fileName);
+    }
+
+    setShowExportGradesModal(false);
+  };
+
+  const handleExportAllSubjectsSeparately = () => {
+    let sourceStudents = students;
+    if (exportClassFilter !== 'all') {
+      sourceStudents = sourceStudents.filter(s => s.studentClass === exportClassFilter);
+    }
+
+    const dateStr = new Date().toISOString().slice(0, 10);
+    const safeTitle = (config.examTitle || 'Ujian').replace(/[^a-zA-Z0-9]/g, '_').toLowerCase();
+    let exportedCount = 0;
+
+    subjects.forEach(sub => {
+      const subStudents = sourceStudents.filter(s => (!s.subjectId && sub.id === 'sub1') || s.subjectId === sub.id);
+      if (subStudents.length > 0) {
+        const wb = XLSX.utils.book_new();
+        const subData = generateStudentGradeRows(subStudents);
+        const ws = XLSX.utils.aoa_to_sheet([subData.headers, ...subData.rows]);
+        applyExcelSheetStyles(ws);
+        const sheetName = sub.name.replace(/[:\\/?*\[\]]/g, '_').slice(0, 28);
+        XLSX.utils.book_append_sheet(wb, ws, sheetName);
+        const cleanSubName = sub.name.replace(/[^a-zA-Z0-9]/g, '_');
+        XLSX.writeFile(wb, `rekap_nilai_${cleanSubName}_${safeTitle}_${dateStr}.xlsx`);
+        exportedCount++;
+      }
+    });
+
+    if (exportedCount === 0) {
+      alert('Tidak ada naskah mapel yang memiliki data siswa untuk diekspor!');
+    } else {
+      setShowExportGradesModal(false);
+    }
+  };
+
+  const handleExportToExcel = () => {
+    if (students.length === 0) {
+      alert('Belum ada data siswa untuk diekspor!');
+      return;
+    }
+    setShowExportGradesModal(true);
   };
 
   // --- ACTIONS: BANK SOAL CRUD ---
@@ -2759,50 +2853,65 @@ export default function AdminPanel({
 
             {/* Students Table */}
             <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden shadow-xs">
-              <div className="px-6 py-4 bg-slate-50 border-b border-slate-200 flex flex-col lg:flex-row lg:items-center justify-between gap-4">
-                <div className="flex flex-col sm:flex-row sm:items-center gap-3">
+              <div className="p-6 bg-slate-50 border-b border-slate-200 space-y-4">
+                {/* Row 1: Title, Subtitle, and Action Buttons */}
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
                   <div>
-                    <h3 className="font-bold text-slate-800">Daftar Kehadiran & Nilai Siswa</h3>
-                    <span className="text-xs text-slate-400 italic">Nilai otomatis dikalkulasi real-time saat siswa klik kumpul atau waktu habis</span>
+                    <h3 className="font-extrabold text-slate-800 text-base">Daftar Kehadiran & Nilai Siswa</h3>
+                    <p className="text-xs text-slate-400 italic mt-0.5">Nilai otomatis dikalkulasi real-time saat siswa klik kumpul atau waktu habis</p>
                   </div>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setNewMonitorName('');
-                      setNewMonitorAbsen('');
-                      setNewMonitorClass('8A');
-                      setNewMonitorSubject(effectiveActiveSubject.id || 'sub1');
-                      setAddMonitorError('');
-                      setShowAddStudentMonitorModal(true);
-                    }}
-                    className="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-500 text-white font-bold text-xs rounded-xl transition flex items-center gap-1.5 shadow-2xs cursor-pointer self-start sm:self-auto shrink-0"
-                  >
-                    <Plus className="w-3.5 h-3.5" />
-                    Tambah Siswa Manual
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setActiveTab('ACCOUNTS');
-                      setShowAccountImportArea(true);
-                    }}
-                    className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs rounded-xl transition flex items-center gap-1.5 shadow-2xs cursor-pointer self-start sm:self-auto shrink-0"
-                    title="Unggah berkas Excel/CSV untuk mendaftarkan akun siswa secara masal"
-                  >
-                    <Upload className="w-3.5 h-3.5" />
-                    Unggah Siswa Excel
-                  </button>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setNewMonitorName('');
+                        setNewMonitorAbsen('');
+                        setNewMonitorClass('8A');
+                        setNewMonitorSubject(effectiveActiveSubject.id || 'sub1');
+                        setAddMonitorError('');
+                        setShowAddStudentMonitorModal(true);
+                      }}
+                      className="px-3.5 py-2 bg-indigo-600 hover:bg-indigo-500 text-white font-bold text-xs rounded-xl transition flex items-center gap-1.5 shadow-2xs cursor-pointer shrink-0"
+                    >
+                      <Plus className="w-3.5 h-3.5" />
+                      Tambah Siswa Manual
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setActiveTab('ACCOUNTS');
+                        setShowAccountImportArea(true);
+                      }}
+                      className="px-3.5 py-2 bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs rounded-xl transition flex items-center gap-1.5 shadow-2xs cursor-pointer shrink-0"
+                      title="Unggah berkas Excel/CSV untuk mendaftarkan akun siswa secara masal"
+                    >
+                      <Upload className="w-3.5 h-3.5" />
+                      Unggah Siswa Excel
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setShowExportGradesModal(true)}
+                      className="px-3.5 py-2 bg-teal-600 hover:bg-teal-500 text-white font-bold text-xs rounded-xl transition flex items-center gap-1.5 shadow-2xs cursor-pointer shrink-0"
+                      title="Ekspor rekap nilai siswa terpisah per naskah mata pelajaran ke Excel (.xlsx)"
+                    >
+                      <FileSpreadsheet className="w-3.5 h-3.5" />
+                      Ekspor Nilai per Mapel (.xlsx)
+                    </button>
+                  </div>
                 </div>
                 
-                {/* Quick Subject Pill Tabs for 1-click filtering */}
-                <div className="flex flex-wrap items-center gap-1.5 p-1 bg-slate-100/90 rounded-2xl border border-slate-200/80 mb-3 w-full">
+                {/* Row 2: Quick Subject Pill Tabs for 1-click filtering (Dedicated Row with horizontal scroll) */}
+                <div className="flex items-center gap-1.5 p-1.5 bg-white rounded-2xl border border-slate-200/90 shadow-2xs overflow-x-auto scrollbar-thin">
+                  <span className="text-[11px] font-bold font-mono text-slate-400 uppercase px-2 shrink-0 hidden sm:inline-block">
+                    Naskah:
+                  </span>
                   <button
                     type="button"
                     onClick={() => setSelectedSubjectFilter('all')}
-                    className={`px-3 py-1.5 rounded-xl text-xs font-bold transition flex items-center gap-1.5 cursor-pointer ${
+                    className={`px-3 py-1.5 rounded-xl text-xs font-bold transition flex items-center gap-1.5 cursor-pointer shrink-0 ${
                       selectedSubjectFilter === 'all'
                         ? 'bg-indigo-600 text-white shadow-xs'
-                        : 'text-slate-600 hover:text-slate-900 hover:bg-white/60'
+                        : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100'
                     }`}
                   >
                     <span>Semua Naskah</span>
@@ -2818,10 +2927,10 @@ export default function AdminPanel({
                         key={sub.id}
                         type="button"
                         onClick={() => setSelectedSubjectFilter(sub.id)}
-                        className={`px-3 py-1.5 rounded-xl text-xs font-bold transition flex items-center gap-1.5 cursor-pointer ${
+                        className={`px-3 py-1.5 rounded-xl text-xs font-bold transition flex items-center gap-1.5 cursor-pointer shrink-0 ${
                           isActive
                             ? 'bg-indigo-600 text-white shadow-xs'
-                            : 'text-slate-600 hover:text-slate-900 hover:bg-white/60'
+                            : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100'
                         }`}
                       >
                         <span>{sub.name}</span>
@@ -3232,7 +3341,7 @@ export default function AdminPanel({
               <div>
                 <div className="flex items-center gap-2 mb-1">
                   <span className="text-[10px] bg-indigo-100 text-indigo-800 font-mono font-bold px-2 py-0.5 rounded-full uppercase">
-                    Manajemen Multi-Mapel ({subjects.length}/20 Slot)
+                    Manajemen Multi-Mapel ({subjects.length}/50 Slot)
                   </span>
                 </div>
                 <h3 className="font-extrabold text-slate-800 text-lg">Kelola Bank Soal Tiap Mata Pelajaran</h3>
@@ -3318,10 +3427,10 @@ export default function AdminPanel({
                 <div className="flex items-center gap-2">
                   <BookOpen className="w-4 h-4 text-indigo-600" />
                   <span className="text-xs font-black text-slate-700 uppercase tracking-wider font-mono">
-                    PILIH SLOT MATA PELAJARAN (Total {subjects.length}/20 Slot):
+                    PILIH SLOT MATA PELAJARAN (Total {subjects.length}/50 Slot):
                   </span>
                 </div>
-                {subjects.length < 20 && (
+                {subjects.length < 50 && (
                   <button
                     type="button"
                     onClick={() => {
@@ -3855,26 +3964,29 @@ export default function AdminPanel({
             {/* If creating a new question, show creation form at top of the questions list */}
             {isCreatingQuestion && renderQuestionEditorForm('CREATE')}
 
-            {/* List of existing questions for the selected active subject */}
-            <div className="space-y-4">
-              {(() => {
-                const currentSubjectQuestions = questions.filter(q => 
-                  (!q.subjectId && effectiveActiveSubject.id === 'sub1') || q.subjectId === effectiveActiveSubject.id
+            {/* Main Area: Questions List & Sticky Question Grid Navigator */}
+            {(() => {
+              const currentSubjectQuestions = questions.filter(q => 
+                (!q.subjectId && effectiveActiveSubject.id === 'sub1') || q.subjectId === effectiveActiveSubject.id
+              );
+
+              if (currentSubjectQuestions.length === 0) {
+                return (
+                  <div className="bg-white border-2 border-dashed border-slate-200 rounded-2xl p-12 text-center">
+                    <BookOpen className="w-12 h-12 text-slate-300 mx-auto mb-3" />
+                    <h4 className="text-base font-bold text-slate-700">Belum Ada Soal di Mapel "{effectiveActiveSubject.name}"</h4>
+                    <p className="text-xs text-slate-400 mt-1 max-w-md mx-auto">
+                      Klik tombol "Tambah Soal ke {effectiveActiveSubject.name}" di atas atau lakukan import file Excel untuk mengisi naskah soal mata pelajaran ini.
+                    </p>
+                  </div>
                 );
+              }
 
-                if (currentSubjectQuestions.length === 0) {
-                  return (
-                    <div className="bg-white border-2 border-dashed border-slate-200 rounded-2xl p-12 text-center">
-                      <BookOpen className="w-12 h-12 text-slate-300 mx-auto mb-3" />
-                      <h4 className="text-base font-bold text-slate-700">Belum Ada Soal di Mapel "{effectiveActiveSubject.name}"</h4>
-                      <p className="text-xs text-slate-400 mt-1 max-w-md mx-auto">
-                        Klik tombol "Tambah Soal ke {effectiveActiveSubject.name}" di atas atau lakukan import file Excel untuk mengisi naskah soal mata pelajaran ini.
-                      </p>
-                    </div>
-                  );
-                }
-
-                return currentSubjectQuestions.map((q, idx) => {
+              return (
+                <div className="flex flex-col lg:flex-row gap-6 items-start">
+                  {/* Left Column: List of Question Cards & Inline Editors */}
+                  <div className="flex-1 min-w-0 w-full space-y-4">
+                    {currentSubjectQuestions.map((q, idx) => {
                   if (editingQuestion && editingQuestion.id === q.id) {
                     return (
                       <div key={`edit-container-${q.id}`} id={`edit-question-box-${q.id}`}>
@@ -3883,7 +3995,7 @@ export default function AdminPanel({
                     );
                   }
                   return (
-                    <div key={q.id} className="bg-white border border-slate-200 rounded-2xl p-6 relative hover:shadow-xs transition">
+                    <div key={q.id} id={`question-card-${q.id}`} className="bg-white border border-slate-200 rounded-2xl p-6 relative hover:shadow-xs transition">
                       <div className="flex items-start justify-between gap-4 mb-4">
                         <div>
                           <div className="flex flex-wrap items-center gap-2">
@@ -4000,9 +4112,116 @@ export default function AdminPanel({
                       </div>
                     </div>
                   );
-                });
-              })()}
-            </div>
+                })}
+                  </div>
+
+                  {/* Right Column: Sticky Question Navigator Grid */}
+                  <div className="w-full lg:w-72 shrink-0 lg:sticky lg:top-24 space-y-3">
+                    <div className="bg-white rounded-2xl border border-slate-200 p-4 shadow-xs space-y-3">
+                      <div className="flex items-center justify-between border-b border-slate-100 pb-2.5">
+                        <div className="flex items-center gap-2">
+                          <div className="w-7 h-7 rounded-lg bg-indigo-50 text-indigo-600 flex items-center justify-center font-bold">
+                            <Layers className="w-4 h-4" />
+                          </div>
+                          <div>
+                            <h4 className="text-xs font-black text-slate-800 uppercase tracking-wider font-mono">
+                              Grid Soal ({currentSubjectQuestions.length})
+                            </h4>
+                            <p className="text-[10px] text-slate-400 truncate max-w-[120px]">
+                              {effectiveActiveSubject.name}
+                            </p>
+                          </div>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setIsCreatingQuestion(true);
+                            setEditingQuestion(null);
+                            setQText('');
+                            setQImageUrl('');
+                            setQIsReadingPassage(false);
+                            setQOptions(['', '', '', '']);
+                            setQCorrect(0);
+                            setQCorrectIndices([0]);
+                            setQType('MC');
+                            setQSubjectId(effectiveActiveSubject.id);
+                            window.scrollTo({ top: 0, behavior: 'smooth' });
+                          }}
+                          className="px-2 py-1 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 text-[11px] font-bold rounded-lg transition flex items-center gap-1 cursor-pointer"
+                          title="Tambah Soal Baru"
+                        >
+                          <Plus className="w-3 h-3" />
+                          Tambah
+                        </button>
+                      </div>
+
+                      {/* Question Numbers Grid */}
+                      <div className="grid grid-cols-5 gap-1.5 max-h-[360px] overflow-y-auto p-0.5 scrollbar-thin">
+                        {currentSubjectQuestions.map((q, idx) => {
+                          const isBeingEdited = editingQuestion?.id === q.id;
+                          const isMulti = q.type === 'MR' || (q.correctAnswerIndices && q.correctAnswerIndices.length > 1);
+                          const hasImg = !!q.imageUrl;
+
+                          return (
+                            <button
+                              key={q.id}
+                              type="button"
+                              onClick={() => {
+                                const targetId = isBeingEdited ? `edit-question-box-${q.id}` : `question-card-${q.id}`;
+                                const el = document.getElementById(targetId);
+                                if (el) {
+                                  el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                                }
+                              }}
+                              className={`h-10 rounded-xl flex flex-col items-center justify-center text-xs font-mono font-bold transition-all duration-150 cursor-pointer border ${
+                                isBeingEdited
+                                  ? 'bg-indigo-600 text-white border-indigo-600 shadow-md ring-2 ring-indigo-300 scale-105 z-10'
+                                  : 'bg-slate-50 hover:bg-indigo-50 hover:border-indigo-300 text-slate-700 hover:text-indigo-900 border-slate-200'
+                              }`}
+                              title={`Lompat ke Soal #${idx + 1} (${isMulti ? 'PG Kompleks' : 'PG Tunggal'})`}
+                            >
+                              <span>#{idx + 1}</span>
+                              <div className="flex items-center gap-0.5 mt-0.5">
+                                {hasImg && (
+                                  <span className={`w-1.5 h-1.5 rounded-full ${isBeingEdited ? 'bg-amber-300' : 'bg-indigo-500'}`} title="Ada Gambar" />
+                                )}
+                                {isMulti && (
+                                  <span className={`text-[8px] font-sans font-bold leading-none ${isBeingEdited ? 'text-amber-200' : 'text-amber-600'}`}>G</span>
+                                )}
+                              </div>
+                            </button>
+                          );
+                        })}
+                      </div>
+
+                      {/* Grid Legend & Metrics */}
+                      <div className="pt-2 border-t border-slate-100 space-y-1.5 text-[11px] text-slate-500">
+                        <div className="flex items-center justify-between">
+                          <span>Total Poin Soal:</span>
+                          <span className="font-bold text-slate-800 font-mono">
+                            {currentSubjectQuestions.reduce((acc, q) => acc + (q.score ?? 10), 0)} Poin
+                          </span>
+                        </div>
+                        <div className="flex items-center justify-between text-[10px] pt-1">
+                          <span className="flex items-center gap-1">
+                            <span className="w-2 h-2 rounded-full bg-indigo-600 inline-block" /> Diedit
+                          </span>
+                          <span className="flex items-center gap-1">
+                            <span className="w-1.5 h-1.5 rounded-full bg-indigo-500 inline-block" /> Gambar
+                          </span>
+                          <span className="flex items-center gap-1 text-amber-600 font-bold">
+                            [G] PG Kompleks
+                          </span>
+                        </div>
+                        <div className="text-[10px] text-slate-400 text-center pt-1 italic">
+                          💡 Klik nomor untuk langsung melompat ke posisi soal.
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              );
+            })()}
           </div>
         )}
 
@@ -4223,13 +4442,13 @@ export default function AdminPanel({
                     <div>
                       <h4 className="font-extrabold text-sm text-slate-800 uppercase tracking-wider font-mono flex items-center gap-2">
                         <BookOpen className="w-4 h-4 text-indigo-600" />
-                        Pengaturan Pilihan Naskah Ujian ({subjects.length}/20 Slot)
+                        Pengaturan Pilihan Naskah Ujian ({subjects.length}/50 Slot)
                       </h4>
                       <p className="text-xs text-slate-500 mt-0.5">
                         Centang "Tampilkan" untuk mengatur naskah apa saja yang muncul di menu "Pilih Naskah Ujian" ketika siswa masuk link ini.
                       </p>
                     </div>
-                    {subjects.length < 20 && (
+                    {subjects.length < 50 && (
                       <button
                         type="button"
                         onClick={() => {
@@ -6954,6 +7173,161 @@ export default function AdminPanel({
           </div>
         </div>
       )}
+
+            {/* Modal Ekspor Nilai Siswa (Multi-Sheet & Terpisah per Mapel) */}
+      {showExportGradesModal && (
+        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4 z-50 animate-fade-in">
+          <div className="bg-white rounded-3xl border border-slate-200 shadow-2xl max-w-2xl w-full p-6 sm:p-8 space-y-6 max-h-[90vh] overflow-y-auto scrollbar-thin">
+            {/* Header Modal */}
+            <div className="flex items-center justify-between border-b border-slate-100 pb-4">
+              <div className="flex items-center gap-3">
+                <div className="w-11 h-11 rounded-2xl bg-emerald-50 text-emerald-600 flex items-center justify-center font-bold shadow-2xs">
+                  <FileSpreadsheet className="w-6 h-6" />
+                </div>
+                <div>
+                  <h3 className="text-lg font-black text-slate-900 tracking-tight">
+                    Ekspor Nilai Siswa ke Excel (.xlsx)
+                  </h3>
+                  <p className="text-xs text-slate-400 font-medium">
+                    Pilih format ekspor nilai: unduh seluruh naskah dalam satu berkas multi-sheet, atau unduh per naskah mata pelajaran
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowExportGradesModal(false)}
+                className="p-2 text-slate-400 hover:bg-slate-100 rounded-full transition cursor-pointer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {/* Filter Kelas Options */}
+            <div className="p-4 bg-slate-50 rounded-2xl border border-slate-200 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+              <div className="text-xs font-bold text-slate-700 font-mono uppercase tracking-wider">
+                Filter Kelas yang Diekspor:
+              </div>
+              <select
+                value={exportClassFilter}
+                onChange={(e) => setExportClassFilter(e.target.value)}
+                className="px-3 py-2 bg-white border border-slate-200 rounded-xl text-xs font-bold text-slate-800 focus:outline-none focus:border-emerald-500 shadow-2xs"
+              >
+                <option value="all">Semua Kelas ({students.length} Siswa)</option>
+                {Array.from(new Set(students.map(s => s.studentClass).filter(Boolean))).sort().map(cls => (
+                  <option key={cls} value={cls}>
+                    Kelas {cls} ({students.filter(s => s.studentClass === cls).length} Siswa)
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            {/* OPTION 1: FULL MULTI-SHEET EXCEL (RECOMMENDED) */}
+            <div className="p-5 bg-gradient-to-br from-emerald-50/80 via-white to-teal-50/50 rounded-2xl border-2 border-emerald-300 shadow-xs space-y-3">
+              <div className="flex items-start justify-between gap-3">
+                <div className="flex items-center gap-2.5">
+                  <div className="w-9 h-9 rounded-xl bg-emerald-600 text-white flex items-center justify-center font-bold shadow-xs shrink-0">
+                    <Layers className="w-5 h-5" />
+                  </div>
+                  <div>
+                    <h4 className="font-extrabold text-sm text-emerald-950">
+                      Ekspor Semua Naskah (Multi-Sheet per Mapel)
+                    </h4>
+                    <span className="text-[10px] bg-emerald-200 text-emerald-900 font-mono font-bold px-2 py-0.5 rounded-full uppercase">
+                      Paling Praktis • 1 File Excel Lengkap
+                    </span>
+                  </div>
+                </div>
+              </div>
+              <p className="text-xs text-slate-650 leading-relaxed">
+                Menghasilkan <strong>1 file Excel (.xlsx)</strong> yang otomatis membagi dan memisahkan nilai siswa ke dalam <strong>lembar kerja (*sheet*) terpisah untuk tiap mata pelajaran</strong>, ditambah 1 lembar rekapitulasi utama (*Semua_Naskah*).
+              </p>
+              <button
+                type="button"
+                onClick={() => handleExportGradesToExcel('all', exportClassFilter)}
+                className="w-full py-3 bg-emerald-600 hover:bg-emerald-500 text-white font-extrabold text-xs rounded-xl transition flex items-center justify-center gap-2 shadow-sm cursor-pointer"
+              >
+                <FileSpreadsheet className="w-4 h-4" />
+                <span>Unduh Berkas Excel Multi-Sheet ({exportClassFilter === 'all' ? students.length : students.filter(s => s.studentClass === exportClassFilter).length} Siswa)</span>
+              </button>
+            </div>
+
+            {/* OPTION 2: EXPORT SPECIFIC SINGLE SUBJECT */}
+            <div className="space-y-3">
+              <div className="flex items-center justify-between">
+                <h4 className="font-black text-xs text-slate-800 uppercase font-mono tracking-wider">
+                  Atau Unduh Khusus Naskah Mata Pelajaran Tertentu:
+                </h4>
+                <button
+                  type="button"
+                  onClick={handleExportAllSubjectsSeparately}
+                  className="text-[11px] font-bold text-indigo-600 hover:text-indigo-700 underline cursor-pointer"
+                >
+                  Unduh Semua Mapel (File Terpisah)
+                </button>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 max-h-[220px] overflow-y-auto p-1 scrollbar-thin">
+                {subjects.map((sub, sIdx) => {
+                  let subStudents = students.filter(s => (!s.subjectId && sub.id === 'sub1') || s.subjectId === sub.id);
+                  if (exportClassFilter !== 'all') {
+                    subStudents = subStudents.filter(s => s.studentClass === exportClassFilter);
+                  }
+                  const hasData = subStudents.length > 0;
+
+                  return (
+                    <div
+                      key={sub.id}
+                      className={`p-3 rounded-xl border flex items-center justify-between gap-2 transition ${
+                        hasData ? 'bg-white border-slate-200 hover:border-emerald-300 shadow-2xs' : 'bg-slate-50 border-slate-100 opacity-60'
+                      }`}
+                    >
+                      <div className="min-w-0 flex-1">
+                        <div className="text-xs font-extrabold text-slate-800 truncate">
+                          {sub.name}
+                        </div>
+                        <div className="text-[10px] text-slate-400 font-mono">
+                          {subStudents.length} Siswa Mengerjakan
+                        </div>
+                      </div>
+                      <button
+                        type="button"
+                        disabled={!hasData}
+                        onClick={() => handleExportGradesToExcel(sub.id, exportClassFilter)}
+                        className={`px-3 py-1.5 rounded-lg text-xs font-bold transition flex items-center gap-1 shrink-0 ${
+                          hasData
+                            ? 'bg-emerald-50 hover:bg-emerald-600 text-emerald-800 hover:text-white border border-emerald-200 cursor-pointer'
+                            : 'bg-slate-100 text-slate-400 cursor-not-allowed border border-transparent'
+                        }`}
+                        title={hasData ? `Unduh Excel Nilai ${sub.name}` : 'Belum ada siswa di mapel ini'}
+                      >
+                        <Download className="w-3 h-3" />
+                        <span>Unduh</span>
+                      </button>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+
+            {/* Modal Footer */}
+            <div className="flex items-center justify-end pt-3 border-t border-slate-100">
+              <button
+                type="button"
+                onClick={() => setShowExportGradesModal(false)}
+                className="px-5 py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold text-xs rounded-xl transition cursor-pointer"
+              >
+                Tutup
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Footer Credit */}
+      <footer className="mt-12 py-6 text-center text-xs text-slate-400 font-medium select-none border-t border-slate-200 bg-white">
+        <div>Sistem Ujian Online Proktor & Bank Soal</div>
+        <div className="mt-0.5 text-slate-500">Created &amp; Developed by <span className="font-bold text-slate-700">@ryhnn.hannn</span></div>
+      </footer>
     </div>
   );
 }
