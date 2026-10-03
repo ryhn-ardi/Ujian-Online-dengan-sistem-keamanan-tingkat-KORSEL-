@@ -1243,11 +1243,14 @@ export default function StudentExam({
                       <div className="leading-snug flex-1">
                         <RichExamContent text={option} zoomableImage={false} />
                         {optImage && (
-                          <img
-                            src={optImage}
-                            alt={`Opsi ${labelLetter}`}
-                            className="mt-2 max-h-36 rounded-lg border border-slate-200 object-contain"
-                          />
+                          <div className="mt-2.5 max-w-sm rounded-xl overflow-hidden border border-slate-200 bg-white p-1 shadow-2xs">
+                            <img
+                              src={optImage}
+                              alt={`Gambar Opsi ${labelLetter}`}
+                              className="max-h-36 sm:max-h-44 w-auto rounded-lg object-contain"
+                              loading="lazy"
+                            />
+                          </div>
                         )}
                       </div>
                     </div>

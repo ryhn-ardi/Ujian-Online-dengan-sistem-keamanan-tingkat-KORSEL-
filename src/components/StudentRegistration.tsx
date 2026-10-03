@@ -1,8 +1,9 @@
-import React, { useState } from 'react';
-import { ShieldCheck, UserCheck, Settings, AlertTriangle, AlertCircle, Info, RefreshCw, BookOpen, Check, Eye, EyeOff, KeyRound, Clock, Timer, Calendar } from 'lucide-react';
+import React, { useState, useEffect } from 'react';
+import { ShieldCheck, UserCheck, Settings, AlertTriangle, AlertCircle, Info, RefreshCw, BookOpen, Check, Eye, EyeOff, KeyRound, Clock, Timer, Calendar, GraduationCap } from 'lucide-react';
 import { Student, Question, ExamConfig, ExamSubject, StudentUser } from '../types';
 import { getExamSubjects } from '../utils/sync';
 import { useRealtimeWIB, evaluateSubjectSchedule, formatDurationCountdown, formatWIBShort, formatWIBDateTime } from '../utils/timeWib';
+import { isSubjectMatchingStudentClass, getGradeBadge } from '../utils/gradeHelper';
 
 interface StudentRegistrationProps {
   students: Student[];
@@ -51,16 +52,31 @@ export default function StudentRegistration({
   // Live Real-time WIB Clock hook (ticks every 1000ms)
   const wibClock = useRealtimeWIB();
 
-  // Extract subjects and filter visible ones according to real-time WIB schedule
+  // Active student class target
+  const currentStudentClass = authenticatedUser ? authenticatedUser.studentClass : (studentClass.trim() || undefined);
+
+  // Extract subjects and filter visible ones according to real-time WIB schedule AND student's class grade
   const allSubjects: ExamSubject[] = getExamSubjects(config);
   const visibleSubjects = allSubjects.filter(s => {
     const schedule = evaluateSubjectSchedule(s, wibClock.now);
-    return schedule.isVisible;
+    if (!schedule.isVisible) return false;
+    // If student is logged in with a class, filter subjects that match their class or are set to ALL
+    if (currentStudentClass && !isSubjectMatchingStudentClass(s, currentStudentClass)) {
+      return false;
+    }
+    return true;
   });
 
   const [subjectId, setSubjectId] = useState<string>(() => {
     return visibleSubjects[0]?.id || 'sub1';
   });
+
+  // Automatically adjust subjectId if current selection is not in visibleSubjects list
+  useEffect(() => {
+    if (visibleSubjects.length > 0 && !visibleSubjects.some(s => s.id === subjectId)) {
+      setSubjectId(visibleSubjects[0].id);
+    }
+  }, [authenticatedUser, visibleSubjects, subjectId]);
 
   // Calculate question count for a specific subject
   const getSubjectQuestionCount = (subId: string) => {
@@ -438,24 +454,40 @@ export default function StudentRegistration({
                 </div>
 
                 <div className="md:col-span-2">
-                <div className="flex items-center justify-between mb-2">
-                  <label className="block text-xs font-semibold text-slate-500 uppercase font-mono tracking-wider">
-                    Pilih Naskah Ujian (Mata Pelajaran)
-                  </label>
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-1.5 mb-2">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <label className="block text-xs font-semibold text-slate-500 uppercase font-mono tracking-wider">
+                      Pilih Naskah Ujian (Mata Pelajaran)
+                    </label>
+                    {currentStudentClass && (
+                      <span className="text-[10px] font-mono font-bold px-2 py-0.5 rounded-full bg-indigo-50 text-indigo-700 border border-indigo-200 flex items-center gap-1">
+                        <GraduationCap className="w-3 h-3 text-indigo-600" />
+                        Siswa Kelas {currentStudentClass}
+                      </span>
+                    )}
+                  </div>
                   <span className="text-[11px] text-slate-400 font-mono">
-                    {visibleSubjects.length} Naskah Aktif / Terjadwal
+                    {visibleSubjects.length} Naskah Sesuai Kelas Anda
                   </span>
                 </div>
 
                 {visibleSubjects.length === 0 ? (
                   <div className="p-4 bg-amber-50 border border-amber-200 rounded-xl text-amber-800 text-xs flex items-center gap-2.5">
                     <AlertTriangle className="w-5 h-5 text-amber-600 shrink-0" />
-                    <span>Belum ada naskah ujian yang ditayangkan atau dijadwalkan saat ini. Silakan hubungi proktor di depan kelas.</span>
+                    <div>
+                      <strong className="block font-bold">Belum Ada Naskah Ujian untuk Kelas Anda</strong>
+                      <span>
+                        {currentStudentClass 
+                          ? `Tidak ada naskah ujian yang disetel untuk Kelas "${currentStudentClass}" saat ini. Silakan hubungi pengawas / proktor di depan kelas.`
+                          : 'Belum ada naskah ujian yang ditayangkan atau dijadwalkan saat ini. Silakan hubungi proktor di depan kelas.'}
+                      </span>
+                    </div>
                   </div>
                 ) : visibleSubjects.length === 1 ? (
                   (() => {
                     const sub = visibleSubjects[0];
                     const subSchedule = evaluateSubjectSchedule(sub, wibClock.now);
+                    const gradeInfo = getGradeBadge(sub.targetGrade);
                     return (
                       <div className="p-4 bg-indigo-50/80 border border-indigo-200 rounded-xl space-y-2">
                         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
@@ -464,15 +496,18 @@ export default function StudentRegistration({
                               <Check className="w-5 h-5" />
                             </div>
                             <div>
-                              <div className="flex items-center gap-2">
+                              <div className="flex items-center gap-1.5 flex-wrap">
                                 <span className="text-[10px] font-bold uppercase font-mono tracking-wider text-indigo-600">
                                   Naskah Ujian Aktif
+                                </span>
+                                <span className={`text-[9px] font-mono font-bold px-2 py-0.5 rounded-full border ${gradeInfo.tagColor}`}>
+                                  {gradeInfo.label}
                                 </span>
                                 <span className={`text-[9px] font-mono font-bold px-2 py-0.5 rounded-full border ${subSchedule.badgeBg}`}>
                                   {subSchedule.badgeText}
                                 </span>
                               </div>
-                              <h4 className="font-bold text-sm text-slate-900">{sub.name}</h4>
+                              <h4 className="font-bold text-sm text-slate-900 mt-0.5">{sub.name}</h4>
                             </div>
                           </div>
                           <div className="flex items-center gap-2 self-end sm:self-auto">
@@ -505,6 +540,7 @@ export default function StudentRegistration({
                       const qCount = getSubjectQuestionCount(sub.id);
                       const subSchedule = evaluateSubjectSchedule(sub, wibClock.now);
                       const studentSession = getStudentSessionForSubject(sub.id);
+                      const gradeInfo = getGradeBadge(sub.targetGrade);
 
                       return (
                         <button
@@ -518,12 +554,19 @@ export default function StudentRegistration({
                               : 'border-slate-200 hover:border-slate-300 hover:bg-slate-50 bg-white'
                           }`}
                         >
-                          <div className="flex items-center justify-between w-full mb-1.5">
-                            <span className={`text-[10px] font-bold uppercase font-mono tracking-wider ${
-                              isSelected ? 'text-indigo-600' : 'text-slate-400'
-                            }`}>
-                              Naskah {sub.code || `Paket ${String.fromCharCode(65 + idx)}`}
-                            </span>
+                          <div className="flex items-center justify-between w-full mb-1.5 flex-wrap gap-1">
+                            <div className="flex items-center gap-1.5">
+                              <span className={`text-[10px] font-bold uppercase font-mono tracking-wider ${
+                                isSelected ? 'text-indigo-600' : 'text-slate-400'
+                              }`}>
+                                Naskah {sub.code || `Paket ${String.fromCharCode(65 + idx)}`}
+                              </span>
+                              <span className={`text-[9px] font-mono font-bold px-1.5 py-0.2 rounded border ${
+                                isSelected ? 'bg-indigo-200/80 text-indigo-900 border-indigo-300' : gradeInfo.tagColor
+                              }`}>
+                                {gradeInfo.label}
+                              </span>
+                            </div>
                             <span className={`text-[10px] px-2 py-0.5 rounded-md font-mono font-bold ${
                               isSelected ? 'bg-indigo-100 text-indigo-800' : 'bg-slate-100 text-slate-500'
                             }`}>

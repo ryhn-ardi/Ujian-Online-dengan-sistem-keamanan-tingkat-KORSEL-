@@ -51,6 +51,7 @@ export interface ExamSubject {
   name: string; // Subject display name (e.g. 'Seni Budaya dan P kelas 8')
   code?: string; // Optional code/abbreviation (e.g. 'SB-8')
   isActive?: boolean; // Whether this subject is visible/available for students to choose on the exam link
+  targetGrade?: string; // Target grade level: 'ALL' (Semua Kelas), '7', '8', '9', '10', '11', '12', or custom class
   enableRandomSampling?: boolean; // Per-subject random sampling toggle
   sampleQuestionCount?: number; // Number of questions to randomly pick for this specific subject
   // Penjadwalan Otomatis Real-time WIB

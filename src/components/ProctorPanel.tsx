@@ -490,9 +490,10 @@ export default function ProctorPanel({
                     <option value="all">Semua Naskah ({students.length})</option>
                     {subjects.map(sub => {
                       const count = students.filter(s => (s.subjectId || 'sub1') === sub.id).length;
+                      const gradeLabel = sub.targetGrade && sub.targetGrade !== 'ALL' ? ` [Kelas ${sub.targetGrade}]` : '';
                       return (
                         <option key={sub.id} value={sub.id}>
-                          {sub.name} ({count})
+                          {sub.name}{gradeLabel} ({count})
                         </option>
                       );
                     })}

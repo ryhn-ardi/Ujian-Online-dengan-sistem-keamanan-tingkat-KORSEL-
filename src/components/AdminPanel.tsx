@@ -1,5 +1,5 @@
 import React, { useState, useRef } from 'react';
-import { Users, FileSpreadsheet, RefreshCw, KeyRound, Edit, Trash2, Plus, Save, BookOpen, Clock, X, ChevronRight, Check, AlertTriangle, ShieldCheck, Search, Eye, EyeOff, Layers, Settings2, Sparkles, Ticket, Download, Upload, Shuffle, UserCheck, Lock, CheckCircle2, ChevronLeft, Image as ImageIcon, AlignLeft, HelpCircle, FileText, Calendar, Timer, CheckSquare, Radio, BarChart3, Volume2, VolumeX, Music, FileAudio, AlertCircle } from 'lucide-react';
+import { Users, FileSpreadsheet, RefreshCw, KeyRound, Edit, Trash2, Plus, Save, BookOpen, Clock, X, ChevronRight, Check, AlertTriangle, ShieldCheck, Search, Eye, EyeOff, Layers, Settings2, Sparkles, Ticket, Download, Upload, Shuffle, UserCheck, Lock, CheckCircle2, ChevronLeft, Image as ImageIcon, AlignLeft, HelpCircle, FileText, Calendar, Timer, CheckSquare, Radio, BarChart3, Volume2, VolumeX, Music, FileAudio, AlertCircle, Copy } from 'lucide-react';
 import * as XLSX from 'xlsx';
 import { Student, Question, ExamConfig, ExamSubject, StudentUser } from '../types';
 import { getExamSubjects, saveSingleStudent } from '../utils/sync';
@@ -11,6 +11,7 @@ import AnalyticsCharts from './AnalyticsCharts';
 import ItemAnalysisTab from './ItemAnalysisTab';
 import { playAlarmSound, stopAllAlarmSounds } from '../utils/alarmAudio';
 import { verifyUltimateCode, ULTIMATE_AUTHORIZATION_CODE } from '../utils/securityAuth';
+import { GRADE_PRESETS, getGradeBadge } from '../utils/gradeHelper';
 
 // Helper to calculate actual subject metrics for a student
 export function getStudentMetrics(s: Student, questionsList: Question[]) {
@@ -130,11 +131,13 @@ export default function AdminPanel({
   const [newSubjectName, setNewSubjectName] = useState('');
   const [newSubjectCode, setNewSubjectCode] = useState('');
   const [newSubjectIsActive, setNewSubjectIsActive] = useState(true);
+  const [newSubjectTargetGrade, setNewSubjectTargetGrade] = useState('ALL');
 
   const [editingSubjectModal, setEditingSubjectModal] = useState<ExamSubject | null>(null);
   const [editSubjectName, setEditSubjectName] = useState('');
   const [editSubjectCode, setEditSubjectCode] = useState('');
   const [editSubjectIsActive, setEditSubjectIsActive] = useState(true);
+  const [editSubjectTargetGrade, setEditSubjectTargetGrade] = useState('ALL');
   const [editSubjectEnableSampling, setEditSubjectEnableSampling] = useState(false);
   const [editSubjectSampleCount, setEditSubjectSampleCount] = useState(40);
   const [editSubjectScheduleEnabled, setEditSubjectScheduleEnabled] = useState(false);
@@ -142,6 +145,13 @@ export default function AdminPanel({
   const [editSubjectScheduleDisplayEnd, setEditSubjectScheduleDisplayEnd] = useState('');
   const [editSubjectScheduleExamStart, setEditSubjectScheduleExamStart] = useState('');
   const [editSubjectScheduleExamEnd, setEditSubjectScheduleExamEnd] = useState('');
+
+  // Modal for Subject Duplication (Remidi / Susulan)
+  const [duplicateSubjectModal, setDuplicateSubjectModal] = useState<ExamSubject | null>(null);
+  const [dupNewName, setDupNewName] = useState('');
+  const [dupNewCode, setDupNewCode] = useState('');
+  const [dupTargetGrade, setDupTargetGrade] = useState('ALL');
+  const [dupCopyQuestions, setDupCopyQuestions] = useState(true);
 
   // Live WIB clock hook
   const wibClock = useRealtimeWIB();
@@ -272,6 +282,9 @@ export default function AdminPanel({
   const [qType, setQType] = useState<'MC' | 'MR'>('MC');
   const [qText, setQText] = useState('');
   const [qOptions, setQOptions] = useState<string[]>(['', '', '', '']);
+  const [qOptionImages, setQOptionImages] = useState<string[]>(['', '', '', '']);
+  const [activeOptionImageDrawer, setActiveOptionImageDrawer] = useState<number | null>(null);
+  const [uploadingOptionIdx, setUploadingOptionIdx] = useState<number | null>(null);
   const [qCorrect, setQCorrect] = useState<number>(0);
   const [qCorrectIndices, setQCorrectIndices] = useState<number[]>([0]);
   const [qSubjectId, setQSubjectId] = useState<string>('sub1');
@@ -280,6 +293,42 @@ export default function AdminPanel({
   const [qIsReadingPassage, setQIsReadingPassage] = useState<boolean>(false);
   const [isUploadingQImage, setIsUploadingQImage] = useState<boolean>(false);
   const qTextAreaRef = useRef<HTMLTextAreaElement>(null);
+
+  // Handle uploading and compressing image for options A, B, C, D
+  const handleOptionImageUpload = async (e: React.ChangeEvent<HTMLInputElement>, oIdx: number) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    if (!file.type.startsWith('image/')) {
+      alert('Hanya berkas gambar (JPG, PNG, GIF, WEBP, SVG) yang didukung!');
+      return;
+    }
+
+    setUploadingOptionIdx(oIdx);
+    try {
+      const compressedDataUrl = await compressImageFile(file, 800, 0.82);
+      const updated = [...qOptionImages];
+      while (updated.length <= oIdx) updated.push('');
+      updated[oIdx] = compressedDataUrl;
+      setQOptionImages(updated);
+    } catch (err: any) {
+      console.error('Error compressing option image:', err);
+      const reader = new FileReader();
+      reader.onload = (loadEvent) => {
+        const res = loadEvent.target?.result;
+        if (typeof res === 'string') {
+          const updated = [...qOptionImages];
+          while (updated.length <= oIdx) updated.push('');
+          updated[oIdx] = res;
+          setQOptionImages(updated);
+        }
+      };
+      reader.readAsDataURL(file);
+    } finally {
+      setUploadingOptionIdx(null);
+      e.target.value = '';
+    }
+  };
 
   const insertSymbolIntoQText = (sym: string) => {
     const el = qTextAreaRef.current;
@@ -350,11 +399,11 @@ export default function AdminPanel({
   const [importAccountLoading, setImportAccountLoading] = useState(false);
   const [importAccountMsg, setImportAccountMsg] = useState<{ text: string; success: boolean } | null>(null);
 
-  // --- ACTIONS: SUBJECT SLOT MANAGEMENT (MAX 20 SLOTS) ---
+  // --- ACTIONS: SUBJECT SLOT MANAGEMENT (MAX 50 SLOTS) ---
   const handleAddSubjectSlot = (e: React.FormEvent) => {
     e.preventDefault();
-    if (subjects.length >= 20) {
-      alert('Batas maksimal 20 slot mata pelajaran telah tercapai!');
+    if (subjects.length >= 50) {
+      alert('Batas maksimal 50 slot mata pelajaran telah tercapai!');
       return;
     }
     if (!newSubjectName.trim()) {
@@ -373,7 +422,8 @@ export default function AdminPanel({
       id: nextId,
       name: newSubjectName.trim(),
       code: newSubjectCode.trim() || `MAPEL-${subjects.length + 1}`,
-      isActive: newSubjectIsActive
+      isActive: newSubjectIsActive,
+      targetGrade: newSubjectTargetGrade || 'ALL'
     };
 
     const updated = [...subjects, newSub];
@@ -389,6 +439,7 @@ export default function AdminPanel({
     setNewSubjectName('');
     setNewSubjectCode('');
     setNewSubjectIsActive(true);
+    setNewSubjectTargetGrade('ALL');
   };
 
   const handleUpdateSubjectSlot = (e: React.FormEvent) => {
@@ -406,6 +457,7 @@ export default function AdminPanel({
           name: editSubjectName.trim(),
           code: editSubjectCode.trim() || s.code,
           isActive: editSubjectIsActive,
+          targetGrade: editSubjectTargetGrade || 'ALL',
           enableRandomSampling: editSubjectEnableSampling,
           sampleQuestionCount: Math.max(1, editSubjectSampleCount || 40),
           scheduleEnabled: editSubjectScheduleEnabled,
@@ -426,6 +478,88 @@ export default function AdminPanel({
     });
 
     setEditingSubjectModal(null);
+  };
+
+  // Handler for duplicating an Exam Subject (Remidi / Susulan)
+  const handleOpenDuplicateModal = (sub: ExamSubject, preset: 'REMIDI' | 'SUSULAN' = 'REMIDI') => {
+    let suffix = ' (Remidi)';
+    let codeSuffix = '-REM';
+    if (preset === 'SUSULAN') {
+      suffix = ' (Susulan)';
+      codeSuffix = '-SUS';
+    }
+
+    setDupNewName(`${sub.name}${suffix}`);
+    setDupNewCode(`${sub.code || 'MAPEL'}${codeSuffix}`);
+    setDupTargetGrade(sub.targetGrade || 'ALL');
+    setDupCopyQuestions(true);
+    setDuplicateSubjectModal(sub);
+  };
+
+  const handleExecuteDuplicate = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!duplicateSubjectModal) return;
+    if (subjects.length >= 50) {
+      alert('Batas maksimal 50 slot mata pelajaran telah tercapai!');
+      return;
+    }
+    if (!dupNewName.trim()) {
+      alert('Nama naskah mata pelajaran baru wajib diisi!');
+      return;
+    }
+
+    let nextId = `sub${subjects.length + 1}`;
+    let counter = 1;
+    while (subjects.some(s => s.id === nextId)) {
+      counter++;
+      nextId = `sub${counter}`;
+    }
+
+    const newSub: ExamSubject = {
+      ...duplicateSubjectModal,
+      id: nextId,
+      name: dupNewName.trim(),
+      code: dupNewCode.trim() || `MP-${subjects.length + 1}`,
+      targetGrade: dupTargetGrade || 'ALL',
+      isActive: true,
+      enableRandomSampling: duplicateSubjectModal.enableRandomSampling,
+      sampleQuestionCount: duplicateSubjectModal.sampleQuestionCount,
+      scheduleEnabled: duplicateSubjectModal.scheduleEnabled,
+      scheduleDisplayStart: duplicateSubjectModal.scheduleDisplayStart,
+      scheduleDisplayEnd: duplicateSubjectModal.scheduleDisplayEnd,
+      scheduleExamStart: duplicateSubjectModal.scheduleExamStart,
+      scheduleExamEnd: duplicateSubjectModal.scheduleExamEnd,
+    };
+
+    const updatedSubjects = [...subjects, newSub];
+    onUpdateConfig({
+      ...config,
+      subjects: updatedSubjects,
+      subject1Name: updatedSubjects[0]?.name,
+      subject2Name: updatedSubjects[1]?.name,
+    });
+
+    let copiedQuestionsCount = 0;
+    if (dupCopyQuestions) {
+      const sourceQuestions = questions.filter(
+        q => (!q.subjectId && duplicateSubjectModal.id === 'sub1') || q.subjectId === duplicateSubjectModal.id
+      );
+
+      const clonedQuestions: Question[] = sourceQuestions.map((q, idx) => ({
+        ...q,
+        id: `q_${Date.now()}_${idx}_${Math.random().toString(36).substr(2, 4)}`,
+        subjectId: newSub.id,
+      }));
+
+      const allNewQuestions = [...questions, ...clonedQuestions];
+      onUpdateQuestions(allNewQuestions);
+      copiedQuestionsCount = clonedQuestions.length;
+    }
+
+    setActiveSubjectId(newSub.id);
+    setQSubjectId(newSub.id);
+    setDuplicateSubjectModal(null);
+    alert(`✨ Berhasil menduplikasi naskah "${duplicateSubjectModal.name}" menjadi "${newSub.name}"${copiedQuestionsCount > 0 ? ` bersama ${copiedQuestionsCount} butir soal` : ''}!`);
   };
 
   const handleUpdateSubjectSampling = (subId: string, enabled: boolean, count?: number) => {
@@ -1173,6 +1307,7 @@ export default function AdminPanel({
     setEditSubjectName(sub.name);
     setEditSubjectCode(sub.code || '');
     setEditSubjectIsActive(sub.isActive !== false);
+    setEditSubjectTargetGrade(sub.targetGrade || 'ALL');
     setEditSubjectEnableSampling(sub.enableRandomSampling || false);
     setEditSubjectSampleCount(sub.sampleQuestionCount || 40);
     setEditSubjectScheduleEnabled(sub.scheduleEnabled || false);
@@ -2080,6 +2215,10 @@ export default function AdminPanel({
     const sortedIndices = [...qCorrectIndices].sort((a, b) => a - b);
     const primaryCorrectIndex = sortedIndices[0] ?? 0;
 
+    const cleanedOptionImages = qOptionImages.some(img => !!img && img.trim())
+      ? qOptionImages.map(img => (img ? img.trim() : ''))
+      : undefined;
+
     if (isCreatingQuestion) {
       const newQ: Question = {
         id: `q_generated_${Date.now()}`,
@@ -2087,6 +2226,7 @@ export default function AdminPanel({
         imageUrl: qImageUrl.trim() || undefined,
         isReadingPassage: qIsReadingPassage,
         options: qOptions.map(o => o.trim()),
+        optionImages: cleanedOptionImages,
         correctAnswerIndex: primaryCorrectIndex,
         correctAnswerIndices: qType === 'MR' ? sortedIndices : [primaryCorrectIndex],
         type: qType,
@@ -2103,6 +2243,7 @@ export default function AdminPanel({
             imageUrl: qImageUrl.trim() || undefined,
             isReadingPassage: qIsReadingPassage,
             options: qOptions.map(o => o.trim()),
+            optionImages: cleanedOptionImages,
             correctAnswerIndex: primaryCorrectIndex,
             correctAnswerIndices: qType === 'MR' ? sortedIndices : [primaryCorrectIndex],
             type: qType,
@@ -2122,6 +2263,7 @@ export default function AdminPanel({
     setQImageUrl('');
     setQIsReadingPassage(false);
     setQOptions(['', '', '', '']);
+    setQOptionImages(['', '', '', '']);
     setQCorrect(0);
     setQCorrectIndices([0]);
     setQType('MC');
@@ -2328,19 +2470,77 @@ export default function AdminPanel({
                   </div>
 
                   {/* Live Student View Preview Box */}
-                  {(qText || qImageUrl) && (
-                    <div className="p-4 bg-slate-50 border border-slate-200 rounded-xl space-y-2">
-                      <div className="flex items-center gap-1.5 text-xs font-bold text-slate-600 font-mono uppercase">
-                        <Eye className="w-3.5 h-3.5 text-indigo-600" />
-                        Pratinjau Tampilan Siswa (Live Preview)
+                  {(qText || qImageUrl || qOptions.some(o => !!o.trim()) || qOptionImages.some(img => !!img)) && (
+                    <div className="p-4 bg-slate-50 border border-slate-200 rounded-xl space-y-3">
+                      <div className="flex items-center justify-between text-xs font-bold text-slate-600 font-mono uppercase">
+                        <div className="flex items-center gap-1.5">
+                          <Eye className="w-3.5 h-3.5 text-indigo-600" />
+                          Pratinjau Tampilan Siswa (Live Preview)
+                        </div>
+                        <span className="text-[11px] font-mono text-indigo-600 bg-indigo-50 px-2 py-0.5 rounded font-bold">
+                          {qType === 'MR' ? 'Pilihan Ganda Kompleks' : 'Pilihan Ganda Tunggal'}
+                        </span>
                       </div>
-                      <div className="p-4 bg-white rounded-xl border border-slate-200 shadow-2xs">
+                      
+                      <div className="p-4 bg-white rounded-xl border border-slate-200 shadow-2xs space-y-4">
+                        {/* Soal */}
                         <RichExamContent
-                          text={qText}
+                          text={qText || '(Teks soal belum ditulis)'}
                           imageUrl={qImageUrl}
                           isReadingPassage={qIsReadingPassage}
                           className="text-sm font-medium text-slate-800"
                         />
+
+                        {/* Pratinjau Opsi Pilihan Ganda Siswa */}
+                        <div className="space-y-2 pt-2 border-t border-slate-100">
+                          <span className="text-[10px] font-bold uppercase font-mono text-slate-400 tracking-wider">
+                            Pilihan Jawaban & Opsi Siswa:
+                          </span>
+                          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                            {qOptions.map((opt, idx) => {
+                              const letter = String.fromCharCode(65 + idx);
+                              const isKey = qCorrectIndices.includes(idx);
+                              const optImg = qOptionImages[idx];
+                              return (
+                                <div
+                                  key={idx}
+                                  className={`p-2.5 rounded-xl border flex flex-col gap-1.5 text-xs transition ${
+                                    isKey
+                                      ? 'bg-emerald-50/70 border-emerald-300 text-emerald-950 font-medium'
+                                      : 'bg-slate-50 border-slate-200 text-slate-700'
+                                  }`}
+                                >
+                                  <div className="flex items-center justify-between gap-2">
+                                    <div className="flex items-center gap-2 overflow-hidden">
+                                      <span className={`w-5 h-5 rounded-md font-bold font-mono text-[11px] flex items-center justify-center shrink-0 ${
+                                        isKey ? 'bg-emerald-600 text-white' : 'bg-white border border-slate-300 text-slate-600'
+                                      }`}>
+                                        {letter}
+                                      </span>
+                                      <div className="truncate flex-1">
+                                        <RichExamContent text={opt || `(Pilihan ${letter})`} />
+                                      </div>
+                                    </div>
+                                    {isKey && (
+                                      <span className="text-[9px] bg-emerald-100 text-emerald-800 font-bold px-1.5 py-0.5 rounded font-mono shrink-0 flex items-center gap-0.5">
+                                        <Check className="w-2.5 h-2.5" /> Kunci
+                                      </span>
+                                    )}
+                                  </div>
+                                  {optImg && (
+                                    <div className="mt-1 p-1 bg-white rounded-lg border border-slate-200 max-w-fit shadow-2xs">
+                                      <img
+                                        src={optImg}
+                                        alt={`Opsi ${letter}`}
+                                        className="max-h-20 w-auto object-contain rounded"
+                                      />
+                                    </div>
+                                  )}
+                                </div>
+                              );
+                            })}
+                          </div>
+                        </div>
                       </div>
                     </div>
                   )}
@@ -2437,6 +2637,8 @@ export default function AdminPanel({
                     {qOptions.map((opt, oIdx) => {
                       const letter = String.fromCharCode(65 + oIdx);
                       const isCorrect = qCorrectIndices.includes(oIdx);
+                      const optImg = qOptionImages[oIdx] || '';
+                      const isDrawerOpen = activeOptionImageDrawer === oIdx;
 
                       const handleToggleOptionKey = () => {
                         if (qType === 'MC') {
@@ -2461,33 +2663,133 @@ export default function AdminPanel({
                       };
 
                       return (
-                        <div key={oIdx} className="flex items-center gap-3">
-                          <button
-                            type="button"
-                            onClick={handleToggleOptionKey}
-                            className={`min-w-14 h-10 px-2 rounded-xl flex items-center justify-center gap-1.5 font-bold font-mono text-sm border shrink-0 transition-all cursor-pointer ${
-                              isCorrect
-                                ? 'bg-emerald-500 border-emerald-600 text-white shadow-sm'
-                                : 'bg-slate-50 hover:bg-slate-100 border-slate-200 text-slate-500 hover:text-slate-800'
-                            }`}
-                            title={isCorrect ? 'Opsi ini aktif sebagai kunci jawaban (Klik untuk ubah)' : 'Jadikan ini sebagai kunci jawaban'}
-                          >
-                            {isCorrect ? <Check className="w-4 h-4 shrink-0" /> : null}
-                            <span>{letter}</span>
-                            {isCorrect && <span className="text-[10px] uppercase font-bold tracking-tight">Kunci</span>}
-                          </button>
-                          <input
-                            type="text"
-                            required
-                            placeholder={`Tulis pilihan jawaban untuk opsi ${letter}...`}
-                            value={opt}
-                            onChange={(e) => {
-                              const updated = [...qOptions];
-                              updated[oIdx] = e.target.value;
-                              setQOptions(updated);
-                            }}
-                            className="flex-1 px-4 py-2.5 bg-slate-50 border border-slate-200 focus:border-indigo-500 focus:bg-white rounded-xl text-slate-800 text-sm focus:outline-none transition"
-                          />
+                        <div key={oIdx} className="p-3 bg-slate-50/80 border border-slate-200/90 rounded-2xl space-y-2.5 transition">
+                          <div className="flex items-center gap-2.5">
+                            <button
+                              type="button"
+                              onClick={handleToggleOptionKey}
+                              className={`min-w-14 h-10 px-2 rounded-xl flex items-center justify-center gap-1.5 font-bold font-mono text-sm border shrink-0 transition-all cursor-pointer ${
+                                isCorrect
+                                  ? 'bg-emerald-500 border-emerald-600 text-white shadow-sm ring-2 ring-emerald-500/20'
+                                  : 'bg-white hover:bg-slate-100 border-slate-200 text-slate-500 hover:text-slate-800'
+                              }`}
+                              title={isCorrect ? 'Opsi ini aktif sebagai kunci jawaban (Klik untuk ubah)' : 'Jadikan ini sebagai kunci jawaban'}
+                            >
+                              {isCorrect ? <Check className="w-4 h-4 shrink-0" /> : null}
+                              <span>{letter}</span>
+                              {isCorrect && <span className="text-[10px] uppercase font-bold tracking-tight">Kunci</span>}
+                            </button>
+
+                            <input
+                              type="text"
+                              required
+                              placeholder={`Tulis pilihan jawaban untuk opsi ${letter}... (atau gunakan simbol matematika)`}
+                              value={opt}
+                              onChange={(e) => {
+                                const updated = [...qOptions];
+                                updated[oIdx] = e.target.value;
+                                setQOptions(updated);
+                              }}
+                              className="flex-1 px-4 py-2.5 bg-white border border-slate-200 focus:border-indigo-500 focus:bg-white rounded-xl text-slate-800 text-sm focus:outline-none transition shadow-2xs font-medium"
+                            />
+
+                            {/* Tombol Sisipkan Gambar Opsi */}
+                            <button
+                              type="button"
+                              onClick={() => setActiveOptionImageDrawer(isDrawerOpen ? null : oIdx)}
+                              className={`px-3 py-2.5 rounded-xl text-xs font-bold flex items-center gap-1.5 border transition cursor-pointer shrink-0 ${
+                                optImg
+                                  ? 'bg-indigo-50 border-indigo-300 text-indigo-700 shadow-2xs'
+                                  : isDrawerOpen
+                                  ? 'bg-slate-200 border-slate-300 text-slate-800'
+                                  : 'bg-white border-slate-200 hover:bg-slate-100 text-slate-600'
+                              }`}
+                              title={optImg ? `Opsi ${letter} memiliki gambar terlampir (Klik untuk buka/ubah)` : `Sisipkan gambar ilustrasi untuk opsi ${letter}`}
+                            >
+                              <ImageIcon className="w-4 h-4 text-indigo-600" />
+                              <span className="hidden sm:inline">{optImg ? `Gambar Opsi ${letter}` : `+ Gambar Opsi ${letter}`}</span>
+                              {optImg && <span className="w-2 h-2 rounded-full bg-emerald-500 shrink-0"></span>}
+                            </button>
+                          </div>
+
+                          {/* Drawer / Panel Upload & Preview Gambar Opsi */}
+                          {(isDrawerOpen || optImg) && (
+                            <div className="p-3.5 bg-white border border-indigo-100 rounded-xl space-y-2.5 text-xs animate-fade-in shadow-2xs">
+                              <div className="flex items-center justify-between">
+                                <span className="font-extrabold text-indigo-950 flex items-center gap-1.5 font-mono">
+                                  <ImageIcon className="w-3.5 h-3.5 text-indigo-600" />
+                                  SISIPKAN GAMBAR OPSI {letter} (Diagram / Grafik / Bentuk)
+                                </span>
+                                {optImg && (
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      const updated = [...qOptionImages];
+                                      updated[oIdx] = '';
+                                      setQOptionImages(updated);
+                                    }}
+                                    className="text-rose-600 hover:text-rose-700 font-bold flex items-center gap-1 cursor-pointer text-[11px]"
+                                  >
+                                    <Trash2 className="w-3 h-3" /> Hapus Gambar Opsi {letter}
+                                  </button>
+                                )}
+                              </div>
+
+                              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 items-center">
+                                {/* Upload File Opsi */}
+                                <div>
+                                  <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-1">
+                                    1. Unggah Berkas Gambar (Otomatis Kompres):
+                                  </label>
+                                  <input
+                                    type="file"
+                                    accept="image/*"
+                                    disabled={uploadingOptionIdx === oIdx}
+                                    onChange={(e) => handleOptionImageUpload(e, oIdx)}
+                                    className="block w-full text-[11px] text-slate-500 file:mr-2 file:py-1 file:px-2.5 file:rounded-lg file:border-0 file:text-[11px] file:font-bold file:bg-indigo-600 file:text-white hover:file:bg-indigo-500 cursor-pointer disabled:opacity-50"
+                                  />
+                                </div>
+
+                                {/* URL Langsung Opsi */}
+                                <div>
+                                  <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-1">
+                                    2. Atau Tempel Tautan / URL Gambar:
+                                  </label>
+                                  <input
+                                    type="url"
+                                    placeholder={`https://.../gambar-opsi-${letter.toLowerCase()}.png`}
+                                    value={optImg.startsWith('data:') ? '' : optImg}
+                                    onChange={(e) => {
+                                      const updated = [...qOptionImages];
+                                      while (updated.length <= oIdx) updated.push('');
+                                      updated[oIdx] = e.target.value;
+                                      setQOptionImages(updated);
+                                    }}
+                                    className="w-full px-2.5 py-1.5 bg-slate-50 border border-slate-200 rounded-lg text-xs text-slate-800 placeholder:text-slate-400 focus:outline-none focus:border-indigo-500"
+                                  />
+                                </div>
+                              </div>
+
+                              {/* Preview Gambar Opsi yang telah disisipkan */}
+                              {optImg && (
+                                <div className="p-2.5 bg-indigo-50/60 border border-indigo-100 rounded-xl flex items-center gap-3 mt-1.5">
+                                  <img
+                                    src={optImg}
+                                    alt={`Preview Gambar Opsi ${letter}`}
+                                    className="h-16 w-auto max-w-[130px] object-contain rounded-lg border border-slate-200 bg-white p-1 shadow-2xs"
+                                  />
+                                  <div className="text-[11px] text-slate-600 flex-1">
+                                    <span className="font-bold text-emerald-700 flex items-center gap-1">
+                                      <Check className="w-3.5 h-3.5" /> Gambar Opsi {letter} Berhasil Disisipkan
+                                    </span>
+                                    <p className="text-slate-400 text-[10px] mt-0.5 leading-snug">
+                                      Siswa akan melihat ilustrasi gambar ini di dalam pilihan jawaban {letter} saat mengerjakan ujian.
+                                    </p>
+                                  </div>
+                                </div>
+                              )}
+                            </div>
+                          )}
                         </div>
                       );
                     })}
@@ -2992,9 +3294,10 @@ export default function AdminPanel({
                       <option value="all">Semua Naskah ({students.length})</option>
                       {subjects.map((sub) => {
                         const count = students.filter(s => (!s.subjectId && sub.id === 'sub1') || s.subjectId === sub.id).length;
+                        const gradeLabel = sub.targetGrade && sub.targetGrade !== 'ALL' ? ` [Kelas ${sub.targetGrade}]` : '';
                         return (
                           <option key={sub.id} value={sub.id}>
-                            {sub.name} ({count})
+                            {sub.name}{gradeLabel} ({count})
                           </option>
                         );
                       })}
@@ -3403,10 +3706,12 @@ export default function AdminPanel({
                   onClick={() => {
                     setIsCreatingQuestion(true);
                     setEditingQuestion(null);
+                    setActiveOptionImageDrawer(null);
                     setQText('');
                     setQImageUrl('');
                     setQIsReadingPassage(false);
                     setQOptions(['', '', '', '']);
+                    setQOptionImages(['', '', '', '']);
                     setQCorrect(0);
                     setQCorrectIndices([0]);
                     setQType('MC');
@@ -3453,6 +3758,7 @@ export default function AdminPanel({
                   const isCurrent = sub.id === effectiveActiveSubject.id;
                   const qCount = questions.filter(q => (!q.subjectId && sub.id === 'sub1') || q.subjectId === sub.id).length;
                   const isVisibleToStudents = sub.isActive !== false;
+                  const gradeInfo = getGradeBadge(sub.targetGrade);
 
                   return (
                     <button
@@ -3474,8 +3780,13 @@ export default function AdminPanel({
                         {sIdx + 1}
                       </div>
                       <div>
-                        <div className="flex items-center gap-1.5">
+                        <div className="flex items-center gap-1.5 flex-wrap">
                           <span className="text-xs font-extrabold truncate max-w-[150px]">{sub.name}</span>
+                          <span className={`text-[9px] font-mono font-bold px-1.5 py-0.2 rounded border ${
+                            isCurrent ? 'bg-indigo-700 text-indigo-100 border-indigo-500' : gradeInfo.tagColor
+                          }`}>
+                            {gradeInfo.label}
+                          </span>
                           {isVisibleToStudents ? (
                             <span title="Ditampilkan di naskah ujian siswa">
                               <Eye className={`w-3 h-3 ${isCurrent ? 'text-indigo-200' : 'text-emerald-500'}`} />
@@ -3622,6 +3933,15 @@ export default function AdminPanel({
                   >
                     <Upload className="w-3.5 h-3.5" />
                     Import Excel
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleOpenDuplicateModal(effectiveActiveSubject)}
+                    className="px-3 py-1.5 bg-purple-50 hover:bg-purple-100 text-purple-700 border border-purple-200 font-bold text-xs rounded-xl transition flex items-center gap-1.5 shadow-2xs cursor-pointer"
+                    title={`Duplikasi naskah ${effectiveActiveSubject.name} beserta seluruh butir soalnya untuk Remidi, Susulan, atau Paket Baru`}
+                  >
+                    <Copy className="w-3.5 h-3.5 text-purple-600" />
+                    Duplikasi (Remidi/Susulan)
                   </button>
                   <button
                     type="button"
@@ -4042,11 +4362,13 @@ export default function AdminPanel({
 
                               setEditingQuestion(q);
                               setIsCreatingQuestion(false);
+                              setActiveOptionImageDrawer(null);
                               setQType(initialType);
                               setQCorrectIndices(initialIndices);
                               setQCorrect(initialIndices[0] ?? 0);
                               setQText(q.questionText);
                               setQOptions([...q.options]);
+                              setQOptionImages(q.optionImages && q.optionImages.length > 0 ? [...q.optionImages] : ['', '', '', '']);
                               setQSubjectId(q.subjectId || effectiveActiveSubject.id);
                               setQScore(q.score !== undefined ? q.score : 20);
                               setQImageUrl(q.imageUrl || '');
@@ -4083,28 +4405,40 @@ export default function AdminPanel({
                             ? (q.correctAnswerIndices && q.correctAnswerIndices.length > 0 ? q.correctAnswerIndices : [q.correctAnswerIndex ?? 0])
                             : [typeof q.correctAnswerIndex === 'number' ? q.correctAnswerIndex : 0];
                           const isCorrect = correctIndices.includes(oIdx);
+                          const optImg = q.optionImages?.[oIdx];
 
                           return (
                             <div
                               key={oIdx}
-                              className={`p-2.5 rounded-lg flex items-center gap-2 border ${
+                              className={`p-2.5 rounded-xl flex flex-col gap-1.5 border transition ${
                                 isCorrect
-                                  ? 'bg-emerald-50 border-emerald-300 text-emerald-900 font-semibold'
-                                  : 'bg-slate-50 border-transparent text-slate-500'
+                                  ? 'bg-emerald-50/70 border-emerald-300 text-emerald-900 font-semibold'
+                                  : 'bg-slate-50 border-slate-200/60 text-slate-600'
                               }`}
                             >
-                              <span className={`w-5 h-5 rounded font-bold font-mono text-[11px] flex items-center justify-center shrink-0 border ${
-                                isCorrect
-                                  ? 'bg-emerald-500 border-emerald-600 text-white'
-                                  : 'bg-white border-slate-200 text-slate-400'
-                              }`}>
-                                {optLetter}
-                              </span>
-                              <span className="truncate flex-1">{opt}</span>
-                              {isCorrect && (
-                                <span className="text-[10px] bg-emerald-100 text-emerald-800 font-bold px-1.5 py-0.5 rounded ml-auto flex items-center gap-0.5 shrink-0">
-                                  <Check className="w-2.5 h-2.5" /> Kunci
+                              <div className="flex items-center gap-2">
+                                <span className={`w-5 h-5 rounded font-bold font-mono text-[11px] flex items-center justify-center shrink-0 border ${
+                                  isCorrect
+                                    ? 'bg-emerald-500 border-emerald-600 text-white'
+                                    : 'bg-white border-slate-200 text-slate-400'
+                                }`}>
+                                  {optLetter}
                                 </span>
+                                <span className="truncate flex-1 font-medium">{opt}</span>
+                                {isCorrect && (
+                                  <span className="text-[10px] bg-emerald-100 text-emerald-800 font-bold px-1.5 py-0.5 rounded ml-auto flex items-center gap-0.5 shrink-0">
+                                    <Check className="w-2.5 h-2.5" /> Kunci
+                                  </span>
+                                )}
+                              </div>
+                              {optImg && (
+                                <div className="mt-1 pl-7">
+                                  <img
+                                    src={optImg}
+                                    alt={`Gambar Opsi ${optLetter}`}
+                                    className="max-h-16 w-auto max-w-[140px] object-contain rounded-lg border border-slate-200 bg-white p-1 shadow-2xs"
+                                  />
+                                </div>
                               )}
                             </div>
                           );
@@ -4137,10 +4471,12 @@ export default function AdminPanel({
                           onClick={() => {
                             setIsCreatingQuestion(true);
                             setEditingQuestion(null);
+                            setActiveOptionImageDrawer(null);
                             setQText('');
                             setQImageUrl('');
                             setQIsReadingPassage(false);
                             setQOptions(['', '', '', '']);
+                            setQOptionImages(['', '', '', '']);
                             setQCorrect(0);
                             setQCorrectIndices([0]);
                             setQType('MC');
@@ -4470,6 +4806,7 @@ export default function AdminPanel({
                     {subjects.map((sub, sIdx) => {
                       const qCount = questions.filter(q => (!q.subjectId && sub.id === 'sub1') || q.subjectId === sub.id).length;
                       const isVisible = sub.isActive !== false;
+                      const gradeInfo = getGradeBadge(sub.targetGrade);
 
                       return (
                         <div
@@ -4483,13 +4820,16 @@ export default function AdminPanel({
                               #{sIdx + 1}
                             </span>
                             <div>
-                              <div className="flex items-center gap-2">
+                              <div className="flex items-center gap-2 flex-wrap">
                                 <span className="font-extrabold text-sm text-slate-800">{sub.name}</span>
                                 {sub.code && (
                                   <span className="text-[10px] font-mono bg-white border border-slate-200 text-slate-500 px-1.5 py-0.5 rounded">
                                     {sub.code}
                                   </span>
                                 )}
+                                <span className={`text-[10px] font-mono font-bold px-2 py-0.5 rounded-full border ${gradeInfo.tagColor}`}>
+                                  {gradeInfo.fullLabel}
+                                </span>
                               </div>
                               <span className="text-xs text-slate-500 font-mono">
                                 Total: {qCount} Butir Soal Terpisah
@@ -4513,14 +4853,18 @@ export default function AdminPanel({
 
                             <button
                               type="button"
-                              onClick={() => {
-                                setEditSubjectName(sub.name);
-                                setEditSubjectCode(sub.code || '');
-                                setEditSubjectIsActive(sub.isActive !== false);
-                                setEditingSubjectModal(sub);
-                              }}
-                              className="p-1.5 hover:bg-white text-slate-500 hover:text-indigo-600 rounded-lg border border-transparent hover:border-slate-200 transition"
-                              title="Edit Info Slot"
+                              onClick={() => handleOpenDuplicateModal(sub)}
+                              className="p-1.5 hover:bg-purple-50 text-slate-500 hover:text-purple-600 rounded-lg border border-transparent hover:border-purple-200 transition cursor-pointer"
+                              title="Duplikasi Naskah (Remidi / Susulan)"
+                            >
+                              <Copy className="w-4 h-4" />
+                            </button>
+
+                            <button
+                              type="button"
+                              onClick={() => handleOpenEditSubjectModal(sub)}
+                              className="p-1.5 hover:bg-white text-slate-500 hover:text-indigo-600 rounded-lg border border-transparent hover:border-slate-200 transition cursor-pointer"
+                              title="Edit Info Slot & Jadwal"
                             >
                               <Edit className="w-4 h-4" />
                             </button>
@@ -6156,6 +6500,47 @@ export default function AdminPanel({
                 </span>
               </div>
 
+              {/* Target Tingkatan Kelas Siswa */}
+              <div className="p-3.5 bg-sky-50/70 border border-sky-200 rounded-xl space-y-2">
+                <div>
+                  <span className="text-xs font-bold text-sky-950 block">Target Tingkatan Kelas Siswa</span>
+                  <span className="text-[11px] text-sky-800 block">
+                    Batasi naskah ini hanya untuk jenjang/tingkatan kelas tertentu saat siswa login.
+                  </span>
+                </div>
+
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-1.5 pt-1">
+                  {GRADE_PRESETS.map((gp) => {
+                    const isPicked = (newSubjectTargetGrade || 'ALL').toUpperCase() === gp.id;
+                    return (
+                      <button
+                        key={gp.id}
+                        type="button"
+                        onClick={() => setNewSubjectTargetGrade(gp.id)}
+                        className={`px-2 py-1.5 text-xs font-bold rounded-lg border transition-all cursor-pointer text-center ${
+                          isPicked
+                            ? 'bg-sky-600 text-white border-sky-700 shadow-2xs font-extrabold'
+                            : 'bg-white hover:bg-sky-100/60 text-slate-700 border-sky-200'
+                        }`}
+                      >
+                        {gp.shortLabel}
+                      </button>
+                    );
+                  })}
+                </div>
+
+                <div className="pt-1.5 border-t border-sky-200/60 flex items-center justify-between gap-2">
+                  <span className="text-[10px] text-sky-900 font-mono font-semibold">Atau Kustom (contoh: 8A, 8B):</span>
+                  <input
+                    type="text"
+                    placeholder="Semua / 8A / 8, 9"
+                    value={newSubjectTargetGrade}
+                    onChange={(e) => setNewSubjectTargetGrade(e.target.value)}
+                    className="w-36 px-2.5 py-1 bg-white border border-sky-300 rounded-lg text-xs font-mono text-slate-800 font-bold"
+                  />
+                </div>
+              </div>
+
               <div className="p-3 bg-slate-50 border border-slate-200 rounded-xl flex items-center justify-between">
                 <div>
                   <span className="text-xs font-bold text-slate-800 block">Tampilkan di Pilihan Siswa</span>
@@ -6183,7 +6568,7 @@ export default function AdminPanel({
                   type="submit"
                   className="flex-1 py-2.5 text-xs font-extrabold text-white bg-indigo-600 hover:bg-indigo-500 rounded-xl transition shadow-sm"
                 >
-                  Simpan Slot ({subjects.length + 1}/20)
+                  Simpan Slot ({subjects.length + 1}/50)
                 </button>
               </div>
             </form>
@@ -6233,6 +6618,47 @@ export default function AdminPanel({
                   onChange={(e) => setEditSubjectCode(e.target.value.toUpperCase())}
                   className="w-full px-3.5 py-2.5 bg-slate-50 border border-slate-200 focus:border-indigo-500 focus:bg-white rounded-xl text-slate-800 text-sm focus:outline-none transition font-mono uppercase"
                 />
+              </div>
+
+              {/* Target Tingkatan Kelas Siswa */}
+              <div className="p-3.5 bg-sky-50/70 border border-sky-200 rounded-xl space-y-2">
+                <div>
+                  <span className="text-xs font-bold text-sky-950 block">Target Tingkatan Kelas Siswa</span>
+                  <span className="text-[11px] text-sky-800 block">
+                    Batasi naskah ini hanya untuk jenjang/tingkatan kelas tertentu saat siswa login.
+                  </span>
+                </div>
+
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-1.5 pt-1">
+                  {GRADE_PRESETS.map((gp) => {
+                    const isPicked = (editSubjectTargetGrade || 'ALL').toUpperCase() === gp.id;
+                    return (
+                      <button
+                        key={gp.id}
+                        type="button"
+                        onClick={() => setEditSubjectTargetGrade(gp.id)}
+                        className={`px-2 py-1.5 text-xs font-bold rounded-lg border transition-all cursor-pointer text-center ${
+                          isPicked
+                            ? 'bg-sky-600 text-white border-sky-700 shadow-2xs font-extrabold'
+                            : 'bg-white hover:bg-sky-100/60 text-slate-700 border-sky-200'
+                        }`}
+                      >
+                        {gp.shortLabel}
+                      </button>
+                    );
+                  })}
+                </div>
+
+                <div className="pt-1.5 border-t border-sky-200/60 flex items-center justify-between gap-2">
+                  <span className="text-[10px] text-sky-900 font-mono font-semibold">Atau Kustom (contoh: 8A, 8B):</span>
+                  <input
+                    type="text"
+                    placeholder="Semua / 8A / 8, 9"
+                    value={editSubjectTargetGrade}
+                    onChange={(e) => setEditSubjectTargetGrade(e.target.value)}
+                    className="w-36 px-2.5 py-1 bg-white border border-sky-300 rounded-lg text-xs font-mono text-slate-800 font-bold"
+                  />
+                </div>
               </div>
 
               <div className="p-3 bg-slate-50 border border-slate-200 rounded-xl flex items-center justify-between">
@@ -6468,6 +6894,162 @@ export default function AdminPanel({
                   className="flex-1 py-2.5 text-xs font-extrabold text-white bg-indigo-600 hover:bg-indigo-500 rounded-xl transition shadow-sm cursor-pointer"
                 >
                   Simpan Perubahan & Jadwal
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Modal Duplikasi Naskah Ujian (Remidi / Susulan) */}
+      {duplicateSubjectModal && (
+        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4 z-50 animate-fade-in">
+          <div className="bg-white rounded-3xl border border-slate-200 shadow-2xl max-w-lg w-full p-6 sm:p-7 space-y-4 max-h-[92vh] overflow-y-auto">
+            <div className="flex items-center justify-between border-b border-slate-100 pb-3">
+              <div className="flex items-center gap-2.5">
+                <div className="w-9 h-9 rounded-xl bg-purple-50 border border-purple-200 flex items-center justify-center text-purple-600 shadow-2xs">
+                  <Copy className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="text-base font-extrabold text-slate-800">
+                    Duplikasi Naskah Soal
+                  </h3>
+                  <p className="text-[11px] text-slate-500 font-mono">
+                    SUMBER: {duplicateSubjectModal.name}
+                  </p>
+                </div>
+              </div>
+              <button
+                onClick={() => setDuplicateSubjectModal(null)}
+                className="p-1 hover:bg-slate-100 rounded-full transition text-slate-400 cursor-pointer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <form onSubmit={handleExecuteDuplicate} className="space-y-4">
+              {/* Preset Skenario Cepat */}
+              <div className="space-y-1.5">
+                <label className="block text-xs font-bold text-slate-600 uppercase font-mono tracking-wider">
+                  Pilih Tujuan Duplikasi (Preset Cepat):
+                </label>
+                <div className="grid grid-cols-2 gap-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setDupNewName(`${duplicateSubjectModal.name} (Remidi)`);
+                      setDupNewCode(`${duplicateSubjectModal.code || 'MAPEL'}-REM`);
+                    }}
+                    className="p-2.5 text-xs font-bold rounded-xl border border-purple-200 bg-purple-50 hover:bg-purple-100 text-purple-800 transition text-center cursor-pointer flex items-center justify-center gap-1.5 shadow-2xs"
+                  >
+                    🔁 Naskah Remidi
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setDupNewName(`${duplicateSubjectModal.name} (Susulan)`);
+                      setDupNewCode(`${duplicateSubjectModal.code || 'MAPEL'}-SUS`);
+                    }}
+                    className="p-2.5 text-xs font-bold rounded-xl border border-amber-200 bg-amber-50 hover:bg-amber-100 text-amber-800 transition text-center cursor-pointer flex items-center justify-center gap-1.5 shadow-2xs"
+                  >
+                    📝 Naskah Susulan
+                  </button>
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold text-slate-600 uppercase font-mono tracking-wider mb-1.5">
+                  Nama Naskah Baru
+                </label>
+                <input
+                  type="text"
+                  required
+                  value={dupNewName}
+                  onChange={(e) => setDupNewName(e.target.value)}
+                  className="w-full px-3.5 py-2.5 bg-slate-50 border border-slate-200 focus:border-purple-500 focus:bg-white rounded-xl text-slate-800 text-sm focus:outline-none transition font-semibold"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold text-slate-600 uppercase font-mono tracking-wider mb-1.5">
+                  Kode Singkat Naskah Baru
+                </label>
+                <input
+                  type="text"
+                  required
+                  value={dupNewCode}
+                  onChange={(e) => setDupNewCode(e.target.value.toUpperCase())}
+                  className="w-full px-3.5 py-2.5 bg-slate-50 border border-slate-200 focus:border-purple-500 focus:bg-white rounded-xl text-slate-800 text-sm focus:outline-none transition font-mono uppercase"
+                />
+              </div>
+
+              {/* Target Tingkatan Kelas */}
+              <div className="p-3 bg-sky-50/70 border border-sky-200 rounded-xl space-y-2">
+                <span className="text-xs font-bold text-sky-950 block">Target Tingkatan Kelas</span>
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-1.5">
+                  {GRADE_PRESETS.map((gp) => {
+                    const isPicked = (dupTargetGrade || 'ALL').toUpperCase() === gp.id;
+                    return (
+                      <button
+                        key={gp.id}
+                        type="button"
+                        onClick={() => setDupTargetGrade(gp.id)}
+                        className={`px-2 py-1.5 text-xs font-bold rounded-lg border transition text-center cursor-pointer ${
+                          isPicked
+                            ? 'bg-sky-600 text-white border-sky-700 shadow-2xs font-extrabold'
+                            : 'bg-white hover:bg-sky-100/60 text-slate-700 border-sky-200'
+                        }`}
+                      >
+                        {gp.shortLabel}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+
+              {/* Opsi Duplikasi Butir Soal */}
+              {(() => {
+                const count = questions.filter(
+                  q => (!q.subjectId && duplicateSubjectModal.id === 'sub1') || q.subjectId === duplicateSubjectModal.id
+                ).length;
+                return (
+                  <div className="p-3.5 bg-purple-50/80 border border-purple-200 rounded-xl space-y-2">
+                    <label className="flex items-start gap-3 cursor-pointer select-none">
+                      <input
+                        type="checkbox"
+                        checked={dupCopyQuestions}
+                        onChange={(e) => setDupCopyQuestions(e.target.checked)}
+                        className="w-5 h-5 text-purple-600 rounded border-slate-300 focus:ring-purple-500 mt-0.5 cursor-pointer"
+                      />
+                      <div>
+                        <strong className="text-xs font-bold text-purple-950 block">
+                          Salin Seluruh Butir Soal ({count} Soal)
+                        </strong>
+                        <span className="text-[11px] text-purple-800 block">
+                          {dupCopyQuestions
+                            ? `Seluruh ${count} butir soal dari "${duplicateSubjectModal.name}" akan disalin lengkap dengan kunci jawaban, gambar, dan bobot nilai ke naskah baru.`
+                            : 'Hanya membuat slot naskah baru yang kosong tanpa menyalin soal.'}
+                        </span>
+                      </div>
+                    </label>
+                  </div>
+                );
+              })()}
+
+              <div className="flex gap-2 pt-3 border-t border-slate-100">
+                <button
+                  type="button"
+                  onClick={() => setDuplicateSubjectModal(null)}
+                  className="flex-1 py-2.5 text-xs font-bold text-slate-500 hover:bg-slate-50 border border-slate-200 rounded-xl transition cursor-pointer"
+                >
+                  Batal
+                </button>
+                <button
+                  type="submit"
+                  className="flex-1 py-2.5 text-xs font-extrabold text-white bg-purple-600 hover:bg-purple-500 rounded-xl transition shadow-sm cursor-pointer flex items-center justify-center gap-1.5"
+                >
+                  <Copy className="w-4 h-4" />
+                  Duplikasi Sekarang
                 </button>
               </div>
             </form>
@@ -7017,22 +7599,34 @@ export default function AdminPanel({
                           <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5 pt-1">
                             {q.options.map((opt, oIdx) => {
                               const isCorrect = keyIndices.includes(oIdx);
+                              const optImg = q.optionImages?.[oIdx];
                               return (
                                 <div
                                   key={oIdx}
-                                  className={`px-2.5 py-1.5 rounded-lg text-xs flex items-center justify-between ${
+                                  className={`px-2.5 py-1.5 rounded-lg text-xs flex flex-col gap-1 ${
                                     isCorrect
                                       ? 'bg-emerald-50 text-emerald-900 font-bold border border-emerald-300'
                                       : 'bg-slate-50 text-slate-700 border border-slate-100'
                                   }`}
                                 >
-                                  <div className="flex items-baseline gap-1.5 overflow-hidden">
-                                    <span className="font-mono font-bold text-slate-500 shrink-0">{String.fromCharCode(65 + oIdx)}.</span>
-                                    <div className="truncate">
-                                      <RichExamContent text={opt} />
+                                  <div className="flex items-baseline justify-between gap-1.5 overflow-hidden">
+                                    <div className="flex items-baseline gap-1.5 overflow-hidden flex-1">
+                                      <span className="font-mono font-bold text-slate-500 shrink-0">{String.fromCharCode(65 + oIdx)}.</span>
+                                      <div className="truncate flex-1">
+                                        <RichExamContent text={opt} />
+                                      </div>
                                     </div>
+                                    {isCorrect && <Check className="w-3.5 h-3.5 text-emerald-600 shrink-0 ml-1" />}
                                   </div>
-                                  {isCorrect && <Check className="w-3.5 h-3.5 text-emerald-600 shrink-0 ml-1" />}
+                                  {optImg && (
+                                    <div className="pl-4">
+                                      <img
+                                        src={optImg}
+                                        alt={`Opsi ${String.fromCharCode(65 + oIdx)}`}
+                                        className="h-10 w-auto object-contain rounded border border-slate-200 bg-white p-0.5"
+                                      />
+                                    </div>
+                                  )}
                                 </div>
                               );
                             })}
@@ -7148,9 +7742,12 @@ export default function AdminPanel({
                   onChange={(e) => setNewMonitorSubject(e.target.value)}
                   className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-slate-800 font-semibold focus:outline-none focus:border-indigo-500"
                 >
-                  {subjects.map(s => (
-                    <option key={s.id} value={s.id}>{s.name}</option>
-                  ))}
+                  {subjects.map(s => {
+                    const gradeLabel = s.targetGrade && s.targetGrade !== 'ALL' ? ` [Kelas ${s.targetGrade}]` : '';
+                    return (
+                      <option key={s.id} value={s.id}>{s.name}{gradeLabel}</option>
+                    );
+                  })}
                 </select>
               </div>
 

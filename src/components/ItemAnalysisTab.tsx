@@ -435,9 +435,10 @@ export default function ItemAnalysisTab({ questions, students, config }: ItemAna
               <option value="all">Semua Mata Pelajaran ({questions.length} Soal)</option>
               {subjects.map(sub => {
                 const count = questions.filter(q => (q.subjectId || 'sub1') === sub.id).length;
+                const gradeLabel = sub.targetGrade && sub.targetGrade !== 'ALL' ? ` [Kelas ${sub.targetGrade}]` : '';
                 return (
                   <option key={sub.id} value={sub.id}>
-                    {sub.name} ({count} Soal)
+                    {sub.name}{gradeLabel} ({count} Soal)
                   </option>
                 );
               })}

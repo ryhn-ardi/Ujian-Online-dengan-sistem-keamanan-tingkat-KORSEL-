@@ -29,7 +29,9 @@
       "properties": {
         "id": { "type": "string" },
         "questionText": { "type": "string" },
+        "imageUrl": { "type": "string" },
         "options": { "type": "array" },
+        "optionImages": { "type": "array" },
         "correctAnswerIndex": { "type": "integer" },
         "correctAnswerIndices": { "type": "array" },
         "type": { "type": "string", "enum": ["MC", "MR"] },
