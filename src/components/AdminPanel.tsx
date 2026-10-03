@@ -2,7 +2,7 @@ import React, { useState, useRef } from 'react';
 import { Users, FileSpreadsheet, RefreshCw, KeyRound, Edit, Trash2, Plus, Save, BookOpen, Clock, X, ChevronRight, Check, AlertTriangle, ShieldCheck, Search, Eye, EyeOff, Layers, Settings2, Sparkles, Ticket, Download, Upload, Shuffle, UserCheck, Lock, CheckCircle2, ChevronLeft, Image as ImageIcon, AlignLeft, HelpCircle, FileText, Calendar, Timer, CheckSquare, Radio, BarChart3, Volume2, VolumeX, Music, FileAudio, AlertCircle, Copy } from 'lucide-react';
 import * as XLSX from 'xlsx';
 import { Student, Question, ExamConfig, ExamSubject, StudentUser } from '../types';
-import { getExamSubjects, saveSingleStudent } from '../utils/sync';
+import { getExamSubjects, saveSingleStudent, clearAllStudents } from '../utils/sync';
 import { RichExamContent } from './RichExamContent';
 import { compressImageFile } from '../utils/imageCompressor';
 import { useRealtimeWIB, formatWIBDateTime, formatWIBShort, formatWIBTimeOnly, evaluateSubjectSchedule, toWIBDateTimeInputValue, parseWIBInputValueToISO, formatDurationCountdown } from '../utils/timeWib';
@@ -1962,8 +1962,8 @@ export default function AdminPanel({
       return;
     }
     const confirmMessage = isFilterActive
-      ? `Apakah Anda yakin ingin melakukan RESET MASAL pengerjaan untuk ${targetStudents.length} siswa ter-filter? Semua jawaban yang tersimpan akan dikosongkan dan sisa waktu pengerjaan akan diuji ulang dari awal.`
-      : 'Apakah Anda yakin ingin melakukan RESET MASAL seluruh pengerjaan siswa? Semua jawaban yang tersimpan akan dikosongkan dan sisa waktu pengerjaan akan diuji ulang dari awal.';
+      ? `Apakah Anda yakin ingin melakukan RESET MASAL pengerjaan untuk ${targetStudents.length} siswa ter-filter? Semua jawaban yang tersimpan akan dikosongkan, nilai kembali 0 / bersih, dan status kembali belum mulai.`
+      : 'Apakah Anda yakin ingin melakukan RESET MASAL seluruh pengerjaan siswa? Semua jawaban yang tersimpan akan dikosongkan, nilai kembali 0 / bersih, dan status kembali belum mulai.';
     if (!window.confirm(confirmMessage)) {
       return;
     }
@@ -1979,17 +1979,19 @@ export default function AdminPanel({
           score: undefined,
           correctAnswersCount: undefined,
           startTime: undefined,
-          endTime: undefined
+          endTime: undefined,
+          usedTokens: [],
+          tokenUnlockCount: 0
         };
       }
       return s;
     });
     onUpdateStudents(updated);
-    alert(isFilterActive ? `Progress pengerjaan untuk ${targetStudents.length} siswa ter-filter berhasil di-reset masal!` : 'Progress pengerjaan seluruh siswa berhasil di-reset masal!');
+    alert(isFilterActive ? `Progress pengerjaan dan nilai untuk ${targetStudents.length} siswa ter-filter berhasil di-reset bersih!` : 'Progress pengerjaan dan seluruh nilai siswa berhasil di-reset bersih!');
   };
 
   // Delete all student records permanently
-  const handleDeleteAllStudents = () => {
+  const handleDeleteAllStudents = async () => {
     const targetStudents = isFilterActive ? filteredStudents : students;
     if (targetStudents.length === 0) {
       alert('Tidak ada data siswa yang bisa dihapus.');
@@ -1997,20 +1999,25 @@ export default function AdminPanel({
     }
     const warn1 = isFilterActive
       ? `PERINGATAN KERAS: Apakah Anda yakin ingin MENGHAPUS (${targetStudents.length}) data siswa ter-filter secara permanen dari database cloud?`
-      : 'PERINGATAN KERAS: Apakah Anda yakin ingin MENGHAPUS SELURUH riwayat ujian dan daftar siswa secara permanen dari database cloud?';
+      : 'PERINGATAN KERAS: Apakah Anda yakin ingin MENGHAPUS SELURUH riwayat ujian dan daftar siswa secara permanen dari database cloud (0 data siswa)?';
     if (!window.confirm(warn1)) {
       return;
     }
     const warn2 = isFilterActive
       ? `Tindakan ini tidak bisa dibatalkan dan semua nilai siswa ter-filter akan musnah. Konfirmasi sekali lagi untuk menghapus siswa ter-filter tersebut?`
-      : 'Tindakan ini tidak bisa dibatalkan dan semua nilai siswa akan musnah. Konfirmasi sekali lagi untuk menghapus seluruh siswa?';
+      : 'Tindakan ini tidak bisa dibatalkan dan seluruh nilai siswa akan musnah. Konfirmasi sekali lagi untuk menghapus seluruh siswa?';
     if (!window.confirm(warn2)) {
       return;
     }
-    const targetIds = new Set(targetStudents.map(s => s.id));
-    const remaining = students.filter(s => !targetIds.has(s.id));
-    onUpdateStudents(remaining);
-    alert(isFilterActive ? `Sebanyak ${targetStudents.length} data siswa ter-filter berhasil dihapus bersih!` : 'Seluruh data siswa berhasil dihapus bersih!');
+
+    if (!isFilterActive || targetStudents.length === students.length) {
+      await clearAllStudents();
+    } else {
+      const targetIds = new Set(targetStudents.map(s => s.id));
+      const remaining = students.filter(s => !targetIds.has(s.id));
+      onUpdateStudents(remaining);
+    }
+    alert(isFilterActive ? `Sebanyak ${targetStudents.length} data siswa ter-filter berhasil dihapus bersih!` : 'Seluruh data siswa berhasil dihapus bersih hingga 0!');
   };
 
   // --- ACTIONS: EXPORT NILAI TO EXCEL (CSV Format with excel compatibility) ---

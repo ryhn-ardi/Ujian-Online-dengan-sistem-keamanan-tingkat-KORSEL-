@@ -318,24 +318,11 @@ onSnapshot(
       initialSyncCompleted.students = true;
       notifySubscribers('SYNC_STUDENTS');
     } else {
-      // Snapshot is empty in Firestore. Check if we have cached local students
-      const cached = getStored<Student[]>(STUDENTS_KEY, []);
-      if (cached.length > 0) {
-        localStudents = cached;
-        initialSyncCompleted.students = true;
-        notifySubscribers('SYNC_STUDENTS');
-        // Persist local students to Firestore so they are never lost on reload
-        try {
-          await saveStudents(cached, false);
-        } catch (e) {
-          console.warn('Silent sync of cached students to cloud:', e);
-        }
-      } else {
-        localStudents = [];
-        localStorage.setItem(STUDENTS_KEY, JSON.stringify([]));
-        initialSyncCompleted.students = true;
-        notifySubscribers('SYNC_STUDENTS');
-      }
+      // Snapshot is empty in Firestore. Respect the empty state immediately.
+      localStudents = [];
+      localStorage.setItem(STUDENTS_KEY, JSON.stringify([]));
+      initialSyncCompleted.students = true;
+      notifySubscribers('SYNC_STUDENTS');
     }
   },
   (error) => {
@@ -575,6 +562,29 @@ export async function deleteSingleStudent(studentId: string, broadcast = true): 
     await deleteDoc(doc(db, 'students', studentId));
   } catch (err) {
     handleFirestoreError(err, OperationType.DELETE, `students/${studentId}`);
+  }
+}
+
+// Clear all students permanently from both memory, local cache, and cloud Firestore
+export async function clearAllStudents(broadcast = true): Promise<void> {
+  localStudents = [];
+  localStorage.setItem(STUDENTS_KEY, JSON.stringify([]));
+  if (broadcast) notifySubscribers('SYNC_STUDENTS');
+
+  try {
+    const existingSnap = await getDocs(collection(db, 'students'));
+    const CHUNK_SIZE = 300;
+    const docs = existingSnap.docs;
+    for (let i = 0; i < docs.length; i += CHUNK_SIZE) {
+      const chunk = docs.slice(i, i + CHUNK_SIZE);
+      const batch = writeBatch(db);
+      chunk.forEach((d) => {
+        batch.delete(d.ref);
+      });
+      await batch.commit();
+    }
+  } catch (err) {
+    console.error('Error clearing all students from Firestore:', err);
   }
 }
 
