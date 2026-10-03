@@ -1038,24 +1038,34 @@ export default function StudentExam({
     <div className="min-h-screen bg-slate-50 flex flex-col justify-between font-sans relative select-none">
       {/* Real-time Violation Alert Toast */}
       {violationToast && (
-        <div className="fixed top-20 inset-x-4 max-w-lg mx-auto z-50 animate-bounce">
-          <div className="p-4 bg-red-600 text-white rounded-2xl shadow-2xl border-2 border-white flex items-center justify-between gap-3">
-            <div className="flex items-center gap-2.5">
-              <ShieldAlert className="w-6 h-6 text-white shrink-0 animate-pulse" />
-              <div className="text-left">
-                <p className="font-extrabold text-sm uppercase tracking-wide">
-                  Pelanggaran Terdeteksi! ({violationToast.count}/{violationToast.max} Kali)
-                </p>
-                <p className="text-xs text-red-100 font-mono">
+        <div className="fixed top-14 sm:top-20 inset-x-3 sm:inset-x-4 max-w-xl mx-auto z-50 animate-bounce">
+          <div className="p-4 sm:p-5 bg-gradient-to-r from-red-600 via-rose-600 to-red-700 text-white rounded-2xl shadow-2xl border-2 border-white flex flex-col sm:flex-row items-center justify-between gap-4">
+            <div className="flex items-center gap-3 w-full sm:w-auto">
+              <div className="w-12 h-12 rounded-xl bg-white/20 border border-white/30 flex items-center justify-center shrink-0 shadow-sm">
+                <ShieldAlert className="w-7 h-7 text-white animate-pulse" />
+              </div>
+              <div className="text-left flex-1 min-w-0">
+                <div className="flex items-center gap-2 flex-wrap">
+                  <p className="font-black text-sm sm:text-base uppercase tracking-wide">
+                    Pelanggaran Terdeteksi!
+                  </p>
+                  <span className="bg-black/30 border border-white/20 px-2 py-0.5 rounded-lg text-xs font-mono font-bold">
+                    {violationToast.count} / {violationToast.max} Kali
+                  </span>
+                </div>
+                <p className="text-xs sm:text-sm text-red-100 font-medium leading-snug mt-1">
                   {violationToast.message}
                 </p>
               </div>
             </div>
             <button
+              id="btn-dismiss-violation-toast"
+              type="button"
               onClick={() => setViolationToast(null)}
-              className="px-2.5 py-1 bg-black/20 hover:bg-black/40 text-white rounded-lg text-xs font-bold cursor-pointer"
+              className="w-full sm:w-auto px-6 py-3.5 bg-white hover:bg-red-50 text-red-700 active:scale-95 text-sm sm:text-base font-black rounded-xl shadow-xl ring-2 ring-white/90 transition-all flex items-center justify-center gap-2 shrink-0 cursor-pointer"
             >
-              OK
+              <Check className="w-5 h-5 text-red-700 stroke-[3]" />
+              <span>SAYA MENGERTI (OK)</span>
             </button>
           </div>
         </div>
