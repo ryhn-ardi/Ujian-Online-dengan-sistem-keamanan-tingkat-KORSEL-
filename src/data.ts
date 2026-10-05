@@ -156,5 +156,7 @@ export const INITIAL_CONFIG: ExamConfig = {
   proctorPermissions: DEFAULT_PROCTOR_PERMISSIONS,
   announcementSoundType: 'CHIME_AIRPORT',
   activeAnnouncement: null,
-  ecoSyncMode: true
+  ecoSyncMode: true,
+  alarmType: 'SIREN',
+  autoBroadcastRefreshOnConfigChange: true
 };

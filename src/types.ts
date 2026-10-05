@@ -103,13 +103,20 @@ export interface ExamConfig {
   requireStudentLogin?: boolean; // Require username & password from database
   proctorPassword?: string; // Kata sandi khusus login akun Pengawas Ruang (default: awasadasule)
   adminPassword?: string; // Kata sandi khusus login akun Administrator Master (default: monyetlupa)
-  alarmType?: 'SIREN' | 'BUZZER' | 'NUCLEAR' | 'BELL' | 'CUSTOM_AUDIO'; // Tipe alarm pelanggaran
+  alarmType?: 'SIREN' | 'BUZZER' | 'NUCLEAR' | 'BELL' | 'HORN' | 'AMBULANCE' | 'CUSTOM_AUDIO'; // Tipe alarm pelanggaran
   customAlarmAudioUrl?: string; // Audio file Base64 data URL atau external URL untuk alarm kustom
   customAlarmName?: string; // Nama deskripsi audio kustom yang diunggah
+  hasCustomAlarmAudio?: boolean; // Indikator ada audio alarm kustom tersimpan
   proctorPermissions?: ProctorPermissions; // Konfigurasi wewenang dan tampilan akun pengawas
   announcementSoundType?: 'CHIME_AIRPORT' | 'CHIME_HARMONY' | 'CHIME_DIGITAL' | 'CHIME_ELEGANT' | 'CUSTOM_AUDIO'; // Suara pengumuman massal
   customAnnouncementAudioUrl?: string; // URL audio kustom untuk pengumuman
   customAnnouncementName?: string; // Nama file audio kustom pengumuman
+  hasCustomAnnouncementAudio?: boolean; // Indikator ada audio pengumuman kustom
   activeAnnouncement?: BroadcastAnnouncement | null; // Pengumuman massal aktif saat ini
   ecoSyncMode?: boolean; // Mode Hemat Kuota Ekstrem: Hanya kirim pelanggaran, unlock, dan kumpul nilai ke server (hemat 99% kuota)
+  // Fitur Khusus Admin: Refresh Massal Seluruh Siswa saat ada Perubahan Konfigurasi
+  forcedRefreshTimestamp?: number; // Waktu timestamp perintah refresh dikirim oleh Admin
+  forcedRefreshType?: 'SOFT' | 'HARD'; // 'SOFT' = update config & bank soal secara instan tanpa reload, 'HARD' = reload browser
+  forcedRefreshReason?: string; // Pesan/alasan refresh dari admin
+  autoBroadcastRefreshOnConfigChange?: boolean; // Otomatis kirim sinyal refresh setiap admin ubah konfigurasi
 }

@@ -24,7 +24,7 @@ import { useRealtimeWIB, formatWIBDateTime, formatWIBShort, formatWIBTimeOnly, e
 import { parseDocxExamFile, WordImportResult } from '../utils/wordImporter';
 import AnalyticsCharts from './AnalyticsCharts';
 import ItemAnalysisTab from './ItemAnalysisTab';
-import { playAlarmSound, stopAllAlarmSounds, playAnnouncementSound } from '../utils/alarmAudio';
+import { playAlarmSound, stopAllAlarmSounds, playAnnouncementSound, setCustomAlarmAudioData, getCustomAlarmAudioData } from '../utils/alarmAudio';
 import { verifyUltimateCode, ULTIMATE_AUTHORIZATION_CODE } from '../utils/securityAuth';
 import { GRADE_PRESETS, getGradeBadge } from '../utils/gradeHelper';
 
@@ -215,7 +215,7 @@ export default function AdminPanel({
 
     const testConfig: Partial<ExamConfig> = {
       alarmType: (tempAlarmType || config.alarmType || 'SIREN') as any,
-      customAlarmAudioUrl: tempAudioUrl !== undefined ? tempAudioUrl : config.customAlarmAudioUrl
+      customAlarmAudioUrl: tempAudioUrl !== undefined ? tempAudioUrl : (config.customAlarmAudioUrl || getCustomAlarmAudioData() || undefined)
     };
 
     setIsPlayingAlarmTest(true);
@@ -224,7 +224,7 @@ export default function AdminPanel({
 
     setTimeout(() => {
       setIsPlayingAlarmTest(false);
-    }, 6000);
+    }, 5000);
   };
 
   const handleStopAlarmSound = () => {
@@ -235,27 +235,68 @@ export default function AdminPanel({
     setIsPlayingAlarmTest(false);
   };
 
+  const [customAudioUrlInput, setCustomAudioUrlInput] = useState('');
+
   const handleCustomAudioFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
 
-    if (file.size > 8 * 1024 * 1024) {
-      alert('Ukuran file audio maksimal 8 MB.');
+    if (file.size > 2 * 1024 * 1024) {
+      alert('Ukuran file audio maksimal 2 MB agar dapat disimpan dan disinkronkan secara instan ke seluruh HP siswa tanpa kendala kuota.');
       return;
     }
 
     const reader = new FileReader();
     reader.onload = () => {
       const base64 = reader.result as string;
+      setCustomAlarmAudioData(base64);
       onUpdateConfig({
         ...config,
         alarmType: 'CUSTOM_AUDIO',
         customAlarmAudioUrl: base64,
-        customAlarmName: file.name
+        customAlarmName: file.name,
+        hasCustomAlarmAudio: true
       });
-      alert(`Audio kustom "${file.name}" berhasil diunggah! Anda dapat mengujinya dengan tombol "Uji Coba Bunyi Alarm".`);
+      alert(`Audio kustom "${file.name}" berhasil diunggah dan disimpan ke server! Seluruh HP siswa akan otomatis menggunakan audio ini saat terjadi pelanggaran.`);
     };
     reader.readAsDataURL(file);
+  };
+
+  const handleSaveCustomAudioUrl = () => {
+    if (!customAudioUrlInput.trim()) return;
+    onUpdateConfig({
+      ...config,
+      alarmType: 'CUSTOM_AUDIO',
+      customAlarmAudioUrl: customAudioUrlInput.trim(),
+      customAlarmName: 'Audio Link Eksternal',
+      hasCustomAlarmAudio: true
+    });
+    alert('Link audio kustom berhasil disimpan dan disinkronkan ke seluruh HP siswa!');
+  };
+
+  // Admin Forced Mass Refresh for All Students (Khusus Admin)
+  const [showRefreshModal, setShowRefreshModal] = useState(false);
+  const [refreshMode, setRefreshMode] = useState<'SOFT' | 'HARD'>('SOFT');
+  const [refreshReason, setRefreshReason] = useState('Pembaruan konfigurasi ujian & naskah soal dari Admin');
+  const [isSendingRefresh, setIsSendingRefresh] = useState(false);
+
+  const handleSendRefreshToStudents = async (mode: 'SOFT' | 'HARD' = refreshMode, customReason = refreshReason) => {
+    setIsSendingRefresh(true);
+    try {
+      const updatedConfig: ExamConfig = {
+        ...config,
+        forcedRefreshTimestamp: Date.now(),
+        forcedRefreshType: mode,
+        forcedRefreshReason: customReason.trim() || 'Pembaruan konfigurasi ujian dari Admin'
+      };
+      await onUpdateConfig(updatedConfig);
+      setShowRefreshModal(false);
+      alert(`Sinyal refresh (${mode === 'SOFT' ? 'Refresh Halus / Hot-Update' : 'Hard Reload Browser'}) sukses dikirim ke seluruh HP siswa! Layar dan lembar ujian siswa akan langsung tersinkronkan.`);
+    } catch (e) {
+      alert('Gagal menyiarkan sinyal refresh: ' + String(e));
+    } finally {
+      setIsSendingRefresh(false);
+    }
   };
 
   // Broadcast Announcement States & Handlers
@@ -3037,6 +3078,18 @@ export default function AdminPanel({
               Bersihkan Cache & Sinkronkan
             </button>
             <button
+              id="btn-admin-refresh-all-students"
+              onClick={() => setShowRefreshModal(true)}
+              className="px-3.5 py-2 bg-emerald-600 hover:bg-emerald-500 text-white font-extrabold rounded-xl text-xs sm:text-sm transition flex items-center gap-2 cursor-pointer shadow-xs"
+              title="Kirim sinyal refresh instan ke seluruh HP siswa saat ada perubahan naskah soal atau konfigurasi"
+            >
+              <RefreshCw className="w-4 h-4 text-emerald-100" />
+              <span>Refresh Siswa</span>
+              <span className="px-1.5 py-0.5 rounded-full text-[10px] font-mono font-black bg-emerald-800/60 text-emerald-100">
+                Semua
+              </span>
+            </button>
+            <button
               id="btn-admin-broadcast"
               onClick={() => setShowBroadcastModal(true)}
               className={`px-3.5 py-2 font-extrabold rounded-xl text-xs sm:text-sm transition flex items-center gap-2 cursor-pointer shadow-xs ${
@@ -4998,10 +5051,86 @@ export default function AdminPanel({
 
               {/* Settings Content Area (Right) */}
               <div className="flex-1 min-w-0 w-full space-y-6">
+                {/* DEDICATED ADMIN LIVE REFRESH ACTION CARD */}
+                <div className="bg-gradient-to-r from-slate-900 via-indigo-950 to-slate-900 text-white p-5 sm:p-6 rounded-2xl border border-indigo-500/30 shadow-md relative overflow-hidden">
+                  <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
+                    <div className="flex items-start gap-3.5">
+                      <div className="w-10 h-10 rounded-xl bg-indigo-500/20 border border-indigo-400/30 flex items-center justify-center shrink-0 text-indigo-300 shadow-xs">
+                        <Radio className="w-5 h-5 animate-pulse text-emerald-400" />
+                      </div>
+                      <div>
+                        <div className="flex items-center gap-2">
+                          <h4 className="text-sm font-black text-white tracking-tight">
+                            Refresh Massal Seluruh Siswa
+                          </h4>
+                          <span className="px-2 py-0.5 rounded-full text-[10px] font-mono font-bold bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
+                            Khusus Admin
+                          </span>
+                        </div>
+                        <p className="text-xs text-slate-300 mt-1 leading-relaxed max-w-xl">
+                          Ada perubahan konfigurasi, durasi, jadwal, atau naskah soal? Klik tombol di samping untuk menyiarkan pembaruan langsung ke seluruh HP siswa tanpa siswa perlu refresh browser secara manual.
+                        </p>
+                        {config.forcedRefreshTimestamp && (
+                          <div className="mt-2 text-[10px] font-mono text-indigo-300 flex items-center gap-1.5">
+                            <Clock className="w-3 h-3 text-indigo-400" />
+                            <span>
+                              Terakhir dikirim: {new Date(config.forcedRefreshTimestamp).toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit', second: '2-digit' })} WIB • ({config.forcedRefreshType === 'HARD' ? 'Muat Ulang Browser' : 'Refresh Halus / Hot-Update'})
+                            </span>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+
+                    <div className="flex flex-wrap sm:flex-col items-stretch gap-2 shrink-0 w-full sm:w-auto">
+                      <button
+                        type="button"
+                        id="btn-admin-broadcast-soft-refresh"
+                        onClick={() => handleSendRefreshToStudents('SOFT')}
+                        disabled={isSendingRefresh}
+                        className="px-4 py-2.5 bg-indigo-600 hover:bg-indigo-500 text-white font-extrabold text-xs rounded-xl shadow-xs transition flex items-center justify-center gap-2 cursor-pointer border border-indigo-400/40"
+                        title="Perbarui naskah soal & konfigurasi di seluruh HP siswa tanpa reload browser (jawaban siswa 100% aman)"
+                      >
+                        <RefreshCw className={`w-3.5 h-3.5 ${isSendingRefresh ? 'animate-spin' : ''}`} />
+                        <span>Kirim Refresh Halus (Hot-Update)</span>
+                      </button>
+
+                      <button
+                        type="button"
+                        id="btn-admin-open-refresh-modal"
+                        onClick={() => setShowRefreshModal(true)}
+                        className="px-3.5 py-1.5 bg-slate-800/80 hover:bg-slate-700 text-slate-300 hover:text-white font-bold text-[11px] rounded-xl transition flex items-center justify-center gap-1.5 cursor-pointer border border-slate-700"
+                        title="Buka dialog lengkap pengaturan refresh & opsi muat ulang halaman"
+                      >
+                        <Settings2 className="w-3.5 h-3.5" />
+                        <span>Opsi Lengkap...</span>
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Auto-broadcast toggle on config save */}
+                  <div className="mt-4 pt-3 border-t border-white/10 flex items-center justify-between text-xs">
+                    <label className="flex items-center gap-2 text-slate-300 hover:text-white cursor-pointer select-none">
+                      <input
+                        type="checkbox"
+                        checked={config.autoBroadcastRefreshOnConfigChange !== false}
+                        onChange={(e) => onUpdateConfig({ ...config, autoBroadcastRefreshOnConfigChange: e.target.checked })}
+                        className="w-4 h-4 rounded text-indigo-600 focus:ring-indigo-500 border-slate-600 cursor-pointer"
+                      />
+                      <span className="text-[11px] text-slate-300">
+                        Otomatis siarkan sinyal refresh ke seluruh HP siswa setiap kali saya menyimpan ubahan konfigurasi
+                      </span>
+                    </label>
+                  </div>
+                </div>
+
                 <form
                   onSubmit={(e) => {
                     e.preventDefault();
-                    alert('Konfigurasi ujian sukses diperbarui secara instan!');
+                    if (config.autoBroadcastRefreshOnConfigChange !== false) {
+                      handleSendRefreshToStudents('SOFT', 'Pembaruan konfigurasi ujian telah disimpan oleh Admin');
+                    } else {
+                      alert('Konfigurasi ujian sukses diperbarui secara instan!');
+                    }
                   }}
                   className="space-y-6"
                 >
@@ -5405,220 +5534,367 @@ export default function AdminPanel({
                     <div className="space-y-4 pt-1">
                       {/* Audio Preset Selection */}
                       <div>
-                        <label className="block text-[11px] font-bold text-slate-700 font-mono uppercase mb-2">
-                          Pilih Jenis Suara Alarm:
-                        </label>
+                        <div className="flex items-center justify-between mb-2">
+                          <label className="block text-[11px] font-bold text-slate-700 font-mono uppercase">
+                            Pilih Jenis Suara Alarm Pelanggaran Siswa:
+                          </label>
+                          <span className="text-[11px] font-mono text-emerald-700 font-bold bg-emerald-50 px-2 py-0.5 rounded-md border border-emerald-200 flex items-center gap-1">
+                            <Check className="w-3 h-3 text-emerald-600" />
+                            Tipe Aktif: {config.alarmType || 'SIREN'}
+                          </span>
+                        </div>
                         <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
-                          {/* Option 1: Standard Siren (Yang digunakan sekarang) */}
-                          <label
-                            className={`p-3 rounded-xl border flex items-center justify-between cursor-pointer transition ${
+                          {/* Option 1: Standard Police / Proctor Siren */}
+                          <div
+                            className={`p-3 rounded-xl border flex items-center justify-between transition ${
                               (config.alarmType || 'SIREN') === 'SIREN'
                                 ? 'bg-white border-indigo-600 shadow-xs ring-2 ring-indigo-500/20'
                                 : 'bg-white/60 border-slate-200 hover:bg-white'
                             }`}
                           >
-                            <div className="flex items-center gap-2.5">
+                            <label className="flex items-center gap-2.5 cursor-pointer flex-1 min-w-0">
                               <input
                                 type="radio"
                                 name="alarmType"
                                 value="SIREN"
                                 checked={(config.alarmType || 'SIREN') === 'SIREN'}
                                 onChange={() => onUpdateConfig({ ...config, alarmType: 'SIREN' })}
-                                className="text-indigo-600 focus:ring-indigo-500 w-4 h-4 cursor-pointer"
+                                className="text-indigo-600 focus:ring-indigo-500 w-4 h-4 cursor-pointer shrink-0"
                               />
-                              <div>
-                                <span className="text-xs font-bold text-slate-800 block">
+                              <div className="min-w-0">
+                                <span className="text-xs font-bold text-slate-800 block truncate">
                                   Sirine Polisi / SWAT Proktor
                                 </span>
-                                <span className="text-[10px] text-slate-500 font-mono">
-                                  Alarm Standar (Yang digunakan sekarang)
+                                <span className="text-[10px] text-slate-500 font-mono block truncate">
+                                  Alarm Standar Bawaan (Sweeping pitch)
                                 </span>
                               </div>
-                            </div>
-                            <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-slate-100 text-slate-600 font-mono">
-                              Default
-                            </span>
-                          </label>
+                            </label>
+                            <button
+                              type="button"
+                              onClick={(e) => { e.stopPropagation(); handleTestAlarmSound('SIREN'); }}
+                              className="px-2 py-1 bg-slate-100 hover:bg-indigo-50 text-indigo-700 hover:text-indigo-900 border border-slate-200 rounded-lg text-[10px] font-bold font-mono transition shrink-0 ml-2 flex items-center gap-1 cursor-pointer"
+                              title="Dengarkan contoh suara ini"
+                            >
+                              <Volume2 className="w-3 h-3" />
+                              <span>Coba</span>
+                            </button>
+                          </div>
 
-                          {/* Option 2: Electronic Buzzer */}
-                          <label
-                            className={`p-3 rounded-xl border flex items-center justify-between cursor-pointer transition ${
+                          {/* Option 2: Electronic Warning Buzzer */}
+                          <div
+                            className={`p-3 rounded-xl border flex items-center justify-between transition ${
                               config.alarmType === 'BUZZER'
                                 ? 'bg-white border-indigo-600 shadow-xs ring-2 ring-indigo-500/20'
                                 : 'bg-white/60 border-slate-200 hover:bg-white'
                             }`}
                           >
-                            <div className="flex items-center gap-2.5">
+                            <label className="flex items-center gap-2.5 cursor-pointer flex-1 min-w-0">
                               <input
                                 type="radio"
                                 name="alarmType"
                                 value="BUZZER"
                                 checked={config.alarmType === 'BUZZER'}
                                 onChange={() => onUpdateConfig({ ...config, alarmType: 'BUZZER' })}
-                                className="text-indigo-600 focus:ring-indigo-500 w-4 h-4 cursor-pointer"
+                                className="text-indigo-600 focus:ring-indigo-500 w-4 h-4 cursor-pointer shrink-0"
                               />
-                              <div>
-                                <span className="text-xs font-bold text-slate-800 block">
+                              <div className="min-w-0">
+                                <span className="text-xs font-bold text-slate-800 block truncate">
                                   Buzzer Peringatan Elektronik
                                 </span>
-                                <span className="text-[10px] text-slate-500 font-mono">
+                                <span className="text-[10px] text-slate-500 font-mono block truncate">
                                   Nada pulsa cepat peringatan digital
                                 </span>
                               </div>
-                            </div>
-                            <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-blue-50 text-blue-700 font-mono">
-                              Buzzer
-                            </span>
-                          </label>
+                            </label>
+                            <button
+                              type="button"
+                              onClick={(e) => { e.stopPropagation(); handleTestAlarmSound('BUZZER'); }}
+                              className="px-2 py-1 bg-slate-100 hover:bg-indigo-50 text-indigo-700 hover:text-indigo-900 border border-slate-200 rounded-lg text-[10px] font-bold font-mono transition shrink-0 ml-2 flex items-center gap-1 cursor-pointer"
+                              title="Dengarkan contoh suara ini"
+                            >
+                              <Volume2 className="w-3 h-3" />
+                              <span>Coba</span>
+                            </button>
+                          </div>
 
-                          {/* Option 3: Nuclear / Air Raid */}
-                          <label
-                            className={`p-3 rounded-xl border flex items-center justify-between cursor-pointer transition ${
+                          {/* Option 3: Nuclear / Air Raid Siren */}
+                          <div
+                            className={`p-3 rounded-xl border flex items-center justify-between transition ${
                               config.alarmType === 'NUCLEAR'
                                 ? 'bg-white border-indigo-600 shadow-xs ring-2 ring-indigo-500/20'
                                 : 'bg-white/60 border-slate-200 hover:bg-white'
                             }`}
                           >
-                            <div className="flex items-center gap-2.5">
+                            <label className="flex items-center gap-2.5 cursor-pointer flex-1 min-w-0">
                               <input
                                 type="radio"
                                 name="alarmType"
                                 value="NUCLEAR"
                                 checked={config.alarmType === 'NUCLEAR'}
                                 onChange={() => onUpdateConfig({ ...config, alarmType: 'NUCLEAR' })}
-                                className="text-indigo-600 focus:ring-indigo-500 w-4 h-4 cursor-pointer"
+                                className="text-indigo-600 focus:ring-indigo-500 w-4 h-4 cursor-pointer shrink-0"
                               />
-                              <div>
-                                <span className="text-xs font-bold text-slate-800 block">
+                              <div className="min-w-0">
+                                <span className="text-xs font-bold text-slate-800 block truncate">
                                   Sirine Darurat Nuklir (Air Raid)
                                 </span>
-                                <span className="text-[10px] text-slate-500 font-mono">
+                                <span className="text-[10px] text-slate-500 font-mono block truncate">
                                   Nada gelombang panjang bertempo berat
                                 </span>
                               </div>
-                            </div>
-                            <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-amber-50 text-amber-700 font-mono">
-                              Air Raid
-                            </span>
-                          </label>
+                            </label>
+                            <button
+                              type="button"
+                              onClick={(e) => { e.stopPropagation(); handleTestAlarmSound('NUCLEAR'); }}
+                              className="px-2 py-1 bg-slate-100 hover:bg-indigo-50 text-indigo-700 hover:text-indigo-900 border border-slate-200 rounded-lg text-[10px] font-bold font-mono transition shrink-0 ml-2 flex items-center gap-1 cursor-pointer"
+                              title="Dengarkan contoh suara ini"
+                            >
+                              <Volume2 className="w-3 h-3" />
+                              <span>Coba</span>
+                            </button>
+                          </div>
 
                           {/* Option 4: Alarm Bell */}
-                          <label
-                            className={`p-3 rounded-xl border flex items-center justify-between cursor-pointer transition ${
+                          <div
+                            className={`p-3 rounded-xl border flex items-center justify-between transition ${
                               config.alarmType === 'BELL'
                                 ? 'bg-white border-indigo-600 shadow-xs ring-2 ring-indigo-500/20'
                                 : 'bg-white/60 border-slate-200 hover:bg-white'
                             }`}
                           >
-                            <div className="flex items-center gap-2.5">
+                            <label className="flex items-center gap-2.5 cursor-pointer flex-1 min-w-0">
                               <input
                                 type="radio"
                                 name="alarmType"
                                 value="BELL"
                                 checked={config.alarmType === 'BELL'}
                                 onChange={() => onUpdateConfig({ ...config, alarmType: 'BELL' })}
-                                className="text-indigo-600 focus:ring-indigo-500 w-4 h-4 cursor-pointer"
+                                className="text-indigo-600 focus:ring-indigo-500 w-4 h-4 cursor-pointer shrink-0"
                               />
-                              <div>
-                                <span className="text-xs font-bold text-slate-800 block">
+                              <div className="min-w-0">
+                                <span className="text-xs font-bold text-slate-800 block truncate">
                                   Lonceng Peringatan (Alarm Bell)
                                 </span>
-                                <span className="text-[10px] text-slate-500 font-mono">
-                                  Dentang keras berulang
+                                <span className="text-[10px] text-slate-500 font-mono block truncate">
+                                  Dentang lonceng keras berulang
                                 </span>
                               </div>
-                            </div>
-                            <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-purple-50 text-purple-700 font-mono">
-                              Bell
-                            </span>
-                          </label>
+                            </label>
+                            <button
+                              type="button"
+                              onClick={(e) => { e.stopPropagation(); handleTestAlarmSound('BELL'); }}
+                              className="px-2 py-1 bg-slate-100 hover:bg-indigo-50 text-indigo-700 hover:text-indigo-900 border border-slate-200 rounded-lg text-[10px] font-bold font-mono transition shrink-0 ml-2 flex items-center gap-1 cursor-pointer"
+                              title="Dengarkan contoh suara ini"
+                            >
+                              <Volume2 className="w-3 h-3" />
+                              <span>Coba</span>
+                            </button>
+                          </div>
 
-                          {/* Option 5: Custom Audio Upload */}
-                          <label
-                            className={`p-3 rounded-xl border flex items-center justify-between cursor-pointer transition sm:col-span-2 ${
+                          {/* Option 5: Industrial Dual Air Horn */}
+                          <div
+                            className={`p-3 rounded-xl border flex items-center justify-between transition ${
+                              config.alarmType === 'HORN'
+                                ? 'bg-white border-indigo-600 shadow-xs ring-2 ring-indigo-500/20'
+                                : 'bg-white/60 border-slate-200 hover:bg-white'
+                            }`}
+                          >
+                            <label className="flex items-center gap-2.5 cursor-pointer flex-1 min-w-0">
+                              <input
+                                type="radio"
+                                name="alarmType"
+                                value="HORN"
+                                checked={config.alarmType === 'HORN'}
+                                onChange={() => onUpdateConfig({ ...config, alarmType: 'HORN' })}
+                                className="text-indigo-600 focus:ring-indigo-500 w-4 h-4 cursor-pointer shrink-0"
+                              />
+                              <div className="min-w-0">
+                                <span className="text-xs font-bold text-slate-800 block truncate">
+                                  Klakson Peringatan Ganda (Air Horn)
+                                </span>
+                                <span className="text-[10px] text-slate-500 font-mono block truncate">
+                                  Dentuman klakson industri frekuensi ganda
+                                </span>
+                              </div>
+                            </label>
+                            <button
+                              type="button"
+                              onClick={(e) => { e.stopPropagation(); handleTestAlarmSound('HORN'); }}
+                              className="px-2 py-1 bg-slate-100 hover:bg-indigo-50 text-indigo-700 hover:text-indigo-900 border border-slate-200 rounded-lg text-[10px] font-bold font-mono transition shrink-0 ml-2 flex items-center gap-1 cursor-pointer"
+                              title="Dengarkan contoh suara ini"
+                            >
+                              <Volume2 className="w-3 h-3" />
+                              <span>Coba</span>
+                            </button>
+                          </div>
+
+                          {/* Option 6: Two-Tone Ambulance Siren */}
+                          <div
+                            className={`p-3 rounded-xl border flex items-center justify-between transition ${
+                              config.alarmType === 'AMBULANCE'
+                                ? 'bg-white border-indigo-600 shadow-xs ring-2 ring-indigo-500/20'
+                                : 'bg-white/60 border-slate-200 hover:bg-white'
+                            }`}
+                          >
+                            <label className="flex items-center gap-2.5 cursor-pointer flex-1 min-w-0">
+                              <input
+                                type="radio"
+                                name="alarmType"
+                                value="AMBULANCE"
+                                checked={config.alarmType === 'AMBULANCE'}
+                                onChange={() => onUpdateConfig({ ...config, alarmType: 'AMBULANCE' })}
+                                className="text-indigo-600 focus:ring-indigo-500 w-4 h-4 cursor-pointer shrink-0"
+                              />
+                              <div className="min-w-0">
+                                <span className="text-xs font-bold text-slate-800 block truncate">
+                                  Sirine Gawat Darurat (Hi-Lo Tone)
+                                </span>
+                                <span className="text-[10px] text-slate-500 font-mono block truncate">
+                                  Dua nada sirine gawat darurat bergantian
+                                </span>
+                              </div>
+                            </label>
+                            <button
+                              type="button"
+                              onClick={(e) => { e.stopPropagation(); handleTestAlarmSound('AMBULANCE'); }}
+                              className="px-2 py-1 bg-slate-100 hover:bg-indigo-50 text-indigo-700 hover:text-indigo-900 border border-slate-200 rounded-lg text-[10px] font-bold font-mono transition shrink-0 ml-2 flex items-center gap-1 cursor-pointer"
+                              title="Dengarkan contoh suara ini"
+                            >
+                              <Volume2 className="w-3 h-3" />
+                              <span>Coba</span>
+                            </button>
+                          </div>
+
+                          {/* Option 7: Custom Audio Upload / URL */}
+                          <div
+                            className={`p-3 rounded-xl border flex items-center justify-between transition sm:col-span-2 ${
                               config.alarmType === 'CUSTOM_AUDIO'
                                 ? 'bg-white border-emerald-600 shadow-xs ring-2 ring-emerald-500/20'
                                 : 'bg-white/60 border-slate-200 hover:bg-white'
                             }`}
                           >
-                            <div className="flex items-center gap-2.5">
+                            <label className="flex items-center gap-2.5 cursor-pointer flex-1 min-w-0">
                               <input
                                 type="radio"
                                 name="alarmType"
                                 value="CUSTOM_AUDIO"
                                 checked={config.alarmType === 'CUSTOM_AUDIO'}
                                 onChange={() => onUpdateConfig({ ...config, alarmType: 'CUSTOM_AUDIO' })}
-                                className="text-emerald-600 focus:ring-emerald-500 w-4 h-4 cursor-pointer"
+                                className="text-emerald-600 focus:ring-emerald-500 w-4 h-4 cursor-pointer shrink-0"
                               />
-                              <div>
-                                <span className="text-xs font-bold text-slate-800 flex items-center gap-1.5">
+                              <div className="min-w-0">
+                                <span className="text-xs font-bold text-slate-800 flex items-center gap-1.5 truncate">
                                   <Music className="w-3.5 h-3.5 text-emerald-600" />
-                                  Opsi Alarm Kustom (Unggah Audio Sendiri)
+                                  Audio Kustom Sendiri (Unggah Berkas MP3 atau Tautan URL)
                                 </span>
-                                <span className="text-[10px] text-slate-500 font-mono">
-                                  Gunakan file audio rekaman sekolah atau MP3 khusus yang Anda unggah
+                                <span className="text-[10px] text-slate-500 font-mono block truncate">
+                                  Gunakan rekaman suara guru/sekolah khusus yang Anda unggah
                                 </span>
                               </div>
-                            </div>
-                            <span className="text-[10px] font-bold px-2 py-0.5 rounded bg-emerald-100 text-emerald-800 font-mono">
-                              Kustom
-                            </span>
-                          </label>
+                            </label>
+                            <button
+                              type="button"
+                              onClick={(e) => { e.stopPropagation(); handleTestAlarmSound('CUSTOM_AUDIO'); }}
+                              className="px-2.5 py-1 bg-emerald-100 hover:bg-emerald-200 text-emerald-800 border border-emerald-300 rounded-lg text-[10px] font-bold font-mono transition shrink-0 ml-2 flex items-center gap-1 cursor-pointer"
+                              title="Uji coba audio kustom saat ini"
+                            >
+                              <Volume2 className="w-3 h-3" />
+                              <span>Uji Kustom</span>
+                            </button>
+                          </div>
                         </div>
                       </div>
 
-                      {/* Custom Audio Upload Area */}
+                      {/* Custom Audio Upload & Link Area */}
                       {config.alarmType === 'CUSTOM_AUDIO' && (
-                        <div className="p-4 bg-emerald-50/60 rounded-xl border border-emerald-200 space-y-3 animate-fade-in">
+                        <div className="p-4 bg-emerald-50/60 rounded-xl border border-emerald-200 space-y-3.5 animate-fade-in">
                           <div className="flex items-center justify-between">
                             <span className="text-xs font-bold text-emerald-900 font-mono flex items-center gap-1.5">
                               <FileAudio className="w-4 h-4 text-emerald-700" />
-                              Unggah Berkas Audio Kustom (.mp3, .wav, .ogg):
+                              Konfigurasi File Audio Kustom (.mp3, .wav, .ogg, .m4a):
                             </span>
-                            {config.customAlarmAudioUrl && (
+                            {(config.customAlarmAudioUrl || config.hasCustomAlarmAudio) && (
                               <button
                                 type="button"
-                                onClick={() => onUpdateConfig({
-                                  ...config,
-                                  customAlarmAudioUrl: undefined,
-                                  customAlarmName: undefined,
-                                  alarmType: 'SIREN'
-                                })}
-                                className="text-[10px] font-bold text-rose-600 hover:text-rose-800 font-mono cursor-pointer"
+                                onClick={() => {
+                                  setCustomAlarmAudioData(null);
+                                  onUpdateConfig({
+                                    ...config,
+                                    customAlarmAudioUrl: undefined,
+                                    customAlarmName: undefined,
+                                    hasCustomAlarmAudio: false,
+                                    alarmType: 'SIREN'
+                                  });
+                                  alert('Audio kustom dihapus. Alarm dikembalikan ke Sirine Standar.');
+                                }}
+                                className="text-[10px] font-bold text-rose-600 hover:text-rose-800 font-mono cursor-pointer flex items-center gap-1"
                               >
+                                <Trash2 className="w-3 h-3" />
                                 Hapus Audio Kustom
                               </button>
                             )}
                           </div>
 
-                          <div className="flex flex-col sm:flex-row sm:items-center gap-3">
-                            <label className="px-4 py-2 bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl text-xs font-bold cursor-pointer transition flex items-center justify-center gap-2 shadow-xs shrink-0 active:scale-95">
-                              <Upload className="w-3.5 h-3.5" />
-                              <span>Pilih File Audio Dari Komputer</span>
-                              <input
-                                type="file"
-                                accept="audio/*"
-                                onChange={handleCustomAudioFileUpload}
-                                className="hidden"
-                              />
-                            </label>
-
-                            <div className="text-xs text-slate-600 font-mono truncate">
-                              {config.customAlarmName ? (
-                                <span className="text-emerald-800 font-bold flex items-center gap-1">
-                                  <Check className="w-3.5 h-3.5 text-emerald-600" />
-                                  Terpasang: {config.customAlarmName}
-                                </span>
-                              ) : config.customAlarmAudioUrl ? (
-                                <span className="text-emerald-800 font-bold">
-                                  Audio kustom tersimpan aktif
-                                </span>
-                              ) : (
-                                <span className="text-slate-400 italic">
-                                  Belum ada file audio yang diunggah (Maks. 8 MB)
-                                </span>
-                              )}
+                          <div className="grid grid-cols-1 md:grid-cols-2 gap-3 items-center">
+                            {/* Upload File */}
+                            <div className="flex flex-col gap-2">
+                              <label className="px-4 py-2 bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl text-xs font-bold cursor-pointer transition flex items-center justify-center gap-2 shadow-xs shrink-0 active:scale-95">
+                                <Upload className="w-3.5 h-3.5" />
+                                <span>Pilih Berkas Audio dari Perangkat</span>
+                                <input
+                                  type="file"
+                                  accept="audio/*"
+                                  onChange={handleCustomAudioFileUpload}
+                                  className="hidden"
+                                />
+                              </label>
+                              <span className="text-[10px] text-slate-500 font-mono text-center">
+                                *Dianjurkan durasi 2–6 detik (Maks. 2 MB)
+                              </span>
                             </div>
+
+                            {/* Direct URL Input */}
+                            <div className="space-y-1">
+                              <div className="flex items-center gap-1.5">
+                                <input
+                                  type="url"
+                                  value={customAudioUrlInput}
+                                  onChange={(e) => setCustomAudioUrlInput(e.target.value)}
+                                  placeholder="Atau tempel URL langsung (https://...mp3)"
+                                  className="flex-1 px-3 py-1.5 bg-white border border-emerald-300 rounded-xl text-xs font-mono text-slate-800 placeholder-slate-400 focus:outline-none focus:ring-1 focus:ring-emerald-500"
+                                />
+                                <button
+                                  type="button"
+                                  onClick={handleSaveCustomAudioUrl}
+                                  className="px-3 py-1.5 bg-emerald-700 hover:bg-emerald-800 text-white rounded-xl text-xs font-bold font-mono transition shrink-0 cursor-pointer"
+                                >
+                                  Simpan URL
+                                </button>
+                              </div>
+                              <span className="text-[10px] text-slate-500 font-mono block">
+                                Mendukung link direct audio dari Google Drive publik, Dropbox, atau hosting
+                              </span>
+                            </div>
+                          </div>
+
+                          {/* Audio Status */}
+                          <div className="p-2.5 bg-white rounded-xl border border-emerald-200 text-xs font-mono">
+                            {config.customAlarmName ? (
+                              <span className="text-emerald-800 font-bold flex items-center gap-1.5">
+                                <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
+                                Audio Aktif Terpasang: <strong>{config.customAlarmName}</strong>
+                              </span>
+                            ) : (config.customAlarmAudioUrl || config.hasCustomAlarmAudio) ? (
+                              <span className="text-emerald-800 font-bold flex items-center gap-1.5">
+                                <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
+                                Audio kustom tersimpan dan tersinkronisasi ke seluruh HP siswa
+                              </span>
+                            ) : (
+                              <span className="text-slate-400 italic">
+                                Belum ada berkas audio kustom. Silakan pilih berkas atau tempel link di atas.
+                              </span>
+                            )}
                           </div>
                         </div>
                       )}
@@ -5643,7 +5919,7 @@ export default function AdminPanel({
                           ) : (
                             <>
                               <Volume2 className="w-4 h-4 text-white" />
-                              <span>Uji Coba Bunyi Alarm Sekarang</span>
+                              <span>Uji Coba Alarm Aktif Sekarang</span>
                             </>
                           )}
                         </button>
@@ -5651,12 +5927,13 @@ export default function AdminPanel({
                         {isPlayingAlarmTest && (
                           <span className="text-xs font-bold font-mono text-rose-600 flex items-center gap-1.5 bg-rose-50 px-2.5 py-1 rounded-lg border border-rose-200">
                             <span className="w-2 h-2 rounded-full bg-rose-600 animate-ping"></span>
-                            Alarm Sedang Berbunyi...
+                            Alarm Sedang Berbunyi di Speaker...
                           </span>
                         )}
 
-                        <span className="text-[11px] text-slate-400 font-mono ml-auto hidden sm:inline">
-                          *Suara ini akan berbunyi di komputer siswa saat siswa keluar layar penuh
+                        <span className="text-[11px] text-emerald-700 font-mono ml-auto font-bold flex items-center gap-1">
+                          <Check className="w-3.5 h-3.5 text-emerald-600" />
+                          Tersimpan Otomatis ke Cloud &amp; HP Siswa
                         </span>
                       </div>
                     </div>
@@ -6802,16 +7079,41 @@ export default function AdminPanel({
                     );
                   })()}
 
+                  {/* Action Button: Save & Broadcast Refresh */}
+                  <div className="flex flex-col sm:flex-row items-center justify-between gap-4 p-5 bg-white rounded-2xl border border-slate-200 shadow-sm">
+                    <div className="text-xs">
+                      <p className="font-bold text-slate-800 flex items-center gap-1.5">
+                        <CheckCircle2 className="w-4 h-4 text-emerald-600" />
+                        Pembaruan Otomatis ke Cloud Database
+                      </p>
+                      <p className="text-slate-500 text-[11px] mt-0.5">
+                        Gunakan tombol di samping untuk menyimpan sekaligus menyiarkan sinyal refresh instan ke seluruh HP siswa.
+                      </p>
+                    </div>
+                    <div className="flex items-center gap-2.5 w-full sm:w-auto">
+                      <button
+                        type="button"
+                        id="btn-admin-save-and-refresh-bottom"
+                        onClick={() => handleSendRefreshToStudents('SOFT', 'Admin menyimpan konfigurasi ujian terbaru')}
+                        disabled={isSendingRefresh}
+                        className="w-full sm:w-auto px-5 py-3 bg-emerald-600 hover:bg-emerald-500 text-white font-extrabold rounded-xl text-xs sm:text-sm transition flex items-center justify-center gap-2 cursor-pointer shadow-sm border border-emerald-700/30"
+                      >
+                        <RefreshCw className={`w-4 h-4 ${isSendingRefresh ? 'animate-spin' : ''}`} />
+                        <span>Simpan & Refresh Seluruh Siswa</span>
+                      </button>
+                    </div>
+                  </div>
+
                   {/* Persistent Info Box at bottom */}
-                  <div className="p-4 bg-teal-55 bg-teal-50 border border-teal-200 rounded-xl text-xs text-teal-800 space-y-2">
-                <div className="font-bold uppercase tracking-wider font-mono flex items-center gap-1.5">
-                  <ShieldCheck className="w-4 h-4 text-teal-600" />
-                  Kombinasi Pengawasan Aktif
-                </div>
-                <p className="leading-relaxed text-slate-650">
-                  Semua form konfigurasi ini langsung tersambung ke layar komputer siswa peserta ujian secara aman. Ketika durasi diubah, nilai hitung mundur sisa ujian siswa akan mendaftar ulang secara otomatis.
-                </p>
-              </div>
+                  <div className="p-4 bg-teal-50 border border-teal-200 rounded-xl text-xs text-teal-800 space-y-2">
+                    <div className="font-bold uppercase tracking-wider font-mono flex items-center gap-1.5">
+                      <ShieldCheck className="w-4 h-4 text-teal-600" />
+                      Kombinasi Pengawasan Aktif
+                    </div>
+                    <p className="leading-relaxed text-slate-650">
+                      Semua form konfigurasi ini langsung tersambung ke layar komputer siswa peserta ujian secara aman. Ketika durasi diubah, nilai hitung mundur sisa ujian siswa akan mendaftar ulang secara otomatis tanpa menghapus jawaban.
+                    </p>
+                  </div>
                 </form>
               </div>
             </div>
@@ -9431,6 +9733,151 @@ export default function AdminPanel({
               >
                 <Megaphone className="w-4 h-4" />
                 <span>Kirim Pengumuman Sekarang</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ADMIN FORCED MASS REFRESH MODAL (KHUSUS ADMIN) */}
+      {showRefreshModal && (
+        <div className="fixed inset-0 bg-slate-900/65 backdrop-blur-xs flex items-center justify-center p-4 z-50 animate-fade-in overflow-y-auto">
+          <div className="bg-white rounded-3xl shadow-2xl border border-slate-200 p-6 md:p-8 max-w-xl w-full my-8 space-y-5">
+            {/* Modal Header */}
+            <div className="flex items-center justify-between pb-4 border-b border-slate-100">
+              <div className="flex items-center gap-3">
+                <div className="w-11 h-11 rounded-2xl bg-emerald-50 border border-emerald-100 text-emerald-600 flex items-center justify-center font-bold shadow-xs">
+                  <RefreshCw className="w-6 h-6 text-emerald-600" />
+                </div>
+                <div>
+                  <h3 className="text-lg font-black text-slate-900 tracking-tight flex items-center gap-2">
+                    <span>Refresh Massal Seluruh Siswa</span>
+                    <span className="px-2 py-0.5 rounded-full text-[10px] font-mono bg-emerald-100 text-emerald-800 font-bold">
+                      Khusus Admin
+                    </span>
+                  </h3>
+                  <p className="text-xs text-slate-500">
+                    Kirim perintah sinkronisasi langsung ke seluruh HP siswa yang sedang membuka ujian.
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowRefreshModal(false)}
+                className="w-8 h-8 rounded-full bg-slate-100 hover:bg-slate-200 text-slate-500 hover:text-slate-800 flex items-center justify-center transition cursor-pointer"
+              >
+                ✕
+              </button>
+            </div>
+
+            {/* Status Aktif Siswa Info Box */}
+            <div className="p-4 bg-slate-50 rounded-2xl border border-slate-200/80 flex items-center justify-between gap-3">
+              <div>
+                <span className="text-[10px] font-mono font-bold text-slate-400 uppercase tracking-wider block">
+                  Target Penerima Sinyal
+                </span>
+                <div className="flex items-center gap-2 mt-0.5">
+                  <span className="w-2.5 h-2.5 rounded-full bg-emerald-500 animate-ping" />
+                  <span className="text-sm font-extrabold text-slate-800">
+                    {students.filter(s => s.status === 'SEDANG_MENGERJAKAN').length} Siswa Sedang Mengerjakan
+                  </span>
+                  <span className="text-xs text-slate-400 font-medium">
+                    (dari total {students.length} peserta)
+                  </span>
+                </div>
+              </div>
+              <div className="px-2.5 py-1 bg-white border border-slate-200 rounded-xl text-[11px] font-mono font-bold text-indigo-600">
+                Semua HP Terhubung
+              </div>
+            </div>
+
+            {/* Pilihan Mode Refresh */}
+            <div className="space-y-2">
+              <label className="text-xs font-bold text-slate-800 font-mono uppercase tracking-wider block">
+                Pilih Tipe Refresh:
+              </label>
+              
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div
+                  onClick={() => setRefreshMode('SOFT')}
+                  className={`p-4 rounded-2xl border transition-all cursor-pointer select-none ${
+                    refreshMode === 'SOFT'
+                      ? 'bg-indigo-50/70 border-indigo-500 text-indigo-950 ring-2 ring-indigo-500/20 shadow-xs'
+                      : 'bg-white border-slate-200 hover:bg-slate-50 text-slate-700'
+                  }`}
+                >
+                  <div className="flex items-center justify-between mb-2">
+                    <span className="text-xs font-black flex items-center gap-1.5 text-indigo-700">
+                      <Sparkles className="w-3.5 h-3.5" />
+                      Refresh Halus (Hot-Update)
+                    </span>
+                    <span className="px-1.5 py-0.5 rounded text-[9px] font-mono font-bold bg-emerald-100 text-emerald-800">
+                      Rekomendasi
+                    </span>
+                  </div>
+                  <p className="text-[11px] text-slate-600 leading-snug">
+                    Memperbarui naskah bank soal, durasi & jadwal <strong>tanpa reload halaman browser</strong>. Jawaban siswa 100% aman dan ujian tidak terganggu.
+                  </p>
+                </div>
+
+                <div
+                  onClick={() => setRefreshMode('HARD')}
+                  className={`p-4 rounded-2xl border transition-all cursor-pointer select-none ${
+                    refreshMode === 'HARD'
+                      ? 'bg-amber-50/70 border-amber-500 text-amber-950 ring-2 ring-amber-500/20 shadow-xs'
+                      : 'bg-white border-slate-200 hover:bg-slate-50 text-slate-700'
+                  }`}
+                >
+                  <div className="flex items-center justify-between mb-2">
+                    <span className="text-xs font-black flex items-center gap-1.5 text-amber-800">
+                      <RefreshCw className="w-3.5 h-3.5" />
+                      Muat Ulang Halaman
+                    </span>
+                    <span className="px-1.5 py-0.5 rounded text-[9px] font-mono font-bold bg-amber-100 text-amber-800">
+                      Hard Reload
+                    </span>
+                  </div>
+                  <p className="text-[11px] text-slate-600 leading-snug">
+                    Memerintahkan browser di HP seluruh siswa untuk <strong>reload halaman</strong> secara otomatis. Jawaban siswa tetap tersimpan aman di HP.
+                  </p>
+                </div>
+              </div>
+            </div>
+
+            {/* Input Alasan Pembaruan */}
+            <div className="space-y-1.5">
+              <label className="text-xs font-bold text-slate-800 font-mono uppercase tracking-wider block">
+                Pesan Notifikasi untuk Siswa:
+              </label>
+              <input
+                type="text"
+                value={refreshReason}
+                onChange={(e) => setRefreshReason(e.target.value)}
+                placeholder="Contoh: Pembaruan durasi ujian & ralat butir naskah soal dari Admin"
+                className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-900 focus:bg-white focus:outline-none focus:border-indigo-600 font-medium"
+              />
+              <span className="text-[11px] text-slate-400 font-mono block">
+                * Pesan ini akan muncul sekilas di bagian atas layar HP seluruh siswa saat data disinkronkan.
+              </span>
+            </div>
+
+            {/* Action Buttons */}
+            <div className="flex items-center justify-end gap-3 pt-4 border-t border-slate-100">
+              <button
+                type="button"
+                onClick={() => setShowRefreshModal(false)}
+                className="px-5 py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold text-xs rounded-xl transition cursor-pointer"
+              >
+                Batal
+              </button>
+              <button
+                type="button"
+                disabled={isSendingRefresh}
+                onClick={() => handleSendRefreshToStudents(refreshMode, refreshReason)}
+                className="px-6 py-2.5 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white font-extrabold text-xs rounded-xl transition flex items-center gap-2 shadow-sm cursor-pointer"
+              >
+                <RefreshCw className={`w-4 h-4 ${isSendingRefresh ? 'animate-spin' : ''}`} />
+                <span>{isSendingRefresh ? 'Menyiarkan Sinyal...' : 'Siarkan Refresh Sekarang'}</span>
               </button>
             </div>
           </div>

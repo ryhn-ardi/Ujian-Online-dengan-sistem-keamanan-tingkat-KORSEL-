@@ -13,6 +13,12 @@ import {
   getDocFromServer
 } from 'firebase/firestore';
 import { db } from '../lib/firebase';
+import {
+  setCustomAlarmAudioData,
+  getCustomAlarmAudioData,
+  setCustomAnnouncementAudioData,
+  getCustomAnnouncementAudioData
+} from './alarmAudio';
 
 const STUDENTS_KEY = 'proktor_students';
 const QUESTIONS_KEY = 'proktor_questions';
@@ -409,12 +415,22 @@ onSnapshot(
       recordFirestoreRead(1, 'CONFIG_SYNC', 'config/examConfig', 'Sinkronisasi konfigurasi ujian');
       const data = snapshot.data() as ExamConfig;
       localConfig = data;
-      localStorage.setItem(CONFIG_KEY, JSON.stringify(data));
+      try {
+        localStorage.setItem(CONFIG_KEY, JSON.stringify(data));
+      } catch (e) {}
       if (typeof document !== 'undefined' && data.examTitle) {
         document.title = data.examTitle;
       }
       initialSyncCompleted.config = true;
       notifySubscribers('SYNC_CONFIG');
+
+      // Auto load custom audio in background if configured and not present locally
+      if ((data.alarmType === 'CUSTOM_AUDIO' || data.hasCustomAlarmAudio) && !getCustomAlarmAudioData()) {
+        fetchCustomAlarmAudioFromCloud();
+      }
+      if ((data.announcementSoundType === 'CUSTOM_AUDIO' || data.hasCustomAnnouncementAudio) && !getCustomAnnouncementAudioData()) {
+        fetchCustomAnnouncementAudioFromCloud();
+      }
     } else {
       // Config collection has not been seeded, check if we have cached config before writing initial
       const cachedCfg = getStored<ExamConfig>(CONFIG_KEY, null as any);
@@ -455,10 +471,14 @@ onSnapshot(
       recordFirestoreRead(snapshot.size, 'QUESTIONS_SYNC', 'questions', `Mengunduh ${snapshot.size} butir bank soal aktif`);
       const list: Question[] = [];
       snapshot.forEach((doc) => {
-        list.push(doc.data() as Question);
+        const q = doc.data() as Question;
+        list.push({
+          ...q,
+          id: String(q?.id || doc.id).trim()
+        });
       });
-      // Sort to preserve original list index / ID structure
-      list.sort((a, b) => a.id.localeCompare(b.id));
+      // Sort to preserve original list index / ID structure safely
+      list.sort((a, b) => String(a.id || '').localeCompare(String(b.id || '')));
 
       localQuestions = list;
       localStorage.setItem(QUESTIONS_KEY, JSON.stringify(list));
@@ -632,20 +652,164 @@ onSnapshot(
 );
 
 // 5. CLOUD PROPAGATION API EXPORTS
+
+// Fetch custom audio documents from cloud if needed
+export async function fetchCustomAlarmAudioFromCloud(): Promise<string | null> {
+  try {
+    const snap = await getDoc(doc(db, 'config', 'customAlarmAudio'));
+    if (snap.exists()) {
+      const data = snap.data();
+      if (data?.audioData) {
+        setCustomAlarmAudioData(data.audioData);
+        recordFirestoreRead(1, 'FETCH_CUSTOM_AUDIO', 'config/customAlarmAudio', 'Mengunduh audio alarm kustom dari cloud');
+        return data.audioData;
+      }
+    }
+  } catch (e) {
+    console.warn('Failed to fetch custom alarm audio from cloud:', e);
+  }
+  return null;
+}
+
+export async function fetchCustomAnnouncementAudioFromCloud(): Promise<string | null> {
+  try {
+    const snap = await getDoc(doc(db, 'config', 'customAnnouncementAudio'));
+    if (snap.exists()) {
+      const data = snap.data();
+      if (data?.audioData) {
+        setCustomAnnouncementAudioData(data.audioData);
+        recordFirestoreRead(1, 'FETCH_CUSTOM_ANNOUNCEMENT_AUDIO', 'config/customAnnouncementAudio', 'Mengunduh audio pengumuman kustom dari cloud');
+        return data.audioData;
+      }
+    }
+  } catch (e) {
+    console.warn('Failed to fetch custom announcement audio from cloud:', e);
+  }
+  return null;
+}
+
+// Clear local questions cache
+export function clearLocalQuestionsCache(): void {
+  try {
+    localStorage.removeItem(QUESTIONS_KEY);
+    localQuestions = [];
+    notifySubscribers('SYNC_QUESTIONS');
+  } catch (e) {
+    console.warn('Failed to clear local questions cache:', e);
+  }
+}
+
+// Force download fresh questions directly from Firestore server
+export async function refreshQuestionsFromServer(): Promise<Question[]> {
+  try {
+    localStorage.removeItem(QUESTIONS_KEY);
+    const snap = await getDocs(collection(db, 'questions'));
+    recordFirestoreRead(snap.size, 'REFRESH_QUESTIONS', 'questions', `Mengunduh ulang ${snap.size} butir bank soal aktif dari server`);
+
+    const list: Question[] = [];
+    snap.forEach((d) => {
+      const q = d.data() as Question;
+      list.push({
+        ...q,
+        id: String(q?.id || d.id).trim()
+      });
+    });
+    list.sort((a, b) => String(a.id || '').localeCompare(String(b.id || '')));
+
+    localQuestions = list;
+    try {
+      localStorage.setItem(QUESTIONS_KEY, JSON.stringify(list));
+    } catch (e) {}
+
+    initialSyncCompleted.questions = true;
+    notifySubscribers('SYNC_QUESTIONS');
+    return list;
+  } catch (err) {
+    console.warn('Failed to refresh questions from server:', err);
+    return localQuestions;
+  }
+}
+
+/**
+ * Admin triggers mass refresh signal for all active student devices
+ */
+export async function triggerStudentsRefresh(
+  type: 'SOFT' | 'HARD' = 'SOFT',
+  reason = 'Admin telah memperbarui konfigurasi ujian & naskah soal'
+): Promise<void> {
+  const currentCfg = getExamConfig();
+  const updatedCfg: ExamConfig = {
+    ...currentCfg,
+    forcedRefreshTimestamp: Date.now(),
+    forcedRefreshType: type,
+    forcedRefreshReason: reason
+  };
+  await saveExamConfig(updatedCfg, true);
+}
+
 // Save global config parameters
 export async function saveExamConfig(config: ExamConfig, broadcast = true): Promise<void> {
   localConfig = config;
-  localStorage.setItem(CONFIG_KEY, JSON.stringify(config));
+  try {
+    localStorage.setItem(CONFIG_KEY, JSON.stringify(config));
+  } catch (e) {
+    console.warn('LocalStorage error on config save:', e);
+  }
   if (typeof document !== 'undefined' && config.examTitle) {
     document.title = config.examTitle;
   }
   if (broadcast) notifySubscribers('SYNC_CONFIG');
 
+  const customAlarmData = config.customAlarmAudioUrl;
+  const isAlarmDataUri = Boolean(customAlarmData && customAlarmData.startsWith('data:'));
+
+  const customAnnouncementData = config.customAnnouncementAudioUrl;
+  const isAnnouncementDataUri = Boolean(customAnnouncementData && customAnnouncementData.startsWith('data:'));
+
+  // Separate huge base64 data URIs from config document to respect Firestore 1MB document limit
+  const firestoreSafeConfig: ExamConfig = {
+    ...config,
+    customAlarmAudioUrl: isAlarmDataUri ? undefined : config.customAlarmAudioUrl,
+    hasCustomAlarmAudio: Boolean(config.hasCustomAlarmAudio || isAlarmDataUri || config.customAlarmAudioUrl),
+    customAnnouncementAudioUrl: isAnnouncementDataUri ? undefined : config.customAnnouncementAudioUrl,
+    hasCustomAnnouncementAudio: Boolean(config.hasCustomAnnouncementAudio || isAnnouncementDataUri || config.customAnnouncementAudioUrl)
+  };
+
   try {
-    await setDoc(doc(db, 'config', 'examConfig'), sanitizeForFirestore(config));
+    await setDoc(doc(db, 'config', 'examConfig'), sanitizeForFirestore(firestoreSafeConfig));
     recordFirestoreWrite(1, 'SAVE_CONFIG', 'config/examConfig', 'Memperbarui konfigurasi ujian ke cloud');
   } catch (err) {
     handleFirestoreError(err, OperationType.WRITE, 'config/examConfig');
+  }
+
+  // If custom alarm data URI was provided, save to dedicated doc
+  if (isAlarmDataUri && customAlarmData) {
+    try {
+      setCustomAlarmAudioData(customAlarmData);
+      await setDoc(doc(db, 'config', 'customAlarmAudio'), {
+        audioData: customAlarmData,
+        name: config.customAlarmName || 'audio_alarm_kustom',
+        updatedAt: new Date().toISOString()
+      });
+      recordFirestoreWrite(1, 'SAVE_CUSTOM_AUDIO', 'config/customAlarmAudio', 'Menyimpan berkas audio alarm kustom ke cloud');
+    } catch (err) {
+      console.warn('Failed to upload custom alarm audio document:', err);
+    }
+  }
+
+  // If custom announcement data URI was provided, save to dedicated doc
+  if (isAnnouncementDataUri && customAnnouncementData) {
+    try {
+      setCustomAnnouncementAudioData(customAnnouncementData);
+      await setDoc(doc(db, 'config', 'customAnnouncementAudio'), {
+        audioData: customAnnouncementData,
+        name: config.customAnnouncementName || 'audio_pengumuman_kustom',
+        updatedAt: new Date().toISOString()
+      });
+      recordFirestoreWrite(1, 'SAVE_CUSTOM_ANNOUNCEMENT_AUDIO', 'config/customAnnouncementAudio', 'Menyimpan audio pengumuman kustom ke cloud');
+    } catch (err) {
+      console.warn('Failed to upload custom announcement audio document:', err);
+    }
   }
 }
 

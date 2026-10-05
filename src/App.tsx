@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   getStudents,
   saveStudents,
@@ -17,14 +17,15 @@ import {
   saveSingleStudentLocallyOnly,
   disableAllStudentsSync,
   enableAllStudentsSync,
-  subscribeToMyStudentSession
+  subscribeToMyStudentSession,
+  refreshQuestionsFromServer
 } from './utils/sync';
 import { Student, Question, ExamConfig, StudentStatus, StudentUser, BroadcastAnnouncement } from './types';
 import StudentRegistration from './components/StudentRegistration';
 import StudentExam from './components/StudentExam';
 import AdminPanel from './components/AdminPanel';
 import ProctorPanel from './components/ProctorPanel';
-import { ShieldCheck, GraduationCap, Award, RefreshCw, XCircle, ArrowRight, CheckCircle2, ChevronRight, AlertTriangle, BookOpen } from 'lucide-react';
+import { ShieldCheck, GraduationCap, Award, RefreshCw, XCircle, ArrowRight, CheckCircle2, ChevronRight, AlertTriangle, BookOpen, Radio, Sparkles } from 'lucide-react';
 
 // Shared helper to calculate actual slot/subject questions, score, and correct count for a student
 export function getStudentMetrics(s: Student, questionsList: Question[]) {
@@ -190,6 +191,65 @@ export default function App() {
       enableAllStudentsSync();
     }
   }, [role, currentStudentId]);
+
+  // Admin Forced Mass Refresh Listener for Students (Khusus Admin Trigger)
+  const [studentRefreshNotice, setStudentRefreshNotice] = useState<{
+    show: boolean;
+    reason: string;
+    type: 'SOFT' | 'HARD';
+  } | null>(null);
+
+  const lastProcessedRefreshRef = useRef<number>(
+    (() => {
+      try {
+        const stored = localStorage.getItem('last_handled_admin_refresh');
+        return stored ? parseInt(stored, 10) : (config.forcedRefreshTimestamp || 0);
+      } catch (e) {
+        return config.forcedRefreshTimestamp || 0;
+      }
+    })()
+  );
+
+  useEffect(() => {
+    if (!config.forcedRefreshTimestamp) return;
+
+    if (config.forcedRefreshTimestamp > lastProcessedRefreshRef.current) {
+      lastProcessedRefreshRef.current = config.forcedRefreshTimestamp;
+      try {
+        localStorage.setItem('last_handled_admin_refresh', String(config.forcedRefreshTimestamp));
+      } catch (e) {}
+
+      // Refresh applies to student views (SETUP, STUDENT_EXAM, STUDENT_FINISHED)
+      if (role === 'SETUP' || role === 'STUDENT_EXAM' || role === 'STUDENT_FINISHED') {
+        const refreshType = config.forcedRefreshType || 'SOFT';
+        const reason = config.forcedRefreshReason || 'Pembaruan konfigurasi ujian & naskah soal dari Admin.';
+
+        setStudentRefreshNotice({
+          show: true,
+          reason,
+          type: refreshType
+        });
+
+        // Silently re-fetch latest questions from server
+        refreshQuestionsFromServer().then((freshQs) => {
+          if (freshQs && freshQs.length > 0) {
+            setQuestions([...freshQs]);
+          }
+        });
+
+        if (refreshType === 'HARD') {
+          setTimeout(() => {
+            window.location.reload();
+          }, 2500);
+        } else {
+          // Auto hide banner after 6s
+          setTimeout(() => {
+            setStudentRefreshNotice(null);
+          }, 6000);
+        }
+      }
+    }
+  }, [config.forcedRefreshTimestamp, config.forcedRefreshType, config.forcedRefreshReason, role]);
 
   // Sync state helpers
   const handleUpdateStudents = (updatedList: Student[]) => {
@@ -549,6 +609,41 @@ export default function App() {
 
   return (
     <div className="min-h-screen bg-slate-50 text-slate-800">
+      {/* Admin Forced Mass Refresh Toast for Students */}
+      {studentRefreshNotice?.show && (
+        <div className="fixed top-4 inset-x-4 max-w-md mx-auto z-[99999] bg-slate-900/95 backdrop-blur-md text-white border border-indigo-500/50 shadow-2xl rounded-2xl p-4 flex items-start gap-3.5 animate-fade-in select-none">
+          <div className="w-9 h-9 rounded-xl bg-indigo-600 flex items-center justify-center shrink-0 shadow-xs">
+            <RefreshCw className={`w-5 h-5 text-white ${studentRefreshNotice.type === 'HARD' ? 'animate-spin' : ''}`} />
+          </div>
+          <div className="flex-1 min-w-0">
+            <div className="flex items-center justify-between gap-2">
+              <h4 className="text-xs font-black text-indigo-300 font-mono uppercase tracking-wider flex items-center gap-1.5">
+                <span>Pembaruan dari Admin</span>
+                <span className="px-1.5 py-0.2 bg-indigo-500/30 text-indigo-200 text-[10px] rounded">Live Sync</span>
+              </h4>
+              <button
+                onClick={() => setStudentRefreshNotice(null)}
+                className="text-slate-400 hover:text-white p-0.5 rounded cursor-pointer"
+                title="Tutup Notifikasi"
+              >
+                ✕
+              </button>
+            </div>
+            <p className="text-xs text-slate-200 mt-1 leading-snug font-medium">
+              {studentRefreshNotice.reason}
+            </p>
+            <div className="mt-2 flex items-center gap-1.5 text-[10px] font-mono text-emerald-400 font-bold">
+              <CheckCircle2 className="w-3.5 h-3.5 shrink-0" />
+              <span>
+                {studentRefreshNotice.type === 'HARD'
+                  ? 'Memuat ulang halaman browser... Jawaban tersimpan aman.'
+                  : 'Naskah soal & konfigurasi telah diperbarui. Jawaban Anda tetap aman.'}
+              </span>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* 1. SETUP / WELCOME SCREEN */}
       {role === 'SETUP' && (
         <StudentRegistration

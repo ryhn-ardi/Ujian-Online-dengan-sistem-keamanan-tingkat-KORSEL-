@@ -1,94 +1,13 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Play, AlertTriangle, Wifi, WifiOff, CloudOff, ShieldAlert, KeyRound, Clock, ChevronLeft, ChevronRight, CheckSquare, Send, CheckCircle, RefreshCw, Check, Radio, Ticket, Lock, Unlock, BellOff, Smartphone, Volume2, Info, BookOpen, Megaphone } from 'lucide-react';
+import { Play, AlertTriangle, Wifi, WifiOff, CloudOff, ShieldAlert, KeyRound, Clock, ChevronLeft, ChevronRight, CheckSquare, Send, CheckCircle, CheckCircle2, RefreshCw, Check, Radio, Ticket, Lock, Unlock, BellOff, Smartphone, Volume2, Info, BookOpen, Megaphone } from 'lucide-react';
 import { Student, Question, ExamConfig, BroadcastAnnouncement } from '../types';
 import { getStudentFromServer, getExamSubjects } from '../utils/sync';
 import { RichExamContent } from './RichExamContent';
 import { useRealtimeWIB } from '../utils/timeWib';
-import { playAlarmSound, playAnnouncementSound } from '../utils/alarmAudio';
-
-let sharedAudioContext: AudioContext | null = null;
+import { playAlarmSound, playAnnouncementSound, warmUpAlarmAudioContext, stopAllAlarmSounds } from '../utils/alarmAudio';
 
 export function warmUpAudioContext(): AudioContext | null {
-  try {
-    const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
-    if (!AudioContextClass) return null;
-    if (!sharedAudioContext || sharedAudioContext.state === 'closed') {
-      sharedAudioContext = new AudioContextClass();
-    }
-    if (sharedAudioContext.state === 'suspended') {
-      sharedAudioContext.resume().catch(() => {});
-    }
-    return sharedAudioContext;
-  } catch (e) {
-    return null;
-  }
-}
-
-// Synthesizer Siren Alarm (Emergency high-frequency sweeping pitch)
-function playSirenAlarm() {
-  try {
-    // 1. Trigger repetitive intense physical vibration to make loud mechanical rattling noise on desks
-    if (typeof navigator !== 'undefined' && navigator.vibrate) {
-      try {
-        navigator.vibrate([600, 200, 600, 200, 600, 200, 600, 200, 600, 200, 600]);
-      } catch (e) {}
-    }
-
-    const ctx = warmUpAudioContext();
-    if (!ctx) return;
-    if (ctx.state === 'suspended') {
-      ctx.resume().catch(() => {});
-    }
-
-    const now = ctx.currentTime;
-    const osc1 = ctx.createOscillator();
-    const osc2 = ctx.createOscillator();
-    const lfo = ctx.createOscillator();
-    const lfoGain = ctx.createGain();
-    const mainGain = ctx.createGain();
-    
-    osc1.type = 'sawtooth';
-    osc2.type = 'square';
-    
-    osc1.frequency.setValueAtTime(650, now);
-    osc2.frequency.setValueAtTime(850, now);
-    
-    lfo.frequency.setValueAtTime(4.5, now); // Sweeping siren cycle
-    lfoGain.gain.setValueAtTime(180, now); // sweep frequency amplitude
-    
-    lfo.connect(lfoGain);
-    lfoGain.connect(osc1.frequency);
-    lfoGain.connect(osc2.frequency);
-    
-    const oscGain1 = ctx.createGain();
-    const oscGain2 = ctx.createGain();
-    oscGain1.gain.setValueAtTime(0.85, now);
-    oscGain2.gain.setValueAtTime(0.75, now);
-    
-    osc1.connect(oscGain1);
-    osc2.connect(oscGain2);
-    
-    oscGain1.connect(mainGain);
-    oscGain2.connect(mainGain);
-    
-    mainGain.connect(ctx.destination);
-    
-    // Play with highly amplified envelope (+250% software boost)
-    mainGain.gain.setValueAtTime(0, now);
-    mainGain.gain.linearRampToValueAtTime(2.5, now + 0.08); // Ultra-loud rise
-    mainGain.gain.setValueAtTime(2.5, now + 4.5);
-    mainGain.gain.linearRampToValueAtTime(0.01, now + 5.0); // Fast fall
-    
-    osc1.start(now);
-    osc2.start(now);
-    lfo.start(now);
-    
-    osc1.stop(now + 5.0);
-    osc2.stop(now + 5.0);
-    lfo.stop(now + 5.0);
-  } catch (err) {
-    console.error('Failed to play synthesized siren sound:', err);
-  }
+  return warmUpAlarmAudioContext();
 }
 
 interface StudentExamProps {
@@ -164,6 +83,34 @@ export default function StudentExam({
   const [isGraceActive, setIsGraceActive] = useState(false);
   const [violationToast, setViolationToast] = useState<{ message: string; count: number; max: number } | null>(null);
   const [dndConfirmed, setDndConfirmed] = useState(false);
+  const [isTestingAudio, setIsTestingAudio] = useState(false);
+
+  const handleTestAudioInExam = () => {
+    if (isTestingAudio) {
+      stopAllAlarmSounds();
+      setIsTestingAudio(false);
+      return;
+    }
+    warmUpAlarmAudioContext();
+    setIsTestingAudio(true);
+    playAlarmSound(config);
+    setTimeout(() => {
+      setIsTestingAudio(false);
+    }, 4000);
+  };
+
+  const getAlarmTypeName = (type?: string) => {
+    switch (type) {
+      case 'BUZZER': return 'Buzzer Elektronik';
+      case 'NUCLEAR': return 'Sirine Darurat Nuklir';
+      case 'BELL': return 'Lonceng Peringatan';
+      case 'HORN': return 'Klakson Peringatan Ganda';
+      case 'AMBULANCE': return 'Sirine Dua Nada Ambulans';
+      case 'CUSTOM_AUDIO': return config.customAlarmName ? `Kustom (${config.customAlarmName})` : 'Audio Kustom';
+      default: return 'Sirine Polisi / SWAT';
+    }
+  };
+
   const [displayedAnnouncement, setDisplayedAnnouncement] = useState<BroadcastAnnouncement | null>(null);
   const dismissedAnnouncementIdRef = useRef<string>('');
   const isUnlockingRef = useRef(false);
@@ -194,6 +141,29 @@ export default function StudentExam({
       setDisplayedAnnouncement(null);
     }
   };
+
+  // Real-time admin mass refresh notice inside active exam
+  const lastExamRefreshTimestampRef = useRef<number>(config.forcedRefreshTimestamp || 0);
+  const [examRefreshToast, setExamRefreshToast] = useState<{
+    show: boolean;
+    reason: string;
+    type?: 'SOFT' | 'HARD';
+  } | null>(null);
+
+  useEffect(() => {
+    if (config.forcedRefreshTimestamp && config.forcedRefreshTimestamp > lastExamRefreshTimestampRef.current) {
+      lastExamRefreshTimestampRef.current = config.forcedRefreshTimestamp;
+      setExamRefreshToast({
+        show: true,
+        reason: config.forcedRefreshReason || 'Pembaruan konfigurasi ujian & naskah soal dari Admin.',
+        type: config.forcedRefreshType || 'SOFT'
+      });
+      const timer = setTimeout(() => {
+        setExamRefreshToast(null);
+      }, 6000);
+      return () => clearTimeout(timer);
+    }
+  }, [config.forcedRefreshTimestamp, config.forcedRefreshReason, config.forcedRefreshType]);
 
   const allSubjects = getExamSubjects(config);
   const activeSubject = allSubjects.find(s => s.id === (student.subjectId || 'sub1')) || allSubjects[0];
@@ -977,7 +947,7 @@ export default function StudentExam({
           </div>
 
           {/* Active Exam Subject Card */}
-          <div className="p-4 bg-indigo-950/70 border border-indigo-500/40 rounded-2xl mb-5 flex items-center justify-between gap-3 text-left">
+          <div className="p-4 bg-indigo-950/70 border border-indigo-500/40 rounded-2xl mb-4 flex items-center justify-between gap-3 text-left">
             <div className="flex items-center gap-3 min-w-0">
               <div className="w-10 h-10 rounded-xl bg-indigo-600 text-white flex items-center justify-center font-bold text-sm shrink-0 shadow-sm">
                 <BookOpen className="w-5 h-5 text-indigo-100" />
@@ -994,6 +964,36 @@ export default function StudentExam({
             <span className="px-3 py-1 bg-indigo-900/80 border border-indigo-400/30 rounded-lg text-xs font-mono font-bold text-indigo-200 shrink-0">
               {questions.length} Butir Soal
             </span>
+          </div>
+
+          {/* Audio Alarm Verification & Pre-warm Card */}
+          <div className="p-3.5 bg-slate-950/80 border border-indigo-500/40 rounded-2xl mb-5 flex items-center justify-between gap-3 text-left">
+            <div className="flex items-center gap-2.5 min-w-0">
+              <div className={`w-9 h-9 rounded-xl flex items-center justify-center shrink-0 ${
+                isTestingAudio ? 'bg-rose-600 text-white animate-pulse' : 'bg-indigo-600 text-white'
+              }`}>
+                <Volume2 className="w-5 h-5" />
+              </div>
+              <div className="min-w-0">
+                <span className="text-[10px] font-mono uppercase font-bold text-indigo-300 tracking-wider block">
+                  Alarm Pelanggaran di HP Ini:
+                </span>
+                <span className="text-xs font-extrabold text-white truncate block">
+                  {getAlarmTypeName(config.alarmType)}
+                </span>
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={handleTestAudioInExam}
+              className={`px-3 py-1.5 rounded-xl text-xs font-bold font-mono transition flex items-center gap-1.5 shrink-0 cursor-pointer shadow-xs active:scale-95 ${
+                isTestingAudio
+                  ? 'bg-rose-600 text-white hover:bg-rose-500 animate-pulse'
+                  : 'bg-indigo-600 hover:bg-indigo-500 text-white'
+              }`}
+            >
+              {isTestingAudio ? 'Hentikan' : '🔊 Uji Suara HP'}
+            </button>
           </div>
 
           {/* DND MODE & PROCTOR SECURITY GUIDE */}
@@ -1120,6 +1120,42 @@ export default function StudentExam({
               <Check className="w-6 h-6 text-red-700 stroke-[3]" />
               <span>SAYA MENGERTI (OK)</span>
             </button>
+          </div>
+        </div>
+      )}
+
+      {/* Real-time Admin Forced Mass Refresh Toast Inside Exam */}
+      {examRefreshToast?.show && (
+        <div className="fixed top-4 inset-x-4 max-w-md mx-auto z-50 bg-slate-900/95 backdrop-blur-md text-white border border-indigo-500/50 shadow-2xl rounded-2xl p-4 flex items-start gap-3.5 animate-fade-in notranslate select-none" translate="no">
+          <div className="w-9 h-9 rounded-xl bg-indigo-600 flex items-center justify-center shrink-0 shadow-xs">
+            <RefreshCw className={`w-5 h-5 text-white ${examRefreshToast.type === 'HARD' ? 'animate-spin' : ''}`} />
+          </div>
+          <div className="flex-1 min-w-0">
+            <div className="flex items-center justify-between gap-2">
+              <h4 className="text-xs font-black text-indigo-300 font-mono uppercase tracking-wider flex items-center gap-1.5">
+                <span>Pembaruan dari Admin</span>
+                <span className="px-1.5 py-0.2 bg-indigo-500/30 text-indigo-200 text-[10px] rounded font-bold">Live Sync</span>
+              </h4>
+              <button
+                type="button"
+                onClick={() => setExamRefreshToast(null)}
+                className="text-slate-400 hover:text-white p-0.5 rounded cursor-pointer"
+                title="Tutup Notifikasi"
+              >
+                ✕
+              </button>
+            </div>
+            <p className="text-xs text-slate-200 mt-1 leading-snug font-medium">
+              {examRefreshToast.reason}
+            </p>
+            <div className="mt-2 flex items-center gap-1.5 text-[10px] font-mono text-emerald-400 font-bold">
+              <CheckCircle2 className="w-3.5 h-3.5 shrink-0" />
+              <span>
+                {examRefreshToast.type === 'HARD'
+                  ? 'Memuat ulang halaman browser... Jawaban tersimpan aman.'
+                  : 'Naskah soal & konfigurasi telah diperbarui. Jawaban Anda tetap aman.'}
+              </span>
+            </div>
           </div>
         </div>
       )}
@@ -1337,8 +1373,9 @@ export default function StudentExam({
                   <button
                     key={`${currentQuestion.id}_opt_${idx}`}
                     id={`btn-option-${idx}`}
+                    translate="no"
                     onClick={() => handleSelectOption(currentQuestion.id, idx)}
-                    className={`w-full text-left px-5 py-4 rounded-xl border text-sm transition-all flex items-center justify-between gap-4 ${
+                    className={`w-full text-left px-5 py-4 rounded-xl border text-sm transition-all flex items-center justify-between gap-4 notranslate ${
                       isSelected
                         ? 'bg-indigo-50/70 border-indigo-500 text-indigo-900 font-semibold ring-1 ring-indigo-500'
                         : 'bg-slate-50 hover:bg-slate-100 border-slate-200 text-slate-700'

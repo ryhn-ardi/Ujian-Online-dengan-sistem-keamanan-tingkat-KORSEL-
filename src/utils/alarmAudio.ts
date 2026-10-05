@@ -4,6 +4,66 @@ let sharedAudioContext: AudioContext | null = null;
 let currentPlayingAudio: HTMLAudioElement | null = null;
 let activeOscillators: OscillatorNode[] = [];
 
+export const CUSTOM_ALARM_STORAGE_KEY = 'proktor_custom_alarm_audio';
+export const CUSTOM_ANNOUNCEMENT_STORAGE_KEY = 'proktor_custom_announcement_audio';
+
+let inMemoryCustomAlarmAudio: string | null = null;
+let inMemoryCustomAnnouncementAudio: string | null = null;
+
+export function setCustomAlarmAudioData(data: string | null) {
+  inMemoryCustomAlarmAudio = data;
+  try {
+    if (data) {
+      localStorage.setItem(CUSTOM_ALARM_STORAGE_KEY, data);
+    } else {
+      localStorage.removeItem(CUSTOM_ALARM_STORAGE_KEY);
+    }
+  } catch (e) {
+    console.warn('LocalStorage error storing custom alarm audio:', e);
+  }
+}
+
+export function getCustomAlarmAudioData(): string | null {
+  if (inMemoryCustomAlarmAudio) return inMemoryCustomAlarmAudio;
+  try {
+    const stored = localStorage.getItem(CUSTOM_ALARM_STORAGE_KEY);
+    if (stored) {
+      inMemoryCustomAlarmAudio = stored;
+      return stored;
+    }
+  } catch (e) {}
+  return null;
+}
+
+export function setCustomAnnouncementAudioData(data: string | null) {
+  inMemoryCustomAnnouncementAudio = data;
+  try {
+    if (data) {
+      localStorage.setItem(CUSTOM_ANNOUNCEMENT_STORAGE_KEY, data);
+    } else {
+      localStorage.removeItem(CUSTOM_ANNOUNCEMENT_STORAGE_KEY);
+    }
+  } catch (e) {
+    console.warn('LocalStorage error storing custom announcement audio:', e);
+  }
+}
+
+export function getCustomAnnouncementAudioData(): string | null {
+  if (inMemoryCustomAnnouncementAudio) return inMemoryCustomAnnouncementAudio;
+  try {
+    const stored = localStorage.getItem(CUSTOM_ANNOUNCEMENT_STORAGE_KEY);
+    if (stored) {
+      inMemoryCustomAnnouncementAudio = stored;
+      return stored;
+    }
+  } catch (e) {}
+  return null;
+}
+
+export function warmUpAlarmAudioContext(): AudioContext | null {
+  return getAudioContext();
+}
+
 export function getAudioContext(): AudioContext | null {
   try {
     const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
@@ -57,35 +117,38 @@ export function playAlarmSound(config?: Partial<ExamConfig>): { stop: () => void
   const alarmType = config?.alarmType || 'SIREN';
 
   // 1. CUSTOM AUDIO FILE / URL
-  if (alarmType === 'CUSTOM_AUDIO' && config?.customAlarmAudioUrl) {
-    try {
-      const audio = new Audio(config.customAlarmAudioUrl);
-      audio.volume = 1.0;
-      currentPlayingAudio = audio;
+  if (alarmType === 'CUSTOM_AUDIO') {
+    const audioSource = config?.customAlarmAudioUrl || getCustomAlarmAudioData();
+    if (audioSource) {
+      try {
+        const audio = new Audio(audioSource);
+        audio.volume = 1.0;
+        currentPlayingAudio = audio;
 
-      const playPromise = audio.play();
-      if (playPromise !== undefined) {
-        playPromise.catch((err) => {
-          console.warn('Custom audio playback failed, falling back to siren:', err);
-          playSirenSynth(5.0);
-        });
+        const playPromise = audio.play();
+        if (playPromise !== undefined) {
+          playPromise.catch((err) => {
+            console.warn('Custom audio playback failed, falling back to siren:', err);
+            playSirenSynth(5.0);
+          });
+        }
+
+        // Auto stop after 8 seconds if long audio
+        const timeoutId = setTimeout(() => {
+          if (currentPlayingAudio === audio) {
+            stopAllAlarmSounds();
+          }
+        }, 8000);
+
+        return {
+          stop: () => {
+            clearTimeout(timeoutId);
+            stopAllAlarmSounds();
+          }
+        };
+      } catch (err) {
+        console.warn('Audio element error, fallback to siren:', err);
       }
-
-      // Auto stop after 8 seconds if long audio
-      const timeoutId = setTimeout(() => {
-        if (currentPlayingAudio === audio) {
-          stopAllAlarmSounds();
-        }
-      }, 8000);
-
-      return {
-        stop: () => {
-          clearTimeout(timeoutId);
-          stopAllAlarmSounds();
-        }
-      };
-    } catch (err) {
-      console.warn('Audio element error, fallback to siren:', err);
     }
   }
 
@@ -104,7 +167,17 @@ export function playAlarmSound(config?: Partial<ExamConfig>): { stop: () => void
     return playBellSynth(5.0);
   }
 
-  // 5. DEFAULT: STANDARD POLICE / PROCTOR SIREN (The currently used sound)
+  // 5. INDUSTRIAL DUAL AIR HORN
+  if (alarmType === 'HORN') {
+    return playHornSynth(5.0);
+  }
+
+  // 6. TWO-TONE EMERGENCY AMBULANCE SIREN
+  if (alarmType === 'AMBULANCE') {
+    return playAmbulanceSynth(5.0);
+  }
+
+  // 7. DEFAULT: STANDARD POLICE / PROCTOR SIREN (The currently used sound)
   return playSirenSynth(5.0);
 }
 
@@ -292,6 +365,102 @@ function playBellSynth(durationSec = 5.0): { stop: () => void } {
 
       activeOscillators.push(osc);
     }
+
+    return {
+      stop: () => stopAllAlarmSounds()
+    };
+  } catch (e) {
+    return { stop: () => {} };
+  }
+}
+
+/**
+ * Industrial Dual Air Horn (Twin blasting tone)
+ */
+function playHornSynth(durationSec = 5.0): { stop: () => void } {
+  const ctx = getAudioContext();
+  if (!ctx) return { stop: () => {} };
+
+  try {
+    const now = ctx.currentTime;
+    const osc1 = ctx.createOscillator();
+    const osc2 = ctx.createOscillator();
+    const mainGain = ctx.createGain();
+    const pulseGain = ctx.createGain();
+
+    osc1.type = 'sawtooth';
+    osc2.type = 'square';
+
+    osc1.frequency.setValueAtTime(175, now);
+    osc2.frequency.setValueAtTime(235, now);
+
+    const lfo = ctx.createOscillator();
+    lfo.type = 'square';
+    lfo.frequency.setValueAtTime(1.2, now); // Pulse rhythm
+
+    lfo.connect(pulseGain.gain);
+    osc1.connect(pulseGain);
+    osc2.connect(pulseGain);
+    pulseGain.connect(mainGain);
+    mainGain.connect(ctx.destination);
+
+    mainGain.gain.setValueAtTime(0, now);
+    mainGain.gain.linearRampToValueAtTime(2.2, now + 0.05);
+    mainGain.gain.setValueAtTime(2.2, now + durationSec - 0.2);
+    mainGain.gain.linearRampToValueAtTime(0.01, now + durationSec);
+
+    osc1.start(now);
+    osc2.start(now);
+    lfo.start(now);
+
+    osc1.stop(now + durationSec);
+    osc2.stop(now + durationSec);
+    lfo.stop(now + durationSec);
+
+    activeOscillators.push(osc1, osc2, lfo);
+
+    return {
+      stop: () => stopAllAlarmSounds()
+    };
+  } catch (e) {
+    return { stop: () => {} };
+  }
+}
+
+/**
+ * European Two-Tone Emergency Vehicle Siren (Hi-Lo alternating)
+ */
+function playAmbulanceSynth(durationSec = 5.0): { stop: () => void } {
+  const ctx = getAudioContext();
+  if (!ctx) return { stop: () => {} };
+
+  try {
+    const now = ctx.currentTime;
+    const osc = ctx.createOscillator();
+    const mainGain = ctx.createGain();
+
+    osc.type = 'sawtooth';
+
+    const stepDuration = 0.45;
+    const steps = Math.floor(durationSec / stepDuration);
+    for (let i = 0; i < steps; i++) {
+      const t = now + (i * stepDuration);
+      const freq = (i % 2 === 0) ? 960 : 720;
+      osc.frequency.setValueAtTime(freq, t);
+    }
+
+    mainGain.connect(ctx.destination);
+    osc.connect(mainGain);
+
+    mainGain.gain.setValueAtTime(0, now);
+    mainGain.gain.linearRampToValueAtTime(2.0, now + 0.05);
+    mainGain.gain.setValueAtTime(2.0, now + durationSec - 0.2);
+    mainGain.gain.linearRampToValueAtTime(0.01, now + durationSec);
+
+    osc.start(now);
+    osc.stop(now + durationSec);
+
+    activeOscillators.push(osc);
 
     return {
       stop: () => stopAllAlarmSounds()
