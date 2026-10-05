@@ -1,15 +1,50 @@
 <!doctype html>
-<html lang="id" translate="no" class="notranslate">
+<html lang="id" xml:lang="id" translate="no" class="notranslate">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="google" content="notranslate" />
+    <meta name="googlebot" content="notranslate" />
+    <meta name="robots" content="notranslate" />
+    <meta http-equiv="Content-Language" content="id" />
     <title>ujian berbasis keamanan tingkat korea utara + NASA</title>
     <!-- KaTeX Stylesheet for Mathematical Formulas & Symbols -->
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css" crossorigin="anonymous" />
+    <script>
+      // Strict Anti-Auto-Translate Enforcement for CBT Exam
+      (function() {
+        document.documentElement.setAttribute('translate', 'no');
+        document.documentElement.classList.add('notranslate');
+        if (document.body) {
+          document.body.setAttribute('translate', 'no');
+          document.body.classList.add('notranslate');
+        }
+      })();
+    </script>
+    <style>
+      /* Force-hide Google Translate toolbars and popups */
+      .goog-te-banner-frame,
+      .goog-te-balloon-frame,
+      #goog-gt-tt,
+      .skiptranslate,
+      #goog-gt-votingHTML,
+      .goog-te-spinner-pos {
+        display: none !important;
+        visibility: hidden !important;
+        opacity: 0 !important;
+        pointer-events: none !important;
+      }
+      body {
+        top: 0px !important;
+        position: static !important;
+      }
+      font[style*="vertical-align"] {
+        vertical-align: baseline !important;
+      }
+    </style>
   </head>
   <body class="notranslate" translate="no">
-    <div id="root"></div>
+    <div id="root" class="notranslate" translate="no"></div>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>

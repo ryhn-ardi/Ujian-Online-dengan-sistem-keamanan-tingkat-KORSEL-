@@ -1,1 +1,22 @@
 @import "tailwindcss";
+
+/* Strict Anti-Translation and KaTeX Math Formula Protection */
+.notranslate, [translate="no"], [translate="no"] * {
+  -webkit-touch-callout: none;
+}
+
+.goog-te-banner-frame,
+.goog-te-balloon-frame,
+#goog-gt-tt,
+.skiptranslate,
+.goog-tooltip,
+.goog-tooltip:hover {
+  display: none !important;
+  visibility: hidden !important;
+  opacity: 0 !important;
+}
+
+body {
+  top: 0px !important;
+  position: static !important;
+}
