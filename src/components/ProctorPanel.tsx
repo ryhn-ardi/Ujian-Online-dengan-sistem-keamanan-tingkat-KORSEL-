@@ -20,10 +20,17 @@ import {
   Info,
   Layers,
   Download,
-  X
+  X,
+  RotateCcw,
+  Send,
+  Shuffle,
+  Megaphone,
+  Volume2
 } from 'lucide-react';
-import { Student, Question, ExamConfig, ExamSubject } from '../types';
+import { Student, Question, ExamConfig, ExamSubject, ProctorPermissions, BroadcastAnnouncement } from '../types';
+import { DEFAULT_PROCTOR_PERMISSIONS } from '../data';
 import { getExamSubjects } from '../utils/sync';
+import { playAnnouncementSound } from '../utils/alarmAudio';
 import AnalyticsCharts from './AnalyticsCharts';
 import ItemAnalysisTab from './ItemAnalysisTab';
 
@@ -33,6 +40,12 @@ interface ProctorPanelProps {
   config: ExamConfig;
   onUnlockStudent: (studentId: string) => void;
   onUnlockAllStudents: () => void;
+  onResetStudentAttempt?: (studentId: string) => void;
+  onResetStudentViolations?: (studentId: string) => void;
+  onForceSubmitStudent?: (studentId: string) => void;
+  onChangeStudentSubject?: (studentId: string, newSubjectId: string) => void;
+  onBroadcastAnnouncement?: (message: string, senderTitle?: string) => void;
+  onClearAnnouncement?: () => void;
   onExit: () => void;
 }
 
@@ -42,10 +55,47 @@ export default function ProctorPanel({
   config,
   onUnlockStudent,
   onUnlockAllStudents,
+  onResetStudentAttempt,
+  onResetStudentViolations,
+  onForceSubmitStudent,
+  onChangeStudentSubject,
+  onBroadcastAnnouncement,
+  onClearAnnouncement,
   onExit
 }: ProctorPanelProps) {
+  const permissions: ProctorPermissions = config.proctorPermissions || DEFAULT_PROCTOR_PERMISSIONS;
+  const [changeSubjectStudent, setChangeSubjectStudent] = useState<Student | null>(null);
+  const [targetNewSubjectId, setTargetNewSubjectId] = useState<string>('');
   // Navigation tabs for proctor: MONITOR (default), CHARTS, ITEM_ANALYSIS
   const [activeTab, setActiveTab] = useState<'MONITOR' | 'CHARTS' | 'ITEM_ANALYSIS'>('MONITOR');
+
+  // Broadcast modal state
+  const [showBroadcastModal, setShowBroadcastModal] = useState(false);
+  const [broadcastMessage, setBroadcastMessage] = useState('');
+  const [broadcastSender, setBroadcastSender] = useState('Pengawas Ruangan');
+  const [isPlayingTestSound, setIsPlayingTestSound] = useState(false);
+
+  const handleTestSound = () => {
+    if (isPlayingTestSound) {
+      setIsPlayingTestSound(false);
+      return;
+    }
+    setIsPlayingTestSound(true);
+    playAnnouncementSound(config);
+    setTimeout(() => setIsPlayingTestSound(false), 3500);
+  };
+
+  const handleSendProctorBroadcast = () => {
+    if (!broadcastMessage.trim()) {
+      alert('Tuliskan isi pesan pengumuman terlebih dahulu!');
+      return;
+    }
+    if (onBroadcastAnnouncement) {
+      onBroadcastAnnouncement(broadcastMessage.trim(), broadcastSender.trim() || 'Pengawas Ruangan');
+      alert('✅ Pengumuman massal berhasil disiarkan ke seluruh siswa yang sedang mengerjakan!');
+      setShowBroadcastModal(false);
+    }
+  };
 
   // Filters for monitoring table
   const [searchQuery, setSearchQuery] = useState('');
@@ -319,44 +369,71 @@ export default function ProctorPanel({
                   )}
                 </button>
 
-                <button
-                  type="button"
-                  id="tab-proctor-charts"
-                  onClick={() => setActiveTab('CHARTS')}
-                  className={`px-3 py-1.5 rounded-lg text-xs font-bold transition flex items-center gap-1.5 cursor-pointer ${
-                    activeTab === 'CHARTS'
-                      ? 'bg-white text-slate-900 shadow-xs'
-                      : 'text-slate-600 hover:text-slate-900'
-                  }`}
-                >
-                  <BarChart3 className="w-3.5 h-3.5 text-indigo-600" />
-                  <span>Grafik Monitoring</span>
-                </button>
+                {permissions.showAnalyticsCharts !== false && (
+                  <button
+                    type="button"
+                    id="tab-proctor-charts"
+                    onClick={() => setActiveTab('CHARTS')}
+                    className={`px-3 py-1.5 rounded-lg text-xs font-bold transition flex items-center gap-1.5 cursor-pointer ${
+                      activeTab === 'CHARTS'
+                        ? 'bg-white text-slate-900 shadow-xs'
+                        : 'text-slate-600 hover:text-slate-900'
+                    }`}
+                  >
+                    <BarChart3 className="w-3.5 h-3.5 text-indigo-600" />
+                    <span>Grafik Monitoring</span>
+                  </button>
+                )}
 
-                <button
-                  type="button"
-                  id="tab-proctor-item-analysis"
-                  onClick={() => setActiveTab('ITEM_ANALYSIS')}
-                  className={`px-3 py-1.5 rounded-lg text-xs font-bold transition flex items-center gap-1.5 cursor-pointer ${
-                    activeTab === 'ITEM_ANALYSIS'
-                      ? 'bg-white text-slate-900 shadow-xs'
-                      : 'text-slate-600 hover:text-slate-900'
-                  }`}
-                >
-                  <FileSpreadsheet className="w-3.5 h-3.5 text-emerald-600" />
-                  <span>Analisis Butir Soal</span>
-                </button>
+                {permissions.showItemAnalysis !== false && (
+                  <button
+                    type="button"
+                    id="tab-proctor-item-analysis"
+                    onClick={() => setActiveTab('ITEM_ANALYSIS')}
+                    className={`px-3 py-1.5 rounded-lg text-xs font-bold transition flex items-center gap-1.5 cursor-pointer ${
+                      activeTab === 'ITEM_ANALYSIS'
+                        ? 'bg-white text-slate-900 shadow-xs'
+                        : 'text-slate-600 hover:text-slate-900'
+                    }`}
+                  >
+                    <FileSpreadsheet className="w-3.5 h-3.5 text-emerald-600" />
+                    <span>Analisis Butir Soal</span>
+                  </button>
+                )}
               </nav>
 
-              <button
-                type="button"
-                onClick={() => setShowExportGradesModal(true)}
-                className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs rounded-xl transition flex items-center gap-1.5 shadow-xs cursor-pointer"
-                title="Ekspor rekap nilai siswa terpisah per naskah mata pelajaran ke Excel (.xlsx)"
-              >
-                <FileSpreadsheet className="w-3.5 h-3.5" />
-                <span className="hidden sm:inline">Ekspor Nilai (Excel)</span>
-              </button>
+              {permissions.allowExportExcel !== false && (
+                <button
+                  type="button"
+                  onClick={() => setShowExportGradesModal(true)}
+                  className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs rounded-xl transition flex items-center gap-1.5 shadow-xs cursor-pointer"
+                  title="Ekspor rekap nilai siswa terpisah per naskah mata pelajaran ke Excel (.xlsx)"
+                >
+                  <FileSpreadsheet className="w-3.5 h-3.5" />
+                  <span className="hidden sm:inline">Ekspor Nilai (Excel)</span>
+                </button>
+              )}
+              {onBroadcastAnnouncement && (
+                <button
+                  type="button"
+                  id="btn-proctor-broadcast"
+                  onClick={() => setShowBroadcastModal(true)}
+                  className={`px-3 py-1.5 font-bold text-xs rounded-xl transition flex items-center gap-1.5 shadow-xs cursor-pointer ${
+                    config.activeAnnouncement?.active
+                      ? 'bg-amber-400 text-slate-950 font-black animate-pulse'
+                      : 'bg-indigo-600 hover:bg-indigo-500 text-white'
+                  }`}
+                  title="Kirim pengumuman custom massal ke seluruh siswa"
+                >
+                  <Megaphone className="w-3.5 h-3.5" />
+                  <span className="hidden sm:inline">Pengumuman Massal</span>
+                  <span className={`px-1.5 py-0.5 rounded-full text-[10px] font-mono font-black ${
+                    config.activeAnnouncement?.active ? 'bg-black/20 text-slate-950' : 'bg-white/20 text-white'
+                  }`}>
+                    {students.filter(s => s.status === 'SEDANG_MENGERJAKAN').length}
+                  </span>
+                </button>
+              )}
               <button
                 type="button"
                 id="btn-proctor-logout"
@@ -557,18 +634,19 @@ export default function ProctorPanel({
                   <thead>
                     <tr className="bg-slate-50 border-b border-slate-200 text-[11px] font-black font-mono text-slate-500 uppercase tracking-wider">
                       <th className="py-3.5 px-4 w-16 text-center">Absen</th>
-                      <th className="py-3.5 px-4 min-w-[220px]">Nama Siswa & Naskah</th>
+                      <th className="py-3.5 px-4 min-w-[200px]">Nama Siswa & Naskah</th>
                       <th className="py-3.5 px-3 text-center w-20">Kelas</th>
-                      <th className="py-3.5 px-4 min-w-[180px]">Status Ujian</th>
-                      <th className="py-3.5 px-3 text-center w-28">Pelanggaran</th>
-                      <th className="py-3.5 px-3 text-center w-24">Jawaban</th>
-                      <th className="py-3.5 px-4 text-right min-w-[160px]">Tindakan Pengawas</th>
+                      <th className="py-3.5 px-4 min-w-[170px]">Status Ujian</th>
+                      <th className="py-3.5 px-3 text-center w-24">Pelanggaran</th>
+                      <th className="py-3.5 px-3 text-center w-20">Jawaban</th>
+                      <th className="py-3.5 px-3 text-center w-24">Nilai</th>
+                      <th className="py-3.5 px-4 text-right min-w-[200px]">Tindakan Pengawas</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-100">
                     {filteredStudents.length === 0 ? (
                       <tr>
-                        <td colSpan={7} className="text-center py-12 text-slate-400 font-mono text-xs">
+                        <td colSpan={8} className="text-center py-12 text-slate-400 font-mono text-xs">
                           Tidak ada siswa yang sesuai kriteria filter saat ini.
                         </td>
                       </tr>
@@ -577,7 +655,9 @@ export default function ProctorPanel({
                         const isLocked = s.status === 'TERKUNCI';
                         const foundSub = subjects.find(sub => sub.id === (s.subjectId || 'sub1'));
                         const subName = foundSub ? foundSub.name : (s.subjectId || 'Mata Pelajaran 1');
+                        const isSubInactive = foundSub && foundSub.isActive === false;
                         const totalAnswers = s.answers ? Object.keys(s.answers).length : 0;
+                        const metrics = getStudentMetrics(s, questions);
 
                         return (
                           <tr
@@ -598,9 +678,13 @@ export default function ProctorPanel({
                               <div className="font-extrabold text-slate-800 text-sm">
                                 {s.name}
                               </div>
-                              <div className="flex items-center gap-1.5 mt-1 font-mono text-[10px] text-slate-400">
-                                <span className="bg-indigo-50 text-indigo-700 border border-indigo-100 px-1.5 py-0.5 rounded font-bold">
-                                  {subName}
+                              <div className="flex items-center gap-1.5 mt-1 font-mono text-[10px] text-slate-400 flex-wrap">
+                                <span className={`px-1.5 py-0.5 rounded font-bold border ${
+                                  isSubInactive
+                                    ? 'bg-amber-100 text-amber-900 border-amber-300'
+                                    : 'bg-indigo-50 text-indigo-700 border-indigo-100'
+                                }`}>
+                                  {subName} {isSubInactive ? '(NONAKTIF)' : ''}
                                 </span>
                                 {s.username && <span>@{s.username}</span>}
                               </div>
@@ -621,7 +705,7 @@ export default function ProctorPanel({
                               {s.status === 'SEDANG_MENGERJAKAN' && (
                                 <span className="px-2.5 py-1 text-[11px] font-bold bg-blue-100 text-blue-800 rounded-full font-mono inline-flex items-center gap-1 animate-pulse">
                                   <Clock className="w-3 h-3" />
-                                  SEDANG MENGERJAKAN
+                                  SEDANG KERJA
                                 </span>
                               )}
                               {s.status === 'SELESAI' && (
@@ -636,8 +720,8 @@ export default function ProctorPanel({
                                     <AlertTriangle className="w-3 h-3" />
                                     TERKUNCI
                                   </span>
-                                  <div className="text-[10px] text-rose-700 font-bold leading-tight">
-                                    {s.lockedReason || 'Keluar dari aplikasi ujian'}
+                                  <div className="text-[10px] text-rose-700 font-bold leading-tight max-w-[150px] truncate">
+                                    {s.lockedReason || 'Keluar layar penuh'}
                                   </div>
                                 </div>
                               )}
@@ -656,27 +740,112 @@ export default function ProctorPanel({
 
                             {/* Answers Filled */}
                             <td className="py-4 px-3 text-center font-mono text-slate-600 font-bold">
-                              {totalAnswers} terisi
+                              {totalAnswers}
                             </td>
 
-                            {/* Proctor Action */}
-                            <td className="py-4 px-4 text-right">
-                              {isLocked ? (
-                                <button
-                                  type="button"
-                                  id={`btn-proctor-unlock-${s.id}`}
-                                  onClick={() => onUnlockStudent(s.id)}
-                                  className="px-3.5 py-2 bg-amber-400 hover:bg-amber-300 active:scale-95 text-slate-950 font-black text-xs rounded-xl shadow-md transition flex items-center gap-1.5 ml-auto cursor-pointer animate-pulse"
-                                  title="Buka kunci siswa ini sekarang agar dapat lanjut ujian"
-                                >
-                                  <KeyRound className="w-4 h-4 text-slate-900" />
-                                  <span>Buka Kunci (Unlock)</span>
-                                </button>
+                            {/* Nilai */}
+                            <td className="py-4 px-3 text-center font-mono">
+                              {permissions.showStudentScores !== false ? (
+                                s.status === 'SELESAI' ? (
+                                  <span className="font-extrabold text-xs px-2 py-1 rounded-md bg-emerald-50 text-emerald-800 border border-emerald-200">
+                                    {typeof s.score === 'number' ? s.score.toFixed(1) : metrics.score.toFixed(1)}
+                                  </span>
+                                ) : (
+                                  <span className="text-[10px] text-slate-400 font-medium">
+                                    {totalAnswers > 0 ? `${metrics.score.toFixed(1)} (Proses)` : '-'}
+                                  </span>
+                                )
                               ) : (
-                                <span className="text-[11px] text-slate-400 font-mono">
-                                  Sesi Normal
+                                <span className="text-[10px] text-slate-400 bg-slate-100 px-2 py-0.5 rounded font-mono" title="Nilai disembunyikan oleh Administrator Master">
+                                  Tertutup
                                 </span>
                               )}
+                            </td>
+
+                            {/* Proctor Action Buttons */}
+                            <td className="py-4 px-4 text-right">
+                              <div className="flex items-center justify-end gap-1.5 flex-wrap">
+                                {/* 1. Buka Kunci (Unlock) */}
+                                {isLocked && permissions.allowUnlock !== false && (
+                                  <button
+                                    type="button"
+                                    id={`btn-proctor-unlock-${s.id}`}
+                                    onClick={() => onUnlockStudent(s.id)}
+                                    className="px-2.5 py-1.5 bg-amber-400 hover:bg-amber-300 active:scale-95 text-slate-950 font-black text-xs rounded-xl shadow-xs transition flex items-center gap-1 cursor-pointer"
+                                    title="Buka kunci siswa ini sekarang agar dapat lanjut ujian"
+                                  >
+                                    <KeyRound className="w-3.5 h-3.5 text-slate-900" />
+                                    <span>Buka Kunci</span>
+                                  </button>
+                                )}
+
+                                {/* 2. Reset Pelanggaran ke 0 */}
+                                {permissions.allowResetViolations !== false && (s.violationCount || 0) > 0 && (
+                                  <button
+                                    type="button"
+                                    id={`btn-proctor-reset-viol-${s.id}`}
+                                    onClick={() => {
+                                      if (window.confirm(`Reset hitungan pelanggaran siswa "${s.name}" menjadi 0? Jawaban yang tersimpan tidak akan dihapus.`)) {
+                                        onResetStudentViolations?.(s.id);
+                                      }
+                                    }}
+                                    className="p-1.5 bg-emerald-50 hover:bg-emerald-100 text-emerald-700 rounded-lg border border-emerald-200 transition cursor-pointer"
+                                    title="Reset pelanggaran siswa menjadi 0 (buka kunci tanpa hapus jawaban)"
+                                  >
+                                    <ShieldCheck className="w-3.5 h-3.5" />
+                                  </button>
+                                )}
+
+                                {/* 3. Reset Seluruh Pengerjaan / Jawaban (Ulang Ujian) */}
+                                {permissions.allowResetAttempt !== false && (
+                                  <button
+                                    type="button"
+                                    id={`btn-proctor-reset-attempt-${s.id}`}
+                                    onClick={() => {
+                                      if (window.confirm(`⚠️ PERINGATAN RESET UJIAN:\nApakah Anda yakin ingin MERESET seluruh pengerjaan siswa "${s.name}"?\n\n• Seluruh lembar jawaban akan DIKOSONGKAN.\n• Status kembali ke BELUM MULAI.\n• Siswa dapat mendaftar ulang dan mengerjakan dari awal.`)) {
+                                        onResetStudentAttempt?.(s.id);
+                                      }
+                                    }}
+                                    className="p-1.5 bg-amber-50 hover:bg-amber-100 text-amber-700 rounded-lg border border-amber-200 transition cursor-pointer"
+                                    title="Reset seluruh pengerjaan & jawaban siswa dari awal (Ulang Ujian)"
+                                  >
+                                    <RotateCcw className="w-3.5 h-3.5" />
+                                  </button>
+                                )}
+
+                                {/* 4. Paksa Kumpulkan (Force Submit) */}
+                                {permissions.allowForceSubmit !== false && s.status !== 'SELESAI' && s.status !== 'BELUM_MULAI' && (
+                                  <button
+                                    type="button"
+                                    id={`btn-proctor-force-submit-${s.id}`}
+                                    onClick={() => {
+                                      if (window.confirm(`Kumpulkan paksa lembar ujian untuk siswa "${s.name}"?\nStatus akan langsung menjadi SELESAI dan nilai dihitung secara final.`)) {
+                                        onForceSubmitStudent?.(s.id);
+                                      }
+                                    }}
+                                    className="p-1.5 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 rounded-lg border border-indigo-200 transition cursor-pointer"
+                                    title="Paksa kumpulkan ujian siswa ini sekarang (Finalisasi Nilai)"
+                                  >
+                                    <Send className="w-3.5 h-3.5" />
+                                  </button>
+                                )}
+
+                                {/* 5. Koreksi / Pindahkan Naskah */}
+                                {permissions.allowChangeSubject !== false && (
+                                  <button
+                                    type="button"
+                                    id={`btn-proctor-change-sub-${s.id}`}
+                                    onClick={() => {
+                                      setChangeSubjectStudent(s);
+                                      setTargetNewSubjectId(s.subjectId || subjects[0]?.id || 'sub1');
+                                    }}
+                                    className="p-1.5 bg-purple-50 hover:bg-purple-100 text-purple-700 rounded-lg border border-purple-200 transition cursor-pointer"
+                                    title="Koreksi / Pindahkan Naskah Ujian Siswa (Jika Siswa Salah Memilih Mapel)"
+                                  >
+                                    <Shuffle className="w-3.5 h-3.5" />
+                                  </button>
+                                )}
+                              </div>
                             </td>
                           </tr>
                         );
@@ -842,6 +1011,220 @@ export default function ProctorPanel({
                 className="px-5 py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold text-xs rounded-xl transition cursor-pointer"
               >
                 Tutup
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Modal Pindahkan / Koreksi Naskah Siswa */}
+      {changeSubjectStudent && (
+        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4 z-50">
+          <div className="bg-white rounded-2xl border border-slate-200 shadow-xl max-w-md w-full p-6 animate-fade-in">
+            <div className="flex items-center justify-between border-b border-slate-100 pb-3 mb-4">
+              <h3 className="text-base font-extrabold text-slate-800 flex items-center gap-2">
+                <Shuffle className="w-5 h-5 text-indigo-600" />
+                Koreksi / Pindahkan Naskah Ujian
+              </h3>
+              <button
+                type="button"
+                onClick={() => setChangeSubjectStudent(null)}
+                className="p-1 rounded-lg text-slate-400 hover:text-slate-600 hover:bg-slate-100 transition cursor-pointer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="space-y-4">
+              <div className="p-3 bg-slate-50 border border-slate-200 rounded-xl space-y-1 text-xs">
+                <div className="text-slate-500 font-mono">Siswa:</div>
+                <div className="font-extrabold text-slate-800 text-sm">
+                  {changeSubjectStudent.name} (Kelas {changeSubjectStudent.studentClass} • Absen {changeSubjectStudent.absentNumber})
+                </div>
+                <div className="text-slate-500 font-mono pt-1">
+                  Naskah Saat Ini:{' '}
+                  <span className="font-bold text-indigo-700 bg-indigo-50 px-2 py-0.5 rounded border border-indigo-200">
+                    {subjects.find(s => s.id === (changeSubjectStudent.subjectId || 'sub1'))?.name || changeSubjectStudent.subjectId || 'Naskah 1'}
+                  </span>
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold text-slate-500 uppercase font-mono tracking-wider mb-2">
+                  Pindahkan ke Naskah Baru:
+                </label>
+                <select
+                  value={targetNewSubjectId}
+                  onChange={(e) => setTargetNewSubjectId(e.target.value)}
+                  className="w-full px-3.5 py-2.5 bg-slate-50 border border-slate-200 focus:border-indigo-500 focus:bg-white rounded-xl text-slate-800 text-xs font-bold focus:outline-none transition cursor-pointer"
+                >
+                  {subjects.map((sub) => (
+                    <option key={sub.id} value={sub.id}>
+                      {sub.name} ({sub.code || sub.id}) {sub.isActive === false ? ' [NONAKTIF]' : ''}
+                    </option>
+                  ))}
+                </select>
+                <p className="text-[11px] text-slate-500 mt-2 leading-relaxed">
+                  Fitur ini digunakan jika siswa keliru membuka atau mengerjakan naskah lain. Sistem akan memindahkan sesi siswa ke naskah yang dipilih dan otomatis menghitung ulang nilai siswa sesuai kunci jawaban naskah baru.
+                </p>
+              </div>
+
+              <div className="flex gap-2 pt-3 border-t border-slate-100">
+                <button
+                  type="button"
+                  onClick={() => setChangeSubjectStudent(null)}
+                  className="flex-1 py-2.5 text-xs font-bold text-slate-600 hover:bg-slate-100 border border-slate-200 rounded-xl transition cursor-pointer"
+                >
+                  Batal
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (!targetNewSubjectId) return;
+                    if (onChangeStudentSubject) {
+                      onChangeStudentSubject(changeSubjectStudent.id, targetNewSubjectId);
+                    }
+                    setChangeSubjectStudent(null);
+                  }}
+                  className="flex-1 py-2.5 text-xs font-bold text-white bg-indigo-600 hover:bg-indigo-500 rounded-xl transition shadow-xs cursor-pointer"
+                >
+                  Simpan & Pindahkan
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* PROCTOR BROADCAST ANNOUNCEMENT MODAL */}
+      {showBroadcastModal && (
+        <div className="fixed inset-0 bg-slate-900/65 backdrop-blur-xs flex items-center justify-center p-4 z-50 animate-fade-in overflow-y-auto">
+          <div className="bg-white rounded-3xl shadow-2xl border border-slate-200 p-6 md:p-8 max-w-xl w-full my-8 space-y-5">
+            <div className="flex items-center justify-between pb-4 border-b border-slate-100">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-2xl bg-indigo-50 text-indigo-600 flex items-center justify-center font-bold">
+                  <Megaphone className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="font-extrabold text-slate-900 text-base">
+                    Pengumuman Massal Pengawas ke Siswa
+                  </h3>
+                  <p className="text-xs text-slate-500">
+                    Disiarkan ke seluruh siswa yang sedang mengerjakan di ruang ujian
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowBroadcastModal(false)}
+                className="p-1.5 text-slate-400 hover:bg-slate-100 rounded-full transition cursor-pointer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="p-3 bg-indigo-50/70 rounded-2xl border border-indigo-200 flex items-center justify-between gap-2 text-xs">
+              <span className="font-bold text-indigo-950 flex items-center gap-2">
+                <span className="w-2 h-2 rounded-full bg-emerald-500 animate-ping" />
+                Target: {students.filter(s => s.status === 'SEDANG_MENGERJAKAN').length} Siswa Sedang Mengerjakan
+              </span>
+              <button
+                type="button"
+                onClick={handleTestSound}
+                className="text-[11px] font-bold text-indigo-600 hover:underline flex items-center gap-1 cursor-pointer"
+              >
+                <Volume2 className="w-3 h-3" />
+                {isPlayingTestSound ? 'Berbunyi...' : 'Tes Suara Bel'}
+              </button>
+            </div>
+
+            {config.activeAnnouncement && config.activeAnnouncement.active && (
+              <div className="p-3.5 bg-amber-50 rounded-2xl border border-amber-300 text-xs space-y-2">
+                <div className="flex items-center justify-between">
+                  <span className="font-bold text-amber-900 font-mono text-[10px] uppercase">
+                    Pengumuman Sedang Aktif:
+                  </span>
+                  {onClearAnnouncement && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        onClearAnnouncement();
+                        alert('Pengumuman telah ditarik.');
+                      }}
+                      className="px-2 py-0.5 bg-rose-600 text-white rounded font-bold text-[10px] cursor-pointer"
+                    >
+                      Tarik Pengumuman
+                    </button>
+                  )}
+                </div>
+                <p className="text-slate-800 font-medium whitespace-pre-wrap">
+                  "{config.activeAnnouncement.message}"
+                </p>
+              </div>
+            )}
+
+            {/* Quick chips */}
+            <div className="space-y-1.5">
+              <span className="text-[11px] font-bold text-slate-500 uppercase font-mono">Pesan Cepat:</span>
+              <div className="flex flex-wrap gap-1.5">
+                {[
+                  { label: '⏱️ Sisa 15 Menit', text: 'Waktu ujian tersisa 15 menit lagi. Mohon periksa kembali nomor yang masih ragu-ragu.' },
+                  { label: '⏱️ Sisa 5 Menit', text: 'Waktu ujian tersisa 5 menit lagi. Segera selesaikan dan siap kumpulkan jawaban.' },
+                  { label: '⚠️ Harap Tenang', text: 'Perhatian: Harap tenang dan fokus mengerjakan di lembar masing-masing.' }
+                ].map((tmpl, idx) => (
+                  <button
+                    key={idx}
+                    type="button"
+                    onClick={() => setBroadcastMessage(tmpl.text)}
+                    className="px-2.5 py-1 bg-slate-100 hover:bg-indigo-50 border border-slate-200 rounded-lg text-xs font-semibold text-slate-700 transition cursor-pointer"
+                  >
+                    {tmpl.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div>
+              <label className="text-xs font-bold text-slate-700 block mb-1">
+                Isi Pengumuman:
+              </label>
+              <textarea
+                rows={3}
+                value={broadcastMessage}
+                onChange={(e) => setBroadcastMessage(e.target.value)}
+                placeholder="Tuliskan pengumuman yang ingin disiarkan..."
+                className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-800 focus:bg-white focus:outline-hidden focus:border-indigo-600 transition"
+              />
+            </div>
+
+            <div>
+              <label className="text-xs font-bold text-slate-700 block mb-1">
+                Pengirim:
+              </label>
+              <input
+                type="text"
+                value={broadcastSender}
+                onChange={(e) => setBroadcastSender(e.target.value)}
+                className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl text-xs font-bold text-slate-800"
+              />
+            </div>
+
+            <div className="flex items-center justify-end gap-2 pt-3 border-t border-slate-100">
+              <button
+                type="button"
+                onClick={() => setShowBroadcastModal(false)}
+                className="px-4 py-2 bg-slate-100 text-slate-700 font-bold text-xs rounded-xl cursor-pointer"
+              >
+                Batal
+              </button>
+              <button
+                type="button"
+                disabled={!broadcastMessage.trim()}
+                onClick={handleSendProctorBroadcast}
+                className="px-5 py-2 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-40 text-white font-bold text-xs rounded-xl flex items-center gap-1.5 shadow-xs cursor-pointer"
+              >
+                <Megaphone className="w-3.5 h-3.5" />
+                <span>Kirim Pengumuman</span>
               </button>
             </div>
           </div>

@@ -45,7 +45,10 @@
       "type": "object",
       "properties": {
         "durationMinutes": { "type": "integer" },
-        "examTitle": { "type": "string" }
+        "examTitle": { "type": "string" },
+        "activeAnnouncement": { "type": "object" },
+        "announcementSoundType": { "type": "string" },
+        "customAnnouncementAudioUrl": { "type": "string" }
       },
       "required": ["durationMinutes", "examTitle"]
     },

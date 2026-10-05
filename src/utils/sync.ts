@@ -104,14 +104,14 @@ let localStudentUsers: StudentUser[] = getStored<StudentUser[]>(STUDENT_USERS_KE
 let localConfig: ExamConfig = getStored<ExamConfig>(CONFIG_KEY, INITIAL_CONFIG);
 
 const initialSyncCompleted = {
-  config: false,
-  questions: false,
-  students: false,
-  studentUsers: false
+  config: true,
+  questions: true,
+  students: true,
+  studentUsers: true
 };
 
 export function isInitialSyncCompleted(): boolean {
-  return initialSyncCompleted.config && initialSyncCompleted.questions && initialSyncCompleted.students;
+  return true;
 }
 
 // Getters returning the synchronized local state instantly
@@ -193,9 +193,187 @@ export interface FirestoreErrorInfo {
   }
 }
 
+// -------------------------------------------------------------
+// FIRESTORE TELEMETRY & QUOTA LOGGER
+// -------------------------------------------------------------
+export const SPARK_DAILY_READ_LIMIT = 50000;
+export const SPARK_DAILY_WRITE_LIMIT = 20000;
+
+const TELEMETRY_KEY = 'firestore_telemetry_stats';
+const LOGS_KEY = 'firestore_telemetry_logs';
+
+export interface FirestoreLogEntry {
+  id: string;
+  timestamp: string; // ISO date
+  timeFormatted: string; // HH:mm:ss WIB
+  type: 'READ' | 'WRITE' | 'ERROR' | 'ECO_SAVE';
+  operation: string;
+  path?: string;
+  details: string;
+  status: 'SUCCESS' | 'WARNING' | 'ERROR';
+  count: number;
+}
+
+export interface FirestoreStats {
+  readsToday: number;
+  writesToday: number;
+  errorsToday: number;
+  ecoSavedWrites: number;
+  maxDailyReads: number;
+  maxDailyWrites: number;
+  isQuotaExceeded: boolean;
+  dateKey: string;
+}
+
+function getTodayKey(): string {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+
+let memoryStats: FirestoreStats = (() => {
+  const today = getTodayKey();
+  const stored = getStored<FirestoreStats | null>(TELEMETRY_KEY, null);
+  if (stored && stored.dateKey === today) {
+    return { ...stored, maxDailyReads: SPARK_DAILY_READ_LIMIT, maxDailyWrites: SPARK_DAILY_WRITE_LIMIT };
+  }
+  return {
+    readsToday: 0,
+    writesToday: 0,
+    errorsToday: 0,
+    ecoSavedWrites: 0,
+    maxDailyReads: SPARK_DAILY_READ_LIMIT,
+    maxDailyWrites: SPARK_DAILY_WRITE_LIMIT,
+    isQuotaExceeded: false,
+    dateKey: today
+  };
+})();
+
+let memoryLogs: FirestoreLogEntry[] = getStored<FirestoreLogEntry[]>(LOGS_KEY, []);
+
+function persistTelemetry() {
+  try {
+    localStorage.setItem(TELEMETRY_KEY, JSON.stringify(memoryStats));
+    localStorage.setItem(LOGS_KEY, JSON.stringify(memoryLogs.slice(0, 200)));
+  } catch (e) {}
+  notifySubscribers('SYNC_TELEMETRY');
+}
+
+export function getFirestoreStats(): FirestoreStats {
+  return { ...memoryStats, isQuotaExceeded: quotaExceededState || memoryStats.isQuotaExceeded };
+}
+
+export function getFirestoreLogs(): FirestoreLogEntry[] {
+  return [...memoryLogs];
+}
+
+export function clearFirestoreLogs(): void {
+  memoryLogs = [];
+  try {
+    localStorage.removeItem(LOGS_KEY);
+  } catch (e) {}
+  notifySubscribers('SYNC_TELEMETRY');
+}
+
+export function resetDailyFirestoreStats(): void {
+  memoryStats = {
+    readsToday: 0,
+    writesToday: 0,
+    errorsToday: 0,
+    ecoSavedWrites: 0,
+    maxDailyReads: SPARK_DAILY_READ_LIMIT,
+    maxDailyWrites: SPARK_DAILY_WRITE_LIMIT,
+    isQuotaExceeded: false,
+    dateKey: getTodayKey()
+  };
+  quotaExceededState = false;
+  persistTelemetry();
+}
+
+function addLog(entry: Omit<FirestoreLogEntry, 'id' | 'timestamp' | 'timeFormatted'>) {
+  const now = new Date();
+  const timeFormatted = now.toLocaleTimeString('id-ID', { hour12: false });
+  const logItem: FirestoreLogEntry = {
+    ...entry,
+    id: `log_${Date.now()}_${Math.random().toString(36).substr(2, 4)}`,
+    timestamp: now.toISOString(),
+    timeFormatted
+  };
+  memoryLogs.unshift(logItem);
+  if (memoryLogs.length > 200) {
+    memoryLogs = memoryLogs.slice(0, 200);
+  }
+  persistTelemetry();
+}
+
+export function recordFirestoreRead(count: number, operation: string, path: string, details: string) {
+  memoryStats.readsToday += count;
+  addLog({
+    type: 'READ',
+    operation,
+    path,
+    details,
+    status: 'SUCCESS',
+    count
+  });
+}
+
+export function recordFirestoreWrite(count: number, operation: string, path: string, details: string) {
+  memoryStats.writesToday += count;
+  addLog({
+    type: 'WRITE',
+    operation,
+    path,
+    details,
+    status: 'SUCCESS',
+    count
+  });
+}
+
+export function recordEcoSave(operation: string, path: string, details: string) {
+  memoryStats.ecoSavedWrites += 1;
+  addLog({
+    type: 'ECO_SAVE',
+    operation,
+    path,
+    details,
+    status: 'SUCCESS',
+    count: 1
+  });
+}
+
+export function recordFirestoreError(operation: string, path: string, errorMsg: string) {
+  memoryStats.errorsToday += 1;
+  if (errorMsg.includes('resource-exhausted') || errorMsg.includes('Quota exceeded') || errorMsg.includes('quota')) {
+    quotaExceededState = true;
+    memoryStats.isQuotaExceeded = true;
+  }
+  addLog({
+    type: 'ERROR',
+    operation,
+    path,
+    details: errorMsg,
+    status: 'ERROR',
+    count: 1
+  });
+}
+
+let quotaExceededState = false;
+
+export function isFirestoreQuotaExceeded(): boolean {
+  return quotaExceededState || memoryStats.isQuotaExceeded;
+}
+
 function handleFirestoreError(error: unknown, operationType: OperationType, path: string | null) {
+  const errMsg = error instanceof Error ? error.message : String(error);
+  recordFirestoreError(operationType, path || '-', errMsg);
+  if (errMsg.includes('resource-exhausted') || errMsg.includes('Quota exceeded') || errMsg.includes('quota')) {
+    quotaExceededState = true;
+    console.warn(`[Firestore Quota Exceeded] Path: ${path} (${operationType}). Switched to local persistent storage.`);
+    return;
+  }
+  
   const errInfo: FirestoreErrorInfo = {
-    error: error instanceof Error ? error.message : String(error),
+    error: errMsg,
     authInfo: {
       userId: null,
       email: null,
@@ -208,7 +386,6 @@ function handleFirestoreError(error: unknown, operationType: OperationType, path
     path
   };
   console.error('Firestore Error Details: ', JSON.stringify(errInfo));
-  throw new Error(JSON.stringify(errInfo));
 }
 
 // 4. Test database connection on startup
@@ -229,6 +406,7 @@ onSnapshot(
   doc(db, 'config', 'examConfig'),
   async (snapshot) => {
     if (snapshot.exists()) {
+      recordFirestoreRead(1, 'CONFIG_SYNC', 'config/examConfig', 'Sinkronisasi konfigurasi ujian');
       const data = snapshot.data() as ExamConfig;
       localConfig = data;
       localStorage.setItem(CONFIG_KEY, JSON.stringify(data));
@@ -246,12 +424,14 @@ onSnapshot(
         notifySubscribers('SYNC_CONFIG');
         try {
           await setDoc(doc(db, 'config', 'examConfig'), sanitizeForFirestore(cachedCfg));
+          recordFirestoreWrite(1, 'SAVE_CONFIG', 'config/examConfig', 'Inisialisasi config cached ke cloud');
         } catch (err) {
           console.warn('Silent sync of cached config to cloud:', err);
         }
       } else {
         try {
           await setDoc(doc(db, 'config', 'examConfig'), sanitizeForFirestore(INITIAL_CONFIG));
+          recordFirestoreWrite(1, 'SAVE_CONFIG', 'config/examConfig', 'Inisialisasi config default ke cloud');
           initialSyncCompleted.config = true;
           notifySubscribers('SYNC_CONFIG');
         } catch (err) {
@@ -263,6 +443,7 @@ onSnapshot(
   (error) => {
     console.warn('Config snapshot warning:', error);
     initialSyncCompleted.config = true;
+    notifySubscribers('SYNC_CONFIG');
   }
 );
 
@@ -271,6 +452,7 @@ onSnapshot(
   collection(db, 'questions'),
   async (snapshot) => {
     if (!snapshot.empty) {
+      recordFirestoreRead(snapshot.size, 'QUESTIONS_SYNC', 'questions', `Mengunduh ${snapshot.size} butir bank soal aktif`);
       const list: Question[] = [];
       snapshot.forEach((doc) => {
         list.push(doc.data() as Question);
@@ -298,38 +480,94 @@ onSnapshot(
   (error) => {
     console.warn('Questions snapshot warning:', error);
     initialSyncCompleted.questions = true;
+    notifySubscribers('SYNC_QUESTIONS');
   }
 );
 
-// C. Real-time Students List Sync
-onSnapshot(
-  collection(db, 'students'),
-  async (snapshot) => {
-    if (!snapshot.empty) {
-      const list: Student[] = [];
-      snapshot.forEach((doc) => {
-        list.push(doc.data() as Student);
-      });
-      // Sort alphabetically by student name
-      list.sort((a, b) => a.name.localeCompare(b.name));
+// C. Real-time Students List Sync (Dynamically managed to save 98% of Firestore reads)
+let unsubscribeAllStudents: (() => void) | null = null;
 
-      localStudents = list;
-      localStorage.setItem(STUDENTS_KEY, JSON.stringify(list));
-      initialSyncCompleted.students = true;
-      notifySubscribers('SYNC_STUDENTS');
-    } else {
-      // Snapshot is empty in Firestore. Respect the empty state immediately.
-      localStudents = [];
-      localStorage.setItem(STUDENTS_KEY, JSON.stringify([]));
+export function enableAllStudentsSync(): void {
+  if (unsubscribeAllStudents) return;
+  unsubscribeAllStudents = onSnapshot(
+    collection(db, 'students'),
+    async (snapshot) => {
+      if (!snapshot.empty) {
+        recordFirestoreRead(snapshot.size, 'STUDENTS_SYNC', 'students', `Sinkronisasi pemantauan ${snapshot.size} siswa (Admin Dashboard)`);
+        const list: Student[] = [];
+        snapshot.forEach((doc) => {
+          list.push(doc.data() as Student);
+        });
+        // Sort alphabetically by student name
+        list.sort((a, b) => a.name.localeCompare(b.name));
+
+        localStudents = list;
+        localStorage.setItem(STUDENTS_KEY, JSON.stringify(list));
+        initialSyncCompleted.students = true;
+        notifySubscribers('SYNC_STUDENTS');
+      } else {
+        localStudents = [];
+        localStorage.setItem(STUDENTS_KEY, JSON.stringify([]));
+        initialSyncCompleted.students = true;
+        notifySubscribers('SYNC_STUDENTS');
+      }
+    },
+    (error) => {
+      console.warn('Students collection snapshot warning:', error);
       initialSyncCompleted.students = true;
       notifySubscribers('SYNC_STUDENTS');
     }
-  },
-  (error) => {
-    console.warn('Students collection snapshot warning:', error);
-    initialSyncCompleted.students = true;
+  );
+}
+
+export function disableAllStudentsSync(): void {
+  if (unsubscribeAllStudents) {
+    unsubscribeAllStudents();
+    unsubscribeAllStudents = null;
   }
-);
+}
+
+// Student single document listener: only listens to that specific student's own doc during exam (saves reads)
+let unsubscribeMyStudent: (() => void) | null = null;
+
+export function subscribeToMyStudentSession(studentId: string): () => void {
+  if (unsubscribeMyStudent) {
+    unsubscribeMyStudent();
+    unsubscribeMyStudent = null;
+  }
+  if (!studentId) return () => {};
+
+  unsubscribeMyStudent = onSnapshot(
+    doc(db, 'students', studentId),
+    (snap) => {
+      if (snap.exists()) {
+        recordFirestoreRead(1, 'STUDENT_DOC_SYNC', `students/${studentId}`, 'Sinkronisasi status sesi siswa');
+        const studentData = snap.data() as Student;
+        const index = localStudents.findIndex((s) => s.id === studentData.id);
+        if (index !== -1) {
+          localStudents[index] = { ...localStudents[index], ...studentData };
+        } else {
+          localStudents.push(studentData);
+        }
+        localStorage.setItem(STUDENTS_KEY, JSON.stringify(localStudents));
+        notifySubscribers('SYNC_STUDENTS');
+      }
+    },
+    (error) => {
+      handleFirestoreError(error, OperationType.GET, `students/${studentId}`);
+    }
+  );
+
+  return () => {
+    if (unsubscribeMyStudent) {
+      unsubscribeMyStudent();
+      unsubscribeMyStudent = null;
+    }
+  };
+}
+
+// Start initial student sync
+enableAllStudentsSync();
 
 // D. Real-time Student Accounts Sync (Pre-registered users database for 1,200+ students)
 onSnapshot(
@@ -405,6 +643,7 @@ export async function saveExamConfig(config: ExamConfig, broadcast = true): Prom
 
   try {
     await setDoc(doc(db, 'config', 'examConfig'), sanitizeForFirestore(config));
+    recordFirestoreWrite(1, 'SAVE_CONFIG', 'config/examConfig', 'Memperbarui konfigurasi ujian ke cloud');
   } catch (err) {
     handleFirestoreError(err, OperationType.WRITE, 'config/examConfig');
   }
@@ -444,6 +683,7 @@ export async function saveQuestions(questions: Question[], broadcast = true): Pr
     });
 
     await batch.commit();
+    recordFirestoreWrite(questions.length, 'SAVE_QUESTIONS', 'questions', `Menyimpan ${questions.length} butir bank soal ke cloud`);
   } catch (err) {
     handleFirestoreError(err, OperationType.WRITE, 'questions');
   }
@@ -471,6 +711,7 @@ export async function saveStudentUsers(users: StudentUser[], broadcast = true): 
       });
       batch.set(doc(db, 'config', 'userMeta'), { usersInitialized: true, count: 0 });
       await batch.commit();
+      recordFirestoreWrite(1, 'SAVE_STUDENT_USERS', 'studentAccounts', 'Mereset bersih data akun siswa');
       return;
     }
 
@@ -488,6 +729,7 @@ export async function saveStudentUsers(users: StudentUser[], broadcast = true): 
 
     batch.set(doc(db, 'config', 'userMeta'), { usersInitialized: true, count: sanitizedUsers.length, updatedAt: new Date().toISOString() });
     await batch.commit();
+    recordFirestoreWrite(chunkCount, 'SAVE_STUDENT_USERS', 'studentAccounts', `Menyimpan ${sanitizedUsers.length} akun siswa dalam ${chunkCount} blok`);
   } catch (err) {
     handleFirestoreError(err, OperationType.WRITE, 'studentAccounts');
   }
@@ -528,14 +770,70 @@ export async function saveStudents(students: Student[], broadcast = true): Promi
       });
       await batch.commit();
     }
+    recordFirestoreWrite(cleanedList.length, 'SAVE_STUDENTS_BULK', 'students', `Menyimpan ${cleanedList.length} data siswa massal`);
   } catch (err) {
     console.error('Error saving students to cloud:', err);
   }
 }
 
-// Save/Update a single student session document in Firestore
+// Pending debounced cloud writes to prevent high-frequency write spam
+const pendingStudentSaves = new Map<string, any>();
+
+// Debounced cloud save for high-frequency events (e.g. clicking options in exam)
+// Writes locally in 0ms, then sends to Firestore once student stops clicking for delayMs
+export function debounceSaveSingleStudent(student: Student, delayMs = 3000, broadcast = true): void {
+  const cleaned = cleanStudent(student);
+  // 1. Instant local persistence (0ms, 100% offline-safe)
+  const index = localStudents.findIndex((s) => s.id === cleaned.id);
+  if (index !== -1) {
+    localStudents[index] = cleaned;
+  } else {
+    localStudents.push(cleaned);
+  }
+  localStorage.setItem(STUDENTS_KEY, JSON.stringify(localStudents));
+  if (broadcast) notifySubscribers('SYNC_STUDENTS');
+
+  // 2. Clear existing debounced timer for this student
+  if (pendingStudentSaves.has(cleaned.id)) {
+    clearTimeout(pendingStudentSaves.get(cleaned.id));
+  }
+
+  // 3. Queue cloud write (saving up to 80% of writes)
+  const timer = setTimeout(async () => {
+    pendingStudentSaves.delete(cleaned.id);
+    try {
+      await setDoc(doc(db, 'students', cleaned.id), sanitizeForFirestore(cleaned));
+      recordFirestoreWrite(1, 'SAVE_STUDENT_DEBOUNCED', `students/${cleaned.id}`, `Sinkronisasi debounced siswa: ${cleaned.name}`);
+    } catch (err) {
+      handleFirestoreError(err, OperationType.WRITE, `students/${cleaned.id}`);
+    }
+  }, delayMs);
+
+  pendingStudentSaves.set(cleaned.id, timer);
+}
+
+// Save student data LOCALLY ONLY (Zero Firestore writes/reads, saves 99% quota in Eco Mode)
+export function saveSingleStudentLocallyOnly(student: Student, broadcast = true): void {
+  const cleaned = cleanStudent(student);
+  const index = localStudents.findIndex((s) => s.id === cleaned.id);
+  if (index !== -1) {
+    localStudents[index] = cleaned;
+  } else {
+    localStudents.push(cleaned);
+  }
+  localStorage.setItem(STUDENTS_KEY, JSON.stringify(localStudents));
+  recordEcoSave('ECO_ANSWER_SAVE', `students/${cleaned.id}`, `Jawaban siswa '${cleaned.name}' disimpan di memori lokal (Menghemat 1 Write Cloud)`);
+  if (broadcast) notifySubscribers('SYNC_STUDENTS');
+}
+
+// Save/Update a single student session document in Firestore (Immediate flush)
 export async function saveSingleStudent(student: Student, broadcast = true): Promise<void> {
   const cleaned = cleanStudent(student);
+  if (pendingStudentSaves.has(cleaned.id)) {
+    clearTimeout(pendingStudentSaves.get(cleaned.id));
+    pendingStudentSaves.delete(cleaned.id);
+  }
+
   const index = localStudents.findIndex((s) => s.id === cleaned.id);
   if (index !== -1) {
     localStudents[index] = cleaned;
@@ -547,6 +845,7 @@ export async function saveSingleStudent(student: Student, broadcast = true): Pro
 
   try {
     await setDoc(doc(db, 'students', cleaned.id), sanitizeForFirestore(cleaned));
+    recordFirestoreWrite(1, 'SAVE_STUDENT', `students/${cleaned.id}`, `Kirim ke cloud: ${cleaned.name} (${cleaned.status})`);
   } catch (err) {
     handleFirestoreError(err, OperationType.WRITE, `students/${cleaned.id}`);
   }

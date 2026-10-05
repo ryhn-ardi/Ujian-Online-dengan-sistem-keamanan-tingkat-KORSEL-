@@ -1,4 +1,17 @@
-import { Question, ExamConfig, ExamSubject } from './types';
+import { Question, ExamConfig, ExamSubject, ProctorPermissions } from './types';
+
+export const DEFAULT_PROCTOR_PERMISSIONS: ProctorPermissions = {
+  allowUnlock: true,
+  allowUnlockAll: true,
+  allowResetAttempt: true,
+  allowResetViolations: true,
+  allowForceSubmit: true,
+  allowExportExcel: true,
+  showStudentScores: true,
+  showItemAnalysis: true,
+  showAnalyticsCharts: true,
+  allowChangeSubject: true
+};
 
 export const INITIAL_QUESTIONS: Question[] = [
   // SUBJECT 1: Matematika & Sains (sub1)
@@ -139,5 +152,9 @@ export const INITIAL_CONFIG: ExamConfig = {
   usedGlobalTokens: [],
   enableRandomSampling: false,
   sampleQuestionCount: 25,
-  requireStudentLogin: true
+  requireStudentLogin: true,
+  proctorPermissions: DEFAULT_PROCTOR_PERMISSIONS,
+  announcementSoundType: 'CHIME_AIRPORT',
+  activeAnnouncement: null,
+  ecoSyncMode: true
 };

@@ -62,6 +62,30 @@ export interface ExamSubject {
   scheduleExamEnd?: string; // Batas akhir siswa diizinkan mulai mengerjakan (WIB)
 }
 
+export interface ProctorPermissions {
+  allowUnlock: boolean; // Otoritas buka kunci siswa yang terkunci (remote unlock)
+  allowUnlockAll: boolean; // Otoritas buka kunci massal seluruh siswa sekaligus
+  allowResetAttempt: boolean; // Otoritas reset pengerjaan & jawaban siswa dari awal (ulang ujian)
+  allowResetViolations: boolean; // Otoritas reset hitungan pelanggaran siswa menjadi 0
+  allowForceSubmit: boolean; // Otoritas kumpulkan paksa lembar ujian siswa
+  allowExportExcel: boolean; // Otoritas unduh file spreadsheet rekap nilai ujian ke Excel
+  showStudentScores: boolean; // Tampilkan nilai hasil ujian siswa di tabel pengawas
+  showItemAnalysis: boolean; // Tampilkan tab Analisis Butir Soal ke pengawas
+  showAnalyticsCharts: boolean; // Tampilkan tab Grafik & Statistik ke pengawas
+  allowChangeSubject?: boolean; // Otoritas koreksi / pindah naskah mapel siswa yang salah naskah
+}
+
+export interface BroadcastAnnouncement {
+  id: string; // Unique identifier for each broadcast
+  message: string; // Custom message text from admin/proctor
+  sender: string; // Display sender title (e.g. 'Administrator Master' or 'Pengawas Ruang')
+  timestamp: string; // ISO date timestamp
+  soundType?: 'CHIME_AIRPORT' | 'CHIME_HARMONY' | 'CHIME_DIGITAL' | 'CHIME_ELEGANT' | 'CUSTOM_AUDIO';
+  customAudioUrl?: string; // Optional audio data URL
+  targetSubjectId?: string; // 'all' or specific subjectId
+  active: boolean; // True while the announcement is actively broadcast
+}
+
 export interface ExamConfig {
   durationMinutes: number;
   examTitle: string;
@@ -82,4 +106,10 @@ export interface ExamConfig {
   alarmType?: 'SIREN' | 'BUZZER' | 'NUCLEAR' | 'BELL' | 'CUSTOM_AUDIO'; // Tipe alarm pelanggaran
   customAlarmAudioUrl?: string; // Audio file Base64 data URL atau external URL untuk alarm kustom
   customAlarmName?: string; // Nama deskripsi audio kustom yang diunggah
+  proctorPermissions?: ProctorPermissions; // Konfigurasi wewenang dan tampilan akun pengawas
+  announcementSoundType?: 'CHIME_AIRPORT' | 'CHIME_HARMONY' | 'CHIME_DIGITAL' | 'CHIME_ELEGANT' | 'CUSTOM_AUDIO'; // Suara pengumuman massal
+  customAnnouncementAudioUrl?: string; // URL audio kustom untuk pengumuman
+  customAnnouncementName?: string; // Nama file audio kustom pengumuman
+  activeAnnouncement?: BroadcastAnnouncement | null; // Pengumuman massal aktif saat ini
+  ecoSyncMode?: boolean; // Mode Hemat Kuota Ekstrem: Hanya kirim pelanggaran, unlock, dan kumpul nilai ke server (hemat 99% kuota)
 }

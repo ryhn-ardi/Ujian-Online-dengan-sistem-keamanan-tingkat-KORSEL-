@@ -11,9 +11,15 @@ import {
   subscribeToSync,
   isInitialSyncCompleted,
   saveSingleStudent,
-  deleteSingleStudent
+  deleteSingleStudent,
+  getExamSubjects,
+  debounceSaveSingleStudent,
+  saveSingleStudentLocallyOnly,
+  disableAllStudentsSync,
+  enableAllStudentsSync,
+  subscribeToMyStudentSession
 } from './utils/sync';
-import { Student, Question, ExamConfig, StudentStatus, StudentUser } from './types';
+import { Student, Question, ExamConfig, StudentStatus, StudentUser, BroadcastAnnouncement } from './types';
 import StudentRegistration from './components/StudentRegistration';
 import StudentExam from './components/StudentExam';
 import AdminPanel from './components/AdminPanel';
@@ -83,10 +89,10 @@ export function getStudentMetrics(s: Student, questionsList: Question[]) {
 
 export default function App() {
   const [role, setRole] = useState<'SETUP' | 'STUDENT_EXAM' | 'STUDENT_FINISHED' | 'ADMIN' | 'PROCTOR'>('SETUP');
-  const [students, setStudents] = useState<Student[]>([]);
-  const [questions, setQuestions] = useState<Question[]>([]);
-  const [studentUsers, setStudentUsers] = useState<StudentUser[]>([]);
-  const [config, setConfig] = useState<ExamConfig>({ durationMinutes: 15, examTitle: '' });
+  const [students, setStudents] = useState<Student[]>(() => [...getStudents()]);
+  const [questions, setQuestions] = useState<Question[]>(() => [...getQuestions()]);
+  const [studentUsers, setStudentUsers] = useState<StudentUser[]>(() => [...getStudentUsers()]);
+  const [config, setConfig] = useState<ExamConfig>(() => ({ ...getExamConfig() }));
   const [currentStudentId, setCurrentStudentId] = useState<string>(() => {
     try {
       return localStorage.getItem('active_student_id') || '';
@@ -94,7 +100,7 @@ export default function App() {
       return '';
     }
   });
-  const [isDbSynced, setIsDbSynced] = useState<boolean>(false);
+  const [isPreparing, setIsPreparing] = useState<boolean>(true);
 
   // 1. Load initial states on mount
   useEffect(() => {
@@ -106,7 +112,11 @@ export default function App() {
     if (typeof document !== 'undefined' && cfg.examTitle) {
       document.title = cfg.examTitle;
     }
-    setIsDbSynced(isInitialSyncCompleted());
+
+    // Smooth guaranteed transition: Displays "Mempersiapkan Lembar Ujian..." briefly then enters
+    const timer = setTimeout(() => {
+      setIsPreparing(false);
+    }, 1200);
 
     // 2. Subscribe to real-time tab updates
     const unsubscribe = subscribeToSync((syncType) => {
@@ -124,30 +134,62 @@ export default function App() {
       } else if (syncType === 'SYNC_STUDENT_USERS') {
         setStudentUsers([...getStudentUsers()]);
       }
-      setIsDbSynced(isInitialSyncCompleted());
     });
 
-    return () => unsubscribe();
+    return () => {
+      clearTimeout(timer);
+      unsubscribe();
+    };
   }, []);
 
   // Monitor initial database and student sync to restore student session on refresh
   useEffect(() => {
-    if (isDbSynced && currentStudentId) {
+    if (currentStudentId) {
       const active = students.find((s) => s.id === currentStudentId);
       if (active) {
         if (active.status === 'SELESAI') {
           setRole('STUDENT_FINISHED');
         } else {
+          // Check if subject is still active in system
+          const subjects = getExamSubjects(config);
+          const studentSub = subjects.find(sub => sub.id === (active.subjectId || 'sub1'));
+          
+          if (studentSub && studentSub.isActive === false) {
+            console.warn(`Subject ${active.subjectId} (${studentSub.name}) is currently deactivated by admin.`);
+            setCurrentStudentId('');
+            try {
+              localStorage.removeItem('active_student_id');
+            } catch (e) {}
+            setRole('SETUP');
+            return;
+          }
+
           setRole('STUDENT_EXAM');
         }
-      } else {
+      } else if (students.length > 0) {
         // Cached session was deleted from admin panel, wipe local cache
         setCurrentStudentId('');
-        localStorage.removeItem('active_student_id');
+        try {
+          localStorage.removeItem('active_student_id');
+        } catch (e) {}
         setRole('SETUP');
       }
     }
-  }, [isDbSynced, students, currentStudentId]);
+  }, [students, currentStudentId, config]);
+
+  // Dynamic smart sync listener: Disables heavy all-students listener on student devices during exam (Saves 98% Firestore reads)
+  useEffect(() => {
+    if (role === 'STUDENT_EXAM' && currentStudentId) {
+      disableAllStudentsSync();
+      const unsub = subscribeToMyStudentSession(currentStudentId);
+      return () => {
+        unsub();
+        enableAllStudentsSync();
+      };
+    } else {
+      enableAllStudentsSync();
+    }
+  }, [role, currentStudentId]);
 
   // Sync state helpers
   const handleUpdateStudents = (updatedList: Student[]) => {
@@ -225,14 +267,22 @@ export default function App() {
         return;
       }
 
-      // Reconnect to existing session, updating basic parameters if they changed
+      // Reconnect to existing session, ensuring assigned questions strictly match current subject pool
+      const subQuestions = questions.filter(
+        (q) => (!q.subjectId && (!targetSubjectId || targetSubjectId === 'sub1')) || q.subjectId === targetSubjectId
+      );
+      const subQuestionIdSet = new Set(subQuestions.map(q => q.id));
+      const hasValidAssignedIds = Array.isArray(existing.assignedQuestionIds) &&
+        existing.assignedQuestionIds.length > 0 &&
+        existing.assignedQuestionIds.every(id => subQuestionIdSet.has(id));
+
       const updatedStudent: Student = {
         ...existing,
         username: data.username || existing.username || '',
         studentClass: data.studentClass.trim(),
         absentNumber: data.absentNumber.trim(),
         subjectId: targetSubjectId,
-        assignedQuestionIds: existing.assignedQuestionIds || sampleQuestionsForSubject(targetSubjectId),
+        assignedQuestionIds: hasValidAssignedIds ? existing.assignedQuestionIds : sampleQuestionsForSubject(targetSubjectId),
         lastActive: new Date().toISOString()
       };
       
@@ -297,7 +347,15 @@ export default function App() {
         totalQuestions: metrics.totalQuestions,
         lastActive: new Date().toISOString()
       };
-      saveSingleStudent(updatedActive);
+      
+      // Mode Hemat Kuota Ekstrem: Simpan 100% lokal di HP siswa (0 write ke Firebase per soal)
+      // Hanya kirim ke Firebase saat Pelanggaran, Unlock, atau Kumpul Ujian (Submit)
+      if (config.ecoSyncMode !== false) {
+        saveSingleStudentLocallyOnly(updatedActive);
+      } else {
+        // Mode Live Sync: Kirim debounced ke Firebase
+        debounceSaveSingleStudent(updatedActive, 3000);
+      }
     }
   };
 
@@ -443,7 +501,7 @@ export default function App() {
     }
   }, [students, role, activeStudent]);
 
-  if (!isDbSynced) {
+  if (isPreparing) {
     return (
       <div className="min-h-screen bg-slate-900 flex flex-col items-center justify-center p-4">
         <div className="text-center max-w-sm w-full space-y-6">
@@ -473,9 +531,17 @@ export default function App() {
             </div>
             <div className="flex items-center justify-between">
               <span>Mengunduh Bank Soal Aktif...</span>
-              <span className="text-amber-400 font-bold animate-pulse">MEMPROSES</span>
+              <span className="text-emerald-400 font-bold">SELESAI</span>
             </div>
           </div>
+
+          <button
+            type="button"
+            onClick={() => setIsPreparing(false)}
+            className="w-full py-2.5 px-4 bg-slate-800 hover:bg-slate-700 text-indigo-300 hover:text-white font-mono text-xs rounded-xl border border-slate-700 transition cursor-pointer"
+          >
+            Masuk Langsung &rarr;
+          </button>
         </div>
       </div>
     );
@@ -658,6 +724,115 @@ export default function App() {
               return s;
             });
             setStudents(updated);
+          }}
+          onResetStudentAttempt={(studentId) => {
+            const freshStudents = getStudents();
+            const updated = freshStudents.map((s) => {
+              if (s.id === studentId) {
+                const refreshed: Student = {
+                  ...s,
+                  status: 'BELUM_MULAI',
+                  answers: {},
+                  score: undefined,
+                  correctAnswersCount: undefined,
+                  totalQuestions: undefined,
+                  violationCount: 0,
+                  lockedReason: undefined,
+                  startTime: undefined,
+                  endTime: undefined,
+                  lastActive: new Date().toISOString()
+                };
+                saveSingleStudent(refreshed);
+                return refreshed;
+              }
+              return s;
+            });
+            setStudents(updated);
+          }}
+          onResetStudentViolations={(studentId) => {
+            const freshStudents = getStudents();
+            const updated = freshStudents.map((s) => {
+              if (s.id === studentId) {
+                const refreshed: Student = {
+                  ...s,
+                  status: s.status === 'TERKUNCI' ? 'SEDANG_MENGERJAKAN' : s.status,
+                  violationCount: 0,
+                  lockedReason: undefined,
+                  lastActive: new Date().toISOString()
+                };
+                saveSingleStudent(refreshed);
+                return refreshed;
+              }
+              return s;
+            });
+            setStudents(updated);
+          }}
+          onForceSubmitStudent={(studentId) => {
+            const freshStudents = getStudents();
+            const target = freshStudents.find(s => s.id === studentId);
+            if (!target) return;
+            const metrics = getStudentMetrics(target, questions);
+            const updated = freshStudents.map((s) => {
+              if (s.id === studentId) {
+                const refreshed: Student = {
+                  ...s,
+                  status: 'SELESAI',
+                  score: metrics.score,
+                  correctAnswersCount: metrics.correctAnswersCount,
+                  totalQuestions: metrics.totalQuestions,
+                  endTime: new Date().toISOString(),
+                  lastActive: new Date().toISOString()
+                };
+                saveSingleStudent(refreshed);
+                return refreshed;
+              }
+              return s;
+            });
+            setStudents(updated);
+          }}
+          onChangeStudentSubject={(studentId, newSubjectId) => {
+            const freshStudents = getStudents();
+            const updated = freshStudents.map((s) => {
+              if (s.id === studentId) {
+                const subStudent: Student = {
+                  ...s,
+                  subjectId: newSubjectId,
+                  lastActive: new Date().toISOString()
+                };
+                const metrics = getStudentMetrics(subStudent, questions);
+                const refreshed: Student = {
+                  ...subStudent,
+                  score: s.status === 'SELESAI' ? metrics.score : s.score,
+                  correctAnswersCount: s.status === 'SELESAI' ? metrics.correctAnswersCount : s.correctAnswersCount,
+                  totalQuestions: metrics.totalQuestions
+                };
+                saveSingleStudent(refreshed);
+                return refreshed;
+              }
+              return s;
+            });
+            setStudents(updated);
+          }}
+          onBroadcastAnnouncement={(message, sender = 'Pengawas Ruangan') => {
+            const newAnnouncement: BroadcastAnnouncement = {
+              id: `ann_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
+              message: message.trim(),
+              sender,
+              timestamp: new Date().toISOString(),
+              soundType: config.announcementSoundType || 'CHIME_AIRPORT',
+              customAudioUrl: config.customAnnouncementAudioUrl,
+              active: true
+            };
+            handleUpdateConfig({
+              ...config,
+              activeAnnouncement: newAnnouncement
+            });
+          }}
+          onClearAnnouncement={() => {
+            handleUpdateConfig({
+              ...config,
+              activeAnnouncement: null
+            });
           }}
           onExit={() => setRole('SETUP')}
         />

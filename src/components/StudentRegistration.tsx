@@ -68,7 +68,7 @@ export default function StudentRegistration({
   });
 
   const [subjectId, setSubjectId] = useState<string>(() => {
-    return visibleSubjects[0]?.id || 'sub1';
+    return visibleSubjects[0]?.id || '';
   });
 
   // Automatically adjust subjectId if current selection is not in visibleSubjects list
@@ -78,15 +78,13 @@ export default function StudentRegistration({
     }
   }, [authenticatedUser, visibleSubjects, subjectId]);
 
+  // Determine effective subject ID strictly from active visible subjects
+  const effectiveSubjectId = visibleSubjects.find(s => s.id === subjectId)?.id || visibleSubjects[0]?.id || '';
+
   // Calculate question count for a specific subject
   const getSubjectQuestionCount = (subId: string) => {
-    return questions.filter(q => (!q.subjectId && subId === 'sub1') || q.subjectId === subId).length;
+    return questions.filter(q => q.subjectId === subId || (!q.subjectId && subId === (allSubjects[0]?.id || 'sub1'))).length;
   };
-
-  // Determine effective subject ID (fallback if current is not in visible list)
-  const effectiveSubjectId = visibleSubjects.some(s => s.id === subjectId)
-    ? subjectId
-    : (visibleSubjects[0]?.id || 'sub1');
 
   const selectedSubject = visibleSubjects.find(s => s.id === effectiveSubjectId);
   const selectedSubjectSchedule = selectedSubject ? evaluateSubjectSchedule(selectedSubject, wibClock.now) : null;
@@ -98,7 +96,7 @@ export default function StudentRegistration({
     if (!currentUsername && !currentName) return null;
 
     return students.find((s) => {
-      const sSub = s.subjectId || 'sub1';
+      const sSub = s.subjectId || allSubjects[0]?.id || 'sub1';
       if (sSub !== subId) return false;
       if (currentUsername && s.username && s.username.toLowerCase() === currentUsername) return true;
       if (currentName) {

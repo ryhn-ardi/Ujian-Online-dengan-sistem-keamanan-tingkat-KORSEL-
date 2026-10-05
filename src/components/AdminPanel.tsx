@@ -1,15 +1,30 @@
 import React, { useState, useRef } from 'react';
-import { Users, FileSpreadsheet, RefreshCw, KeyRound, Edit, Trash2, Plus, Save, BookOpen, Clock, X, ChevronRight, Check, AlertTriangle, ShieldCheck, Search, Eye, EyeOff, Layers, Settings2, Sparkles, Ticket, Download, Upload, Shuffle, UserCheck, Lock, CheckCircle2, ChevronLeft, Image as ImageIcon, AlignLeft, HelpCircle, FileText, Calendar, Timer, CheckSquare, Radio, BarChart3, Volume2, VolumeX, Music, FileAudio, AlertCircle, Copy } from 'lucide-react';
+import { Users, FileSpreadsheet, RefreshCw, KeyRound, Edit, Trash2, Plus, Save, BookOpen, Clock, X, ChevronRight, Check, AlertTriangle, ShieldCheck, Search, Eye, EyeOff, Layers, Settings2, Sparkles, Ticket, Download, Upload, Shuffle, UserCheck, Lock, CheckCircle2, ChevronLeft, Image as ImageIcon, AlignLeft, HelpCircle, FileText, Calendar, Timer, CheckSquare, Radio, BarChart3, Volume2, VolumeX, Music, FileAudio, AlertCircle, Copy, SlidersHorizontal, Megaphone, Bell, Activity, Database, Server, Terminal, FileCode } from 'lucide-react';
 import * as XLSX from 'xlsx';
-import { Student, Question, ExamConfig, ExamSubject, StudentUser } from '../types';
-import { getExamSubjects, saveSingleStudent, clearAllStudents } from '../utils/sync';
+import { Student, Question, ExamConfig, ExamSubject, StudentUser, ProctorPermissions, BroadcastAnnouncement } from '../types';
+import { DEFAULT_PROCTOR_PERMISSIONS } from '../data';
+import {
+  getExamSubjects,
+  saveSingleStudent,
+  clearAllStudents,
+  isFirestoreQuotaExceeded,
+  getFirestoreStats,
+  getFirestoreLogs,
+  clearFirestoreLogs,
+  resetDailyFirestoreStats,
+  SPARK_DAILY_READ_LIMIT,
+  SPARK_DAILY_WRITE_LIMIT,
+  FirestoreStats,
+  FirestoreLogEntry,
+  subscribeToSync
+} from '../utils/sync';
 import { RichExamContent } from './RichExamContent';
 import { compressImageFile } from '../utils/imageCompressor';
 import { useRealtimeWIB, formatWIBDateTime, formatWIBShort, formatWIBTimeOnly, evaluateSubjectSchedule, toWIBDateTimeInputValue, parseWIBInputValueToISO, formatDurationCountdown } from '../utils/timeWib';
 import { parseDocxExamFile, WordImportResult } from '../utils/wordImporter';
 import AnalyticsCharts from './AnalyticsCharts';
 import ItemAnalysisTab from './ItemAnalysisTab';
-import { playAlarmSound, stopAllAlarmSounds } from '../utils/alarmAudio';
+import { playAlarmSound, stopAllAlarmSounds, playAnnouncementSound } from '../utils/alarmAudio';
 import { verifyUltimateCode, ULTIMATE_AUTHORIZATION_CODE } from '../utils/securityAuth';
 import { GRADE_PRESETS, getGradeBadge } from '../utils/gradeHelper';
 
@@ -97,7 +112,24 @@ export default function AdminPanel({
   onExit
 }: AdminPanelProps) {
   // Tabs for the Admin Control Panel
-  const [activeTab, setActiveTab] = useState<'MONITOR' | 'CHARTS' | 'ITEM_ANALYSIS' | 'QUESTIONS' | 'CONFIG' | 'ACCOUNTS'>('MONITOR');
+  const [activeTab, setActiveTab] = useState<'MONITOR' | 'CHARTS' | 'ITEM_ANALYSIS' | 'QUESTIONS' | 'CONFIG' | 'ACCOUNTS' | 'TELEMETRY'>('MONITOR');
+
+  // Telemetry & Quota Monitoring State
+  const [telemetryStats, setTelemetryStats] = useState<FirestoreStats>(() => getFirestoreStats());
+  const [telemetryLogs, setTelemetryLogs] = useState<FirestoreLogEntry[]>(() => getFirestoreLogs());
+  const [logFilter, setLogFilter] = useState<'ALL' | 'ERROR' | 'WRITE' | 'READ' | 'ECO'>('ALL');
+  const [logSearch, setLogSearch] = useState<string>('');
+
+  // Subscribe to real-time telemetry changes
+  React.useEffect(() => {
+    const unsub = subscribeToSync((type) => {
+      if (type === 'SYNC_TELEMETRY' || type === 'SYNC_STUDENTS' || type === 'SYNC_CONFIG') {
+        setTelemetryStats(getFirestoreStats());
+        setTelemetryLogs(getFirestoreLogs());
+      }
+    });
+    return () => unsub();
+  }, []);
 
   // Search filter query
   const [studentSearch, setStudentSearch] = useState('');
@@ -113,6 +145,7 @@ export default function AdminPanel({
   const [editName, setEditName] = useState('');
   const [editAbsen, setEditAbsen] = useState('');
   const [editClass, setEditClass] = useState('');
+  const [editSubjectId, setEditSubjectId] = useState('');
 
   // Dynamic Subjects state (up to 20 slots)
   const subjects: ExamSubject[] = getExamSubjects(config);
@@ -157,7 +190,7 @@ export default function AdminPanel({
   const wibClock = useRealtimeWIB();
 
   // Vertical Navigation Tab in CONFIG tab
-  const [configSectionTab, setConfigSectionTab] = useState<'GENERAL' | 'SECURITY' | 'ALARM' | 'TOKENS' | 'STUDENT_ACCESS' | 'STAFF_PASSWORDS'>('GENERAL');
+  const [configSectionTab, setConfigSectionTab] = useState<'GENERAL' | 'SECURITY' | 'ALARM' | 'TOKENS' | 'STUDENT_ACCESS' | 'STAFF_PASSWORDS' | 'PROCTOR_PERMISSIONS'>('GENERAL');
 
   // Password Management with Ultimate Authorization Code
   const [authCodeInput, setAuthCodeInput] = useState('');
@@ -223,6 +256,103 @@ export default function AdminPanel({
       alert(`Audio kustom "${file.name}" berhasil diunggah! Anda dapat mengujinya dengan tombol "Uji Coba Bunyi Alarm".`);
     };
     reader.readAsDataURL(file);
+  };
+
+  // Broadcast Announcement States & Handlers
+  const [showBroadcastModal, setShowBroadcastModal] = useState(false);
+  const [broadcastMessage, setBroadcastMessage] = useState('');
+  const [broadcastSender, setBroadcastSender] = useState('Administrator Master');
+  const [broadcastSoundType, setBroadcastSoundType] = useState<'CHIME_AIRPORT' | 'CHIME_HARMONY' | 'CHIME_DIGITAL' | 'CHIME_ELEGANT' | 'CUSTOM_AUDIO'>(
+    () => config.announcementSoundType || 'CHIME_AIRPORT'
+  );
+  const [broadcastTargetSubject, setBroadcastTargetSubject] = useState<string>('all');
+  const [isPlayingAnnouncementTest, setIsPlayingAnnouncementTest] = useState(false);
+  const announcementControllerRef = useRef<{ stop: () => void } | null>(null);
+
+  const handleTestAnnouncementSound = (soundType?: any, customUrl?: string) => {
+    if (isPlayingAnnouncementTest) {
+      if (announcementControllerRef.current) announcementControllerRef.current.stop();
+      stopAllAlarmSounds();
+      setIsPlayingAnnouncementTest(false);
+      return;
+    }
+    const testConfig: Partial<ExamConfig> = {
+      announcementSoundType: soundType || broadcastSoundType || config.announcementSoundType || 'CHIME_AIRPORT',
+      customAnnouncementAudioUrl: customUrl !== undefined ? customUrl : config.customAnnouncementAudioUrl
+    };
+    setIsPlayingAnnouncementTest(true);
+    const controller = playAnnouncementSound(testConfig);
+    announcementControllerRef.current = controller;
+    setTimeout(() => {
+      setIsPlayingAnnouncementTest(false);
+    }, 4000);
+  };
+
+  const handleCustomAnnouncementFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    if (file.size > 8 * 1024 * 1024) {
+      alert('Ukuran file audio maksimal 8 MB.');
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = () => {
+      const base64 = reader.result as string;
+      onUpdateConfig({
+        ...config,
+        announcementSoundType: 'CUSTOM_AUDIO',
+        customAnnouncementAudioUrl: base64,
+        customAnnouncementName: file.name
+      });
+      setBroadcastSoundType('CUSTOM_AUDIO');
+      alert(`Audio pengumuman "${file.name}" berhasil diunggah! Anda dapat mengujinya dengan tombol "Putar Contoh Suara".`);
+    };
+    reader.readAsDataURL(file);
+    e.target.value = '';
+  };
+
+  const handleSendBroadcast = () => {
+    if (!broadcastMessage.trim()) {
+      alert('Mohon tuliskan isi pesan pengumuman terlebih dahulu!');
+      return;
+    }
+    const activeWorkingCount = students.filter(s => s.status === 'SEDANG_MENGERJAKAN').length;
+    const confirmSend = window.confirm(
+      `Kirimkan pengumuman ini ke ${activeWorkingCount} siswa yang sedang aktif mengerjakan ujian sekarang?`
+    );
+    if (!confirmSend) return;
+
+    const newAnnouncement: BroadcastAnnouncement = {
+      id: `ann_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
+      message: broadcastMessage.trim(),
+      sender: broadcastSender.trim() || 'Administrator Master',
+      timestamp: new Date().toISOString(),
+      soundType: broadcastSoundType,
+      customAudioUrl: config.customAnnouncementAudioUrl,
+      targetSubjectId: broadcastTargetSubject,
+      active: true
+    };
+
+    onUpdateConfig({
+      ...config,
+      announcementSoundType: broadcastSoundType,
+      activeAnnouncement: newAnnouncement
+    });
+
+    alert('✅ Pengumuman massal berhasil dikirimkan ke layar seluruh siswa yang sedang mengerjakan!');
+    setShowBroadcastModal(false);
+  };
+
+  const handleClearActiveBroadcast = () => {
+    if (!config.activeAnnouncement) return;
+    const confirmClear = window.confirm('Apakah Anda yakin ingin menarik / menghapus pengumuman yang sedang aktif dari layar siswa?');
+    if (!confirmClear) return;
+
+    onUpdateConfig({
+      ...config,
+      activeAnnouncement: null
+    });
+    alert('Pengumuman aktif telah ditarik.');
   };
 
   const handleApplyPasswordChange = (e: React.FormEvent) => {
@@ -1800,11 +1930,21 @@ export default function AdminPanel({
 
     const updated = students.map((s) => {
       if (s.id === editingStudent.id) {
-        return {
+        const newSubId = editSubjectId || s.subjectId || 'sub1';
+        const subStudent: Student = {
           ...s,
           name: editName.trim(),
           absentNumber: editAbsen.trim(),
-          studentClass: editClass.trim().toUpperCase()
+          studentClass: editClass.trim().toUpperCase(),
+          subjectId: newSubId,
+          lastActive: new Date().toISOString()
+        };
+        const metrics = getStudentMetrics(subStudent, questions);
+        return {
+          ...subStudent,
+          score: s.status === 'SELESAI' ? metrics.score : (typeof s.score === 'number' ? s.score : undefined),
+          correctAnswersCount: s.status === 'SELESAI' ? metrics.correctAnswersCount : s.correctAnswersCount,
+          totalQuestions: metrics.totalQuestions
         };
       }
       return s;
@@ -2897,6 +3037,27 @@ export default function AdminPanel({
               Bersihkan Cache & Sinkronkan
             </button>
             <button
+              id="btn-admin-broadcast"
+              onClick={() => setShowBroadcastModal(true)}
+              className={`px-3.5 py-2 font-extrabold rounded-xl text-xs sm:text-sm transition flex items-center gap-2 cursor-pointer shadow-xs ${
+                config.activeAnnouncement?.active
+                  ? 'bg-amber-400 hover:bg-amber-300 text-slate-950 ring-2 ring-amber-300 animate-pulse'
+                  : 'bg-indigo-600 hover:bg-indigo-500 text-white'
+              }`}
+              title="Kirim pengumuman custom massal ke seluruh siswa yang sedang mengerjakan"
+            >
+              <Megaphone className="w-4 h-4" />
+              <span>Pengumuman Massal</span>
+              <span className={`px-1.5 py-0.5 rounded-full text-[10px] font-mono font-black ${
+                config.activeAnnouncement?.active ? 'bg-black/20 text-slate-950' : 'bg-white/20 text-white'
+              }`}>
+                {students.filter(s => s.status === 'SEDANG_MENGERJAKAN').length} Aktif
+              </span>
+              {config.activeAnnouncement?.active && (
+                <span className="w-2 h-2 rounded-full bg-red-600 animate-ping" />
+              )}
+            </button>
+            <button
               id="btn-admin-export"
               onClick={handleExportToExcel}
               className="px-4 py-2 bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-extrabold rounded-xl text-xs sm:text-sm transition flex items-center gap-2"
@@ -2914,6 +3075,23 @@ export default function AdminPanel({
           </div>
         </div>
       </header>
+
+      {/* Firebase Quota Warning Banner */}
+      {isFirestoreQuotaExceeded() && (
+        <div className="bg-amber-500/10 border-b border-amber-500/20 px-6 py-2.5 text-amber-900 bg-amber-50/90 flex flex-wrap items-center justify-between gap-3 text-xs">
+          <div className="flex items-center gap-2">
+            <span className="font-extrabold text-amber-700 bg-amber-200/80 px-2 py-0.5 rounded text-[10px] uppercase tracking-wider">
+              KUOTA CLOUD PENUH
+            </span>
+            <span className="text-amber-800 font-medium">
+              Batas gratis harian Firestore (50.000 read) telah tercapai. Sistem otomatis menggunakan <strong>penyimpanan lokal browser</strong> sehingga ujian siswa tetap berjalan lancar tanpa kendala.
+            </span>
+          </div>
+          <div className="text-[11px] text-amber-700 font-medium">
+            Untuk sinkronisasi real-time antar perangkat kembali aktif, upgrade Firebase ke Blaze Plan di console.firebase.google.com
+          </div>
+        </div>
+      )}
 
       {/* Primary Sub Tabs */}
       <div className="bg-white border-b border-slate-200 overflow-x-auto">
@@ -2984,6 +3162,31 @@ export default function AdminPanel({
             <UserCheck className="w-4 h-4" />
             Data Akun Siswa ({(studentUsers || []).length})
           </button>
+          <button
+            id="tab-telemetry-quota"
+            onClick={() => setActiveTab('TELEMETRY')}
+            className={`px-5 py-4 font-bold text-sm border-b-2 flex items-center gap-2 transition cursor-pointer ${
+              activeTab === 'TELEMETRY'
+                ? 'border-indigo-600 text-indigo-600 bg-indigo-50/40'
+                : 'border-transparent text-slate-500 hover:text-slate-800'
+            }`}
+          >
+            <Database className="w-4 h-4 text-amber-500" />
+            <span>Log & Kuota Database</span>
+            {telemetryStats.isQuotaExceeded ? (
+              <span className="px-1.5 py-0.5 rounded text-[10px] font-black bg-rose-500 text-white animate-pulse">
+                PENUH
+              </span>
+            ) : telemetryStats.errorsToday > 0 ? (
+              <span className="px-1.5 py-0.5 rounded text-[10px] font-bold bg-amber-100 text-amber-800">
+                {telemetryStats.errorsToday} Err
+              </span>
+            ) : (
+              <span className="px-1.5 py-0.5 rounded text-[10px] font-mono font-bold bg-emerald-100 text-emerald-800">
+                {Math.round((telemetryStats.readsToday / SPARK_DAILY_READ_LIMIT) * 100)}%
+              </span>
+            )}
+          </button>
         </div>
       </div>
 
@@ -2993,6 +3196,62 @@ export default function AdminPanel({
         {/* TAB 1: MONITORING TABLE */}
         {activeTab === 'MONITOR' && (
           <div className="space-y-6">
+
+            {/* Quick Switch: Mode Hemat Kuota Ekstrem vs Mode Live */}
+            <div className={`p-4 rounded-2xl border transition flex flex-col sm:flex-row sm:items-center justify-between gap-3 shadow-xs ${
+              config.ecoSyncMode !== false
+                ? 'bg-emerald-50 border-emerald-300 text-emerald-950'
+                : 'bg-amber-50 border-amber-300 text-amber-950'
+            }`}>
+              <div className="flex items-center gap-3">
+                <div className={`p-2.5 rounded-xl text-white shrink-0 ${config.ecoSyncMode !== false ? 'bg-emerald-600' : 'bg-amber-600'}`}>
+                  <ShieldCheck className="w-5 h-5" />
+                </div>
+                <div>
+                  <div className="flex items-center gap-2">
+                    <span className="font-extrabold text-xs tracking-wider uppercase font-mono">
+                      {config.ecoSyncMode !== false ? 'Mode Hemat Kuota Ekstrem: AKTIF' : 'Mode Pemantauan Live Penuh: AKTIF'}
+                    </span>
+                    <span className={`text-[10px] font-black px-1.5 py-0.5 rounded font-mono ${
+                      config.ecoSyncMode !== false ? 'bg-emerald-200 text-emerald-800' : 'bg-amber-200 text-amber-800'
+                    }`}>
+                      {config.ecoSyncMode !== false ? 'HEMAT 99% KUOTA' : 'BOROS KUOTA'}
+                    </span>
+                  </div>
+                  <p className="text-xs opacity-90 mt-0.5">
+                    {config.ecoSyncMode !== false
+                      ? 'Naskah soal & jawaban tersimpan di memori HP siswa. Kuota Firebase HANYA digunakan saat Pelanggaran, Unlock, dan Kumpul Nilai Akhir.'
+                      : 'Jawaban siswa dikirim terus-menerus ke server setiap siswa klik (Dianjurkan hanya jika Anda memakai Firebase Blaze).'
+                    }
+                  </p>
+                </div>
+              </div>
+              <div className="flex items-center gap-2 shrink-0">
+                <button
+                  type="button"
+                  onClick={() => setActiveTab('TELEMETRY')}
+                  className="px-3.5 py-2 bg-black/10 hover:bg-black/15 text-slate-800 font-bold text-xs rounded-xl transition flex items-center gap-1.5 cursor-pointer"
+                  title="Lihat rincian pembacaan, penulisan, dan log error siswa"
+                >
+                  <Database className="w-3.5 h-3.5 text-slate-700" />
+                  <span>Log &amp; Kuota ({telemetryStats.readsToday} R)</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => onUpdateConfig({
+                    ...config,
+                    ecoSyncMode: config.ecoSyncMode !== false ? false : true
+                  })}
+                  className={`px-4 py-2 font-bold text-xs rounded-xl shadow-xs transition cursor-pointer shrink-0 ${
+                    config.ecoSyncMode !== false
+                      ? 'bg-white hover:bg-slate-100 text-emerald-800 border border-emerald-300'
+                      : 'bg-amber-600 hover:bg-amber-700 text-white'
+                  }`}
+                >
+                  {config.ecoSyncMode !== false ? 'Ubah ke Mode Live' : 'Aktifkan Mode Hemat Kuota'}
+                </button>
+              </div>
+            </div>
             
             {/* Quick Metrics Banner */}
             <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
@@ -3571,6 +3830,7 @@ export default function AdminPanel({
                                   setEditName(s.name);
                                   setEditAbsen(s.absentNumber);
                                   setEditClass(s.studentClass);
+                                  setEditSubjectId(s.subjectId || 'sub1');
                                 }}
                                 className="p-1 px-2 text-slate-500 hover:text-indigo-600 hover:bg-slate-100 rounded-md transition"
                                 title="Edit Data Siswa"
@@ -4607,6 +4867,7 @@ export default function AdminPanel({
                     { id: 'TOKENS', label: 'Token Buka Kunci', icon: Ticket },
                     { id: 'STUDENT_ACCESS', label: 'Akses & Akun Siswa', icon: UserCheck },
                     { id: 'STAFF_PASSWORDS', label: 'Sandi Petugas', icon: KeyRound },
+                    { id: 'PROCTOR_PERMISSIONS', label: 'Wewenang Pengawas', icon: SlidersHorizontal },
                   ].map((tab) => {
                     const TabIcon = tab.icon;
                     const isActive = configSectionTab === tab.id;
@@ -4632,7 +4893,7 @@ export default function AdminPanel({
                 <div className="hidden md:flex flex-col space-y-1.5 bg-white p-2.5 rounded-2xl border border-slate-200 shadow-xs">
                   <div className="px-3 py-2 text-[10px] font-mono font-bold text-slate-400 uppercase tracking-wider flex items-center justify-between">
                     <span>Menu Konfigurasi</span>
-                    <span className="text-indigo-600 font-bold">6 Bagian</span>
+                    <span className="text-indigo-600 font-bold">7 Bagian</span>
                   </div>
 
                   {[
@@ -4677,6 +4938,13 @@ export default function AdminPanel({
                       desc: 'Otorisasi "reyhanstecu"',
                       icon: KeyRound,
                       badge: 'Absolut'
+                    },
+                    {
+                      id: 'PROCTOR_PERMISSIONS',
+                      name: 'Wewenang Pengawas',
+                      desc: 'Unlock, Reset, Skor, Analisis',
+                      icon: SlidersHorizontal,
+                      badge: 'Otoritas'
                     }
                   ].map((tab) => {
                     const TabIcon = tab.icon;
@@ -4955,6 +5223,35 @@ export default function AdminPanel({
                   <p className="text-xs text-slate-500 leading-normal">
                     Konfigurasi tingkat tinggi kontrol keamanan dan mode naskah anti-curang proktor secara langsung.
                   </p>
+                </div>
+
+                {/* 0. Toggle Mode Hemat Kuota Ekstrem */}
+                <div className="flex items-center justify-between p-4 bg-emerald-50/70 rounded-2xl border border-emerald-200">
+                  <div className="space-y-1 pr-4">
+                    <div className="flex items-center gap-2">
+                      <span className="text-xs font-bold text-slate-800 font-sans block">Mode Hemat Kuota Ekstrem (Lite Sync CBT)</span>
+                      <span className="text-[10px] bg-emerald-200 text-emerald-800 font-mono font-bold px-1.5 py-0.5 rounded">HEMAT 99% KUOTA</span>
+                    </div>
+                    <span className="text-[11px] text-slate-600 leading-tight block">
+                      Naskah soal & jawaban disimpan di cache browser HP siswa. Firebase <strong>HANYA</strong> dipakai untuk mencatat <strong>Pelanggaran</strong>, <strong>Buka Kunci (Unlock/Reset)</strong>, dan <strong>Kumpul Nilai Akhir (Submit)</strong>. Kuota gratisan tidak akan habis.
+                    </span>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => onUpdateConfig({
+                      ...config,
+                      ecoSyncMode: config.ecoSyncMode !== false ? false : true
+                    })}
+                    className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none ${
+                      config.ecoSyncMode !== false ? 'bg-emerald-600' : 'bg-slate-300'
+                    }`}
+                  >
+                    <span
+                      className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow-sm ring-0 transition duration-200 ease-in-out ${
+                        config.ecoSyncMode !== false ? 'translate-x-5' : 'translate-x-0'
+                      }`}
+                    />
+                  </button>
                 </div>
 
                 {/* 1. Toggle Sistem Keamanan Ketat */}
@@ -5364,6 +5661,275 @@ export default function AdminPanel({
                       </div>
                     </div>
                   )}
+
+                  {/* B. SUARA NOTIFIKASI PENGUMUMAN MASSAL (TIDAK MENGAGETKAN) */}
+                  <div className="pt-6 border-t border-slate-200/80 space-y-4">
+                    <div className="flex items-center gap-2.5">
+                      <div className="w-8 h-8 rounded-xl bg-indigo-50 text-indigo-600 flex items-center justify-center font-bold">
+                        <Megaphone className="w-4 h-4" />
+                      </div>
+                      <div>
+                        <h4 className="font-extrabold text-slate-800 text-sm">
+                          Suara Notifikasi Pengumuman Massal (Ramah &amp; Tidak Mengagetkan)
+                        </h4>
+                        <p className="text-xs text-slate-500">
+                          Diputar di HP/laptop siswa saat admin/pengawas mengirimkan pengumuman. Dirancang bernada lembut dan elegan agar siswa tetap tenang.
+                        </p>
+                      </div>
+                    </div>
+
+                    {/* Announcement sound choices */}
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                      {/* Option 1: Airport Chime */}
+                      <label
+                        className={`p-3 rounded-xl border flex items-center justify-between cursor-pointer transition ${
+                          (config.announcementSoundType || 'CHIME_AIRPORT') === 'CHIME_AIRPORT'
+                            ? 'bg-white border-indigo-600 shadow-xs ring-2 ring-indigo-500/20'
+                            : 'bg-white/60 border-slate-200 hover:bg-white'
+                        }`}
+                      >
+                        <div className="flex items-center gap-2.5">
+                          <input
+                            type="radio"
+                            name="announcementSoundType"
+                            value="CHIME_AIRPORT"
+                            checked={(config.announcementSoundType || 'CHIME_AIRPORT') === 'CHIME_AIRPORT'}
+                            onChange={() => onUpdateConfig({ ...config, announcementSoundType: 'CHIME_AIRPORT' })}
+                            className="text-indigo-600 focus:ring-indigo-500 w-4 h-4 cursor-pointer"
+                          />
+                          <div>
+                            <span className="text-xs font-bold text-slate-800 block">
+                              🔔 Ding-Dong Bandara (Rekomendasi)
+                            </span>
+                            <span className="text-[10px] text-slate-500 font-mono">
+                              Nada ganda F5-A4 merdu, santai, dan akrab di telinga
+                            </span>
+                          </div>
+                        </div>
+                        <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-indigo-50 text-indigo-700 font-mono">
+                          Default
+                        </span>
+                      </label>
+
+                      {/* Option 2: Harmony Chime */}
+                      <label
+                        className={`p-3 rounded-xl border flex items-center justify-between cursor-pointer transition ${
+                          config.announcementSoundType === 'CHIME_HARMONY'
+                            ? 'bg-white border-indigo-600 shadow-xs ring-2 ring-indigo-500/20'
+                            : 'bg-white/60 border-slate-200 hover:bg-white'
+                        }`}
+                      >
+                        <div className="flex items-center gap-2.5">
+                          <input
+                            type="radio"
+                            name="announcementSoundType"
+                            value="CHIME_HARMONY"
+                            checked={config.announcementSoundType === 'CHIME_HARMONY'}
+                            onChange={() => onUpdateConfig({ ...config, announcementSoundType: 'CHIME_HARMONY' })}
+                            className="text-indigo-600 focus:ring-indigo-500 w-4 h-4 cursor-pointer"
+                          />
+                          <div>
+                            <span className="text-xs font-bold text-slate-800 block">
+                              ✨ Harmoni Tiga Nada (Kristal)
+                            </span>
+                            <span className="text-[10px] text-slate-500 font-mono">
+                              Akord C-E-G naik lembut, menenangkan konsentrasi
+                            </span>
+                          </div>
+                        </div>
+                        <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-amber-50 text-amber-700 font-mono">
+                          Melodi
+                        </span>
+                      </label>
+
+                      {/* Option 3: Digital Chime */}
+                      <label
+                        className={`p-3 rounded-xl border flex items-center justify-between cursor-pointer transition ${
+                          config.announcementSoundType === 'CHIME_DIGITAL'
+                            ? 'bg-white border-indigo-600 shadow-xs ring-2 ring-indigo-500/20'
+                            : 'bg-white/60 border-slate-200 hover:bg-white'
+                        }`}
+                      >
+                        <div className="flex items-center gap-2.5">
+                          <input
+                            type="radio"
+                            name="announcementSoundType"
+                            value="CHIME_DIGITAL"
+                            checked={config.announcementSoundType === 'CHIME_DIGITAL'}
+                            onChange={() => onUpdateConfig({ ...config, announcementSoundType: 'CHIME_DIGITAL' })}
+                            className="text-indigo-600 focus:ring-indigo-500 w-4 h-4 cursor-pointer"
+                          />
+                          <div>
+                            <span className="text-xs font-bold text-slate-800 block">
+                              📱 Ping Digital Modern
+                            </span>
+                            <span className="text-[10px] text-slate-500 font-mono">
+                              Nada notifikasi modern A5-D6 singkat dan jelas
+                            </span>
+                          </div>
+                        </div>
+                        <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-cyan-50 text-cyan-700 font-mono">
+                          Digital
+                        </span>
+                      </label>
+
+                      {/* Option 4: Elegant Bell */}
+                      <label
+                        className={`p-3 rounded-xl border flex items-center justify-between cursor-pointer transition ${
+                          config.announcementSoundType === 'CHIME_ELEGANT'
+                            ? 'bg-white border-indigo-600 shadow-xs ring-2 ring-indigo-500/20'
+                            : 'bg-white/60 border-slate-200 hover:bg-white'
+                        }`}
+                      >
+                        <div className="flex items-center gap-2.5">
+                          <input
+                            type="radio"
+                            name="announcementSoundType"
+                            value="CHIME_ELEGANT"
+                            checked={config.announcementSoundType === 'CHIME_ELEGANT'}
+                            onChange={() => onUpdateConfig({ ...config, announcementSoundType: 'CHIME_ELEGANT' })}
+                            className="text-indigo-600 focus:ring-indigo-500 w-4 h-4 cursor-pointer"
+                          />
+                          <div>
+                            <span className="text-xs font-bold text-slate-800 block">
+                              🛎️ Bell Akustik Lembut
+                            </span>
+                            <span className="text-[10px] text-slate-500 font-mono">
+                              Gema dentang halus D5-A5 seperti bel resepsionis
+                            </span>
+                          </div>
+                        </div>
+                        <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-purple-50 text-purple-700 font-mono">
+                          Akustik
+                        </span>
+                      </label>
+
+                      {/* Option 5: Custom Audio */}
+                      <label
+                        className={`p-3 rounded-xl border flex items-center justify-between cursor-pointer transition sm:col-span-2 ${
+                          config.announcementSoundType === 'CUSTOM_AUDIO'
+                            ? 'bg-white border-emerald-600 shadow-xs ring-2 ring-emerald-500/20'
+                            : 'bg-white/60 border-slate-200 hover:bg-white'
+                        }`}
+                      >
+                        <div className="flex items-center gap-2.5">
+                          <input
+                            type="radio"
+                            name="announcementSoundType"
+                            value="CUSTOM_AUDIO"
+                            checked={config.announcementSoundType === 'CUSTOM_AUDIO'}
+                            onChange={() => onUpdateConfig({ ...config, announcementSoundType: 'CUSTOM_AUDIO' })}
+                            className="text-emerald-600 focus:ring-emerald-500 w-4 h-4 cursor-pointer"
+                          />
+                          <div>
+                            <span className="text-xs font-bold text-slate-800 flex items-center gap-1.5">
+                              <Music className="w-3.5 h-3.5 text-emerald-600" />
+                              Unggah Suara Pengumuman Sendiri (File Kustom)
+                            </span>
+                            <span className="text-[10px] text-slate-500 font-mono">
+                              Gunakan rekaman suara bel sekolah atau file MP3/WAV khusus
+                            </span>
+                          </div>
+                        </div>
+                        <span className="text-[10px] font-bold px-2 py-0.5 rounded bg-emerald-100 text-emerald-800 font-mono">
+                          Kustom
+                        </span>
+                      </label>
+                    </div>
+
+                    {/* Upload Audio Area for Announcement */}
+                    {config.announcementSoundType === 'CUSTOM_AUDIO' && (
+                      <div className="p-4 bg-emerald-50/60 rounded-xl border border-emerald-200 space-y-3 animate-fade-in">
+                        <div className="flex items-center justify-between">
+                          <span className="text-xs font-bold text-emerald-900 font-mono flex items-center gap-1.5">
+                            <FileAudio className="w-4 h-4 text-emerald-700" />
+                            Unggah Berkas Suara Pengumuman (.mp3, .wav, .ogg):
+                          </span>
+                          {config.customAnnouncementAudioUrl && (
+                            <button
+                              type="button"
+                              onClick={() => onUpdateConfig({
+                                ...config,
+                                customAnnouncementAudioUrl: undefined,
+                                customAnnouncementName: undefined,
+                                announcementSoundType: 'CHIME_AIRPORT'
+                              })}
+                              className="text-[10px] font-bold text-rose-600 hover:text-rose-800 font-mono cursor-pointer"
+                            >
+                              Hapus Audio Kustom
+                            </button>
+                          )}
+                        </div>
+
+                        <div className="flex flex-col sm:flex-row sm:items-center gap-3">
+                          <label className="px-4 py-2 bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl text-xs font-bold cursor-pointer transition flex items-center justify-center gap-2 shadow-xs shrink-0 active:scale-95">
+                            <Upload className="w-3.5 h-3.5" />
+                            <span>Pilih Berkas Audio Pengumuman</span>
+                            <input
+                              type="file"
+                              accept="audio/*"
+                              onChange={handleCustomAnnouncementFileUpload}
+                              className="hidden"
+                            />
+                          </label>
+
+                          <div className="text-xs text-slate-600 font-mono truncate">
+                            {config.customAnnouncementName ? (
+                              <span className="text-emerald-800 font-bold flex items-center gap-1">
+                                <Check className="w-3.5 h-3.5 text-emerald-600" />
+                                Terpasang: {config.customAnnouncementName}
+                              </span>
+                            ) : config.customAnnouncementAudioUrl ? (
+                              <span className="text-emerald-800 font-bold">
+                                Audio pengumuman tersimpan aktif
+                              </span>
+                            ) : (
+                              <span className="text-slate-400 italic">
+                                Belum ada audio khusus diunggah (Maks. 8 MB)
+                              </span>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Test Announcement Sound Toolbar */}
+                    <div className="flex flex-wrap items-center gap-2 pt-2 border-t border-slate-200/70">
+                      <button
+                        type="button"
+                        id="btn-test-announcement-sound"
+                        onClick={() => handleTestAnnouncementSound(config.announcementSoundType, config.customAnnouncementAudioUrl)}
+                        className={`px-4 py-2 rounded-xl text-xs font-extrabold transition flex items-center gap-1.5 cursor-pointer shadow-xs active:scale-95 ${
+                          isPlayingAnnouncementTest
+                            ? 'bg-amber-600 hover:bg-amber-500 text-white animate-pulse'
+                            : 'bg-indigo-600 hover:bg-indigo-500 text-white'
+                        }`}
+                      >
+                        {isPlayingAnnouncementTest ? (
+                          <>
+                            <VolumeX className="w-4 h-4 text-white" />
+                            <span>Hentikan Uji Coba</span>
+                          </>
+                        ) : (
+                          <>
+                            <Volume2 className="w-4 h-4 text-white" />
+                            <span>Uji Coba Bunyi Notifikasi Pengumuman</span>
+                          </>
+                        )}
+                      </button>
+
+                      {isPlayingAnnouncementTest && (
+                        <span className="text-xs font-bold font-mono text-indigo-700 flex items-center gap-1.5 bg-indigo-50 px-2.5 py-1 rounded-lg border border-indigo-200">
+                          <span className="w-2 h-2 rounded-full bg-indigo-600 animate-ping"></span>
+                          Sedang Memutar Notifikasi Ramah...
+                        </span>
+                      )}
+
+                      <span className="text-[11px] text-slate-400 font-mono ml-auto hidden sm:inline">
+                        *Suara ini akan berbunyi di komputer/HP siswa saat menerima pengumuman
+                      </span>
+                    </div>
+                  </div>
                 </div>
                       <div className="border-t border-slate-100 pt-4 flex justify-end">
                         <button
@@ -5947,6 +6513,295 @@ export default function AdminPanel({
               </div>
                   )}
 
+                  {/* TAB 7: PROCTOR PERMISSIONS & DISPLAY SETTINGS */}
+                  {configSectionTab === 'PROCTOR_PERMISSIONS' && (() => {
+                    const currentPerms: ProctorPermissions = config.proctorPermissions || DEFAULT_PROCTOR_PERMISSIONS;
+
+                    const togglePerm = (key: keyof ProctorPermissions) => {
+                      const updated: ProctorPermissions = {
+                        ...currentPerms,
+                        [key]: !currentPerms[key]
+                      };
+                      onUpdateConfig({
+                        ...config,
+                        proctorPermissions: updated
+                      });
+                    };
+
+                    const applyPreset = (preset: 'FULL' | 'STANDARD' | 'STRICT') => {
+                      let updated: ProctorPermissions;
+                      if (preset === 'FULL') {
+                        updated = {
+                          allowUnlock: true,
+                          allowUnlockAll: true,
+                          allowResetAttempt: true,
+                          allowResetViolations: true,
+                          allowForceSubmit: true,
+                          allowExportExcel: true,
+                          showStudentScores: true,
+                          showItemAnalysis: true,
+                          showAnalyticsCharts: true,
+                          allowChangeSubject: true
+                        };
+                      } else if (preset === 'STANDARD') {
+                        updated = {
+                          allowUnlock: true,
+                          allowUnlockAll: true,
+                          allowResetAttempt: true,
+                          allowResetViolations: true,
+                          allowForceSubmit: true,
+                          allowExportExcel: true,
+                          showStudentScores: true,
+                          showItemAnalysis: false,
+                          showAnalyticsCharts: true,
+                          allowChangeSubject: true
+                        };
+                      } else {
+                        // STRICT (hanya monitoring & unlock darurat)
+                        updated = {
+                          allowUnlock: true,
+                          allowUnlockAll: false,
+                          allowResetAttempt: false,
+                          allowResetViolations: false,
+                          allowForceSubmit: false,
+                          allowExportExcel: false,
+                          showStudentScores: false,
+                          showItemAnalysis: false,
+                          showAnalyticsCharts: false,
+                          allowChangeSubject: false
+                        };
+                      }
+                      onUpdateConfig({
+                        ...config,
+                        proctorPermissions: updated
+                      });
+                    };
+
+                    const permissionItems: {
+                      key: keyof ProctorPermissions;
+                      label: string;
+                      desc: string;
+                      category: 'ACTION' | 'DISPLAY';
+                      icon: any;
+                    }[] = [
+                      {
+                        key: 'allowUnlock',
+                        label: 'Buka Kunci Siswa Terkunci (Remote Unlock)',
+                        desc: 'Pengawas berhak membuka kembali sesi siswa yang terkunci secara perorangan.',
+                        category: 'ACTION',
+                        icon: KeyRound
+                      },
+                      {
+                        key: 'allowUnlockAll',
+                        label: 'Buka Kunci Massal Seluruh Siswa Terkunci',
+                        desc: 'Pengawas berhak membuka kunci seluruh siswa terkunci sekaligus dengan satu klik tombol.',
+                        category: 'ACTION',
+                        icon: CheckCircle2
+                      },
+                      {
+                        key: 'allowResetAttempt',
+                        label: 'Reset Pengerjaan & Jawaban Siswa (Ulang Ujian)',
+                        desc: 'Pengawas berhak mereset siswa dari awal (mengosongkan lembar jawaban) jika terjadi kendala teknis atau remidi darurat.',
+                        category: 'ACTION',
+                        icon: RefreshCw
+                      },
+                      {
+                        key: 'allowResetViolations',
+                        label: 'Reset Hitungan Pelanggaran Siswa Menjadi 0',
+                        desc: 'Pengawas berhak menghapus catatan pelanggaran siswa tanpa menghapus jawaban yang telah diisi.',
+                        category: 'ACTION',
+                        icon: ShieldCheck
+                      },
+                      {
+                        key: 'allowForceSubmit',
+                        label: 'Paksa Kumpulkan Ujian Siswa (Force Submit)',
+                        desc: 'Pengawas berhak mengumpulkan paksa ujian siswa yang waktu habis atau meninggalkan ruangan.',
+                        category: 'ACTION',
+                        icon: Clock
+                      },
+                      {
+                        key: 'allowChangeSubject',
+                        label: 'Koreksi / Pindahkan Naskah Mapel Siswa',
+                        desc: 'Pengawas berhak memindahkan rekaman siswa yang salah memilih naskah ujian ke naskah yang benar.',
+                        category: 'ACTION',
+                        icon: Layers
+                      },
+                      {
+                        key: 'allowExportExcel',
+                        label: 'Ekspor Rekap Nilai ke Excel (.xlsx)',
+                        desc: 'Pengawas berhak mengunduh rekap spreadsheet nilai ujian seluruh siswa di ruangannya.',
+                        category: 'ACTION',
+                        icon: FileSpreadsheet
+                      },
+                      {
+                        key: 'showStudentScores',
+                        label: 'Tampilkan Angka Nilai Siswa di Meja Pengawas',
+                        desc: 'Jika dinonaktifkan, pengawas hanya melihat status "Selesai" tanpa melihat perolehan angka nilai siswa.',
+                        category: 'DISPLAY',
+                        icon: Eye
+                      },
+                      {
+                        key: 'showItemAnalysis',
+                        label: 'Tampilkan Tab Analisis Butir Soal ke Pengawas',
+                        desc: 'Jika dinonaktifkan, tab statistik Analisis Butir Soal akan disembunyikan dari akun pengawas.',
+                        category: 'DISPLAY',
+                        icon: BarChart3
+                      },
+                      {
+                        key: 'showAnalyticsCharts',
+                        label: 'Tampilkan Tab Grafik & Statistik Nilai',
+                        desc: 'Jika dinonaktifkan, tab visualisasi grafik nilai dan persentase kelulusan akan disembunyikan dari pengawas.',
+                        category: 'DISPLAY',
+                        icon: BarChart3
+                      }
+                    ];
+
+                    return (
+                      <div className="bg-white p-6 md:p-8 rounded-2xl border border-slate-200 shadow-sm space-y-6 animate-fade-in">
+                        {/* Section Header */}
+                        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-4 border-b border-slate-100">
+                          <div>
+                            <div className="flex items-center gap-2.5">
+                              <div className="w-9 h-9 rounded-xl bg-indigo-50 text-indigo-600 flex items-center justify-center font-bold shadow-2xs">
+                                <SlidersHorizontal className="w-5 h-5" />
+                              </div>
+                              <h3 className="font-extrabold text-slate-800 text-base sm:text-lg">
+                                Wewenang & Hak Akses Akun Pengawas Ruang
+                              </h3>
+                            </div>
+                            <p className="text-xs text-slate-500 mt-1 max-w-2xl leading-relaxed">
+                              Tentukan wewenang dan fitur apa saja yang diizinkan untuk digunakan oleh akun Pengawas Ruang (login: <code className="font-bold text-slate-700 bg-slate-100 px-1.5 py-0.5 rounded">pengawas</code>). Perubahan langsung berlaku secara real-time.
+                            </p>
+                          </div>
+
+                          {/* Quick Presets */}
+                          <div className="flex items-center gap-2 shrink-0 flex-wrap">
+                            <span className="text-[10px] font-mono font-bold text-slate-400 uppercase">Preset Cepat:</span>
+                            <button
+                              type="button"
+                              onClick={() => applyPreset('FULL')}
+                              className="px-3 py-1.5 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 font-bold text-xs rounded-xl border border-indigo-200 transition cursor-pointer"
+                              title="Beri seluruh otoritas tindakan dan seluruh tab tampilan ke pengawas"
+                            >
+                              ✨ Full Akses
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => applyPreset('STANDARD')}
+                              className="px-3 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold text-xs rounded-xl border border-slate-200 transition cursor-pointer"
+                              title="Otoritas tindakan ujian lengkap, sembunyikan analisis butir soal guru"
+                            >
+                              Standard
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => applyPreset('STRICT')}
+                              className="px-3 py-1.5 bg-rose-50 hover:bg-rose-100 text-rose-700 font-bold text-xs rounded-xl border border-rose-200 transition cursor-pointer"
+                              title="Hanya monitoring dan buka kunci darurat"
+                            >
+                              Ketat / Minimal
+                            </button>
+                          </div>
+                        </div>
+
+                        {/* Toggles Grid */}
+                        <div className="space-y-4">
+                          <div className="text-xs font-mono font-bold text-slate-400 uppercase tracking-wider">
+                            1. Otoritas Tindakan Siswa (Action Controls)
+                          </div>
+                          <div className="grid grid-cols-1 md:grid-cols-2 gap-3.5">
+                            {permissionItems.filter(p => p.category === 'ACTION').map((item) => {
+                              const isEnabled = currentPerms[item.key] !== false;
+                              const IconComponent = item.icon;
+                              return (
+                                <div
+                                  key={item.key}
+                                  onClick={() => togglePerm(item.key)}
+                                  className={`p-4 rounded-2xl border transition-all cursor-pointer flex items-start justify-between gap-3 select-none ${
+                                    isEnabled
+                                      ? 'bg-indigo-50/50 border-indigo-200 hover:bg-indigo-50/80 shadow-2xs'
+                                      : 'bg-slate-50/70 border-slate-200 hover:bg-slate-100/70 opacity-75'
+                                  }`}
+                                >
+                                  <div className="flex items-start gap-3 min-w-0">
+                                    <div className={`p-2 rounded-xl shrink-0 mt-0.5 ${
+                                      isEnabled ? 'bg-indigo-600 text-white' : 'bg-slate-200 text-slate-500'
+                                    }`}>
+                                      <IconComponent className="w-4 h-4" />
+                                    </div>
+                                    <div>
+                                      <h4 className="text-xs font-extrabold text-slate-800 leading-snug">
+                                        {item.label}
+                                      </h4>
+                                      <p className="text-[11px] text-slate-500 mt-1 leading-relaxed">
+                                        {item.desc}
+                                      </p>
+                                    </div>
+                                  </div>
+
+                                  {/* Switch pill */}
+                                  <div className={`w-11 h-6 shrink-0 rounded-full transition-colors relative cursor-pointer ${
+                                    isEnabled ? 'bg-indigo-600' : 'bg-slate-300'
+                                  }`}>
+                                    <div className={`w-5 h-5 rounded-full bg-white shadow-xs transition-transform absolute top-0.5 ${
+                                      isEnabled ? 'right-0.5' : 'left-0.5'
+                                    }`} />
+                                  </div>
+                                </div>
+                              );
+                            })}
+                          </div>
+
+                          <div className="pt-3 text-xs font-mono font-bold text-slate-400 uppercase tracking-wider">
+                            2. Tampilan & Visibilitas Data (Display & Visibility Controls)
+                          </div>
+                          <div className="grid grid-cols-1 md:grid-cols-2 gap-3.5">
+                            {permissionItems.filter(p => p.category === 'DISPLAY').map((item) => {
+                              const isEnabled = currentPerms[item.key] !== false;
+                              const IconComponent = item.icon;
+                              return (
+                                <div
+                                  key={item.key}
+                                  onClick={() => togglePerm(item.key)}
+                                  className={`p-4 rounded-2xl border transition-all cursor-pointer flex items-start justify-between gap-3 select-none ${
+                                    isEnabled
+                                      ? 'bg-emerald-50/50 border-emerald-200 hover:bg-emerald-50/80 shadow-2xs'
+                                      : 'bg-slate-50/70 border-slate-200 hover:bg-slate-100/70 opacity-75'
+                                  }`}
+                                >
+                                  <div className="flex items-start gap-3 min-w-0">
+                                    <div className={`p-2 rounded-xl shrink-0 mt-0.5 ${
+                                      isEnabled ? 'bg-emerald-600 text-white' : 'bg-slate-200 text-slate-500'
+                                    }`}>
+                                      <IconComponent className="w-4 h-4" />
+                                    </div>
+                                    <div>
+                                      <h4 className="text-xs font-extrabold text-slate-800 leading-snug">
+                                        {item.label}
+                                      </h4>
+                                      <p className="text-[11px] text-slate-500 mt-1 leading-relaxed">
+                                        {item.desc}
+                                      </p>
+                                    </div>
+                                  </div>
+
+                                  {/* Switch pill */}
+                                  <div className={`w-11 h-6 shrink-0 rounded-full transition-colors relative cursor-pointer ${
+                                    isEnabled ? 'bg-emerald-600' : 'bg-slate-300'
+                                  }`}>
+                                    <div className={`w-5 h-5 rounded-full bg-white shadow-xs transition-transform absolute top-0.5 ${
+                                      isEnabled ? 'right-0.5' : 'left-0.5'
+                                    }`} />
+                                  </div>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })()}
+
                   {/* Persistent Info Box at bottom */}
                   <div className="p-4 bg-teal-55 bg-teal-50 border border-teal-200 rounded-xl text-xs text-teal-800 space-y-2">
                 <div className="font-bold uppercase tracking-wider font-mono flex items-center gap-1.5">
@@ -6285,6 +7140,386 @@ export default function AdminPanel({
           </div>
         );
       })()}
+
+      {/* TAB 7: FIRESTORE TELEMETRY & QUOTA MONITORING */}
+      {activeTab === 'TELEMETRY' && (() => {
+        const readsPercent = Math.min(100, Math.round((telemetryStats.readsToday / SPARK_DAILY_READ_LIMIT) * 100));
+        const writesPercent = Math.min(100, Math.round((telemetryStats.writesToday / SPARK_DAILY_WRITE_LIMIT) * 100));
+        const remainingReads = Math.max(0, SPARK_DAILY_READ_LIMIT - telemetryStats.readsToday);
+        const remainingWrites = Math.max(0, SPARK_DAILY_WRITE_LIMIT - telemetryStats.writesToday);
+
+        const filteredLogs = telemetryLogs.filter(item => {
+          if (logFilter === 'ERROR' && item.type !== 'ERROR') return false;
+          if (logFilter === 'WRITE' && item.type !== 'WRITE') return false;
+          if (logFilter === 'READ' && item.type !== 'READ') return false;
+          if (logFilter === 'ECO' && item.type !== 'ECO_SAVE') return false;
+          if (logSearch.trim()) {
+            const q = logSearch.toLowerCase().trim();
+            const text = `${item.details} ${item.path || ''} ${item.operation} ${item.timeFormatted}`.toLowerCase();
+            if (!text.includes(q)) return false;
+          }
+          return true;
+        });
+
+        const handleCopyAllLogs = () => {
+          if (telemetryLogs.length === 0) {
+            alert('Belum ada log yang tercatat.');
+            return;
+          }
+          const text = telemetryLogs.map(l => `[${l.timeFormatted}] [${l.type}] [${l.operation}] (${l.path || '-'}): ${l.details}`).join('\n');
+          navigator.clipboard.writeText(text);
+          alert(`Sebanyak ${telemetryLogs.length} baris log berhasil disalin ke clipboard!`);
+        };
+
+        return (
+          <div className="space-y-6 animate-fade-in">
+            {/* Header Telemetry */}
+            <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-xs flex flex-col md:flex-row md:items-center justify-between gap-4">
+              <div className="flex items-center gap-3">
+                <div className="p-3 bg-amber-500/10 text-amber-600 rounded-2xl">
+                  <Database className="w-6 h-6" />
+                </div>
+                <div>
+                  <div className="flex items-center gap-2">
+                    <span className="text-[10px] bg-amber-100 text-amber-800 font-mono font-bold px-2 py-0.5 rounded-full uppercase tracking-wider">
+                      LIVE CLOUD TELEMETRY
+                    </span>
+                    <span className="text-xs text-slate-400 font-mono">
+                      Tanggal: {telemetryStats.dateKey}
+                    </span>
+                  </div>
+                  <h3 className="text-lg font-black text-slate-900 tracking-tight mt-0.5">
+                    Pemantauan Kuota Firebase &amp; Log Error Siswa
+                  </h3>
+                  <p className="text-xs text-slate-500">
+                    Pantau jumlah pembacaan, penulisan, sisa kuota gratis harian, serta deteksi kendala siswa secara real-time.
+                  </p>
+                </div>
+              </div>
+
+              {/* Action Buttons */}
+              <div className="flex flex-wrap items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setTelemetryStats(getFirestoreStats());
+                    setTelemetryLogs(getFirestoreLogs());
+                  }}
+                  className="px-3.5 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold text-xs rounded-xl transition flex items-center gap-1.5 cursor-pointer"
+                  title="Segarkan data kuota"
+                >
+                  <RefreshCw className="w-3.5 h-3.5 text-slate-600" />
+                  Refresh
+                </button>
+                <button
+                  type="button"
+                  onClick={handleCopyAllLogs}
+                  className="px-3.5 py-2 bg-slate-800 hover:bg-slate-700 text-white font-bold text-xs rounded-xl transition flex items-center gap-1.5 cursor-pointer shadow-xs"
+                  title="Salin seluruh log ke clipboard"
+                >
+                  <Copy className="w-3.5 h-3.5 text-indigo-300" />
+                  Salin Log
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (window.confirm('Yakin ingin membersihkan riwayat log aktivitas?')) {
+                      clearFirestoreLogs();
+                      setTelemetryLogs([]);
+                    }
+                  }}
+                  className="px-3.5 py-2 bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 font-bold text-xs rounded-xl transition flex items-center gap-1.5 cursor-pointer"
+                  title="Bersihkan catatan riwayat log"
+                >
+                  <Trash2 className="w-3.5 h-3.5" />
+                  Hapus Log
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (window.confirm('Reset hitungan estimasi kuota harian kembali ke 0?')) {
+                      resetDailyFirestoreStats();
+                      setTelemetryStats(getFirestoreStats());
+                    }
+                  }}
+                  className="px-3.5 py-2 bg-slate-50 hover:bg-slate-100 text-slate-600 border border-slate-200 font-bold text-xs rounded-xl transition flex items-center gap-1.5 cursor-pointer"
+                  title="Reset hitungan hari ini"
+                >
+                  Reset Meter
+                </button>
+              </div>
+            </div>
+
+            {/* Quota Metrics Grid */}
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+              
+              {/* Card 1: Reads */}
+              <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-xs space-y-3">
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-bold text-slate-500 font-mono flex items-center gap-1.5">
+                    <BookOpen className="w-3.5 h-3.5 text-blue-500" />
+                    DOKUMEN DIBACA (READS)
+                  </span>
+                  <span className="text-[10px] font-mono font-bold px-1.5 py-0.5 rounded bg-blue-50 text-blue-700">
+                    {readsPercent}% Terpakai
+                  </span>
+                </div>
+                <div className="flex items-baseline justify-between">
+                  <div className="text-2xl font-black font-mono text-slate-900">
+                    {telemetryStats.readsToday.toLocaleString()}
+                  </div>
+                  <div className="text-xs font-mono text-slate-400">
+                    / {SPARK_DAILY_READ_LIMIT.toLocaleString()}
+                  </div>
+                </div>
+                {/* Progress bar */}
+                <div className="w-full bg-slate-100 rounded-full h-2 overflow-hidden">
+                  <div
+                    className={`h-2 rounded-full transition-all duration-500 ${
+                      readsPercent > 90 ? 'bg-rose-500' : readsPercent > 70 ? 'bg-amber-500' : 'bg-blue-500'
+                    }`}
+                    style={{ width: `${readsPercent}%` }}
+                  />
+                </div>
+                <div className="text-[11px] text-slate-500 flex justify-between font-mono">
+                  <span>Sisa Kuota:</span>
+                  <strong className={remainingReads < 5000 ? 'text-rose-600' : 'text-slate-800'}>
+                    {remainingReads.toLocaleString()}
+                  </strong>
+                </div>
+              </div>
+
+              {/* Card 2: Writes */}
+              <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-xs space-y-3">
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-bold text-slate-500 font-mono flex items-center gap-1.5">
+                    <Save className="w-3.5 h-3.5 text-emerald-500" />
+                    DOKUMEN DITULIS (WRITES)
+                  </span>
+                  <span className="text-[10px] font-mono font-bold px-1.5 py-0.5 rounded bg-emerald-50 text-emerald-700">
+                    {writesPercent}% Terpakai
+                  </span>
+                </div>
+                <div className="flex items-baseline justify-between">
+                  <div className="text-2xl font-black font-mono text-slate-900">
+                    {telemetryStats.writesToday.toLocaleString()}
+                  </div>
+                  <div className="text-xs font-mono text-slate-400">
+                    / {SPARK_DAILY_WRITE_LIMIT.toLocaleString()}
+                  </div>
+                </div>
+                {/* Progress bar */}
+                <div className="w-full bg-slate-100 rounded-full h-2 overflow-hidden">
+                  <div
+                    className={`h-2 rounded-full transition-all duration-500 ${
+                      writesPercent > 90 ? 'bg-rose-500' : writesPercent > 70 ? 'bg-amber-500' : 'bg-emerald-500'
+                    }`}
+                    style={{ width: `${writesPercent}%` }}
+                  />
+                </div>
+                <div className="text-[11px] text-slate-500 flex justify-between font-mono">
+                  <span>Sisa Kuota:</span>
+                  <strong className={remainingWrites < 2000 ? 'text-rose-600' : 'text-slate-800'}>
+                    {remainingWrites.toLocaleString()}
+                  </strong>
+                </div>
+              </div>
+
+              {/* Card 3: Eco Savings */}
+              <div className="bg-emerald-50/70 p-5 rounded-2xl border border-emerald-200 shadow-xs space-y-3">
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-bold text-emerald-800 font-mono flex items-center gap-1.5">
+                    <ShieldCheck className="w-3.5 h-3.5 text-emerald-600" />
+                    DIHEMAT MODE ECO
+                  </span>
+                  <span className="text-[10px] font-mono font-black px-1.5 py-0.5 rounded bg-emerald-200 text-emerald-900">
+                    HEMAT 99%
+                  </span>
+                </div>
+                <div className="flex items-baseline justify-between">
+                  <div className="text-2xl font-black font-mono text-emerald-900">
+                    +{telemetryStats.ecoSavedWrites.toLocaleString()}
+                  </div>
+                  <div className="text-xs font-bold text-emerald-700">
+                    Writes Dicegah
+                  </div>
+                </div>
+                <p className="text-[11px] text-emerald-700 leading-tight">
+                  Jumlah klik jawaban yang berhasil disimpan di memori HP tanpa membakar kuota Firestore server!
+                </p>
+              </div>
+
+              {/* Card 4: Status Kuota & Error */}
+              <div className={`p-5 rounded-2xl border shadow-xs space-y-3 ${
+                telemetryStats.isQuotaExceeded
+                  ? 'bg-rose-50 border-rose-200 text-rose-950'
+                  : telemetryStats.errorsToday > 0
+                  ? 'bg-amber-50 border-amber-200 text-amber-950'
+                  : 'bg-white border-slate-200 text-slate-800'
+              }`}>
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-bold font-mono flex items-center gap-1.5">
+                    <AlertCircle className="w-3.5 h-3.5 text-amber-500" />
+                    STATUS KONEKSI CLOUD
+                  </span>
+                  <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded ${
+                    telemetryStats.isQuotaExceeded
+                      ? 'bg-rose-600 text-white font-black animate-pulse'
+                      : telemetryStats.errorsToday > 0
+                      ? 'bg-amber-200 text-amber-900'
+                      : 'bg-emerald-100 text-emerald-800'
+                  }`}>
+                    {telemetryStats.isQuotaExceeded ? 'EXHAUSTED' : telemetryStats.errorsToday > 0 ? 'WARNING' : 'HEALTHY'}
+                  </span>
+                </div>
+                <div className="text-2xl font-black font-mono">
+                  {telemetryStats.isQuotaExceeded
+                    ? 'KUOTA PENUH'
+                    : telemetryStats.errorsToday > 0
+                    ? `${telemetryStats.errorsToday} Error Terdeteksi`
+                    : 'NORMAL & AMAN'}
+                </div>
+                <p className="text-[11px] opacity-80 leading-tight">
+                  {telemetryStats.isQuotaExceeded
+                    ? 'Firestore Spark telah mencapai limit harian. Sistem otomatis berjalan di mode offline lokal.'
+                    : telemetryStats.errorsToday > 0
+                    ? 'Ada kendala jaringan/request tercatat. Periksa detail di bawah.'
+                    : 'Semua operasi cloud berjalan mulus dalam batas aman gratisan.'}
+                </p>
+              </div>
+            </div>
+
+            {/* Real-time Logs Console */}
+            <div className="bg-white rounded-2xl border border-slate-200 shadow-xs overflow-hidden">
+              {/* Filter and Search Bar */}
+              <div className="p-4 bg-slate-50 border-b border-slate-200 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                {/* Filter Pills */}
+                <div className="flex flex-wrap items-center gap-1.5">
+                  <button
+                    type="button"
+                    onClick={() => setLogFilter('ALL')}
+                    className={`px-3 py-1.5 rounded-lg text-xs font-bold transition cursor-pointer ${
+                      logFilter === 'ALL' ? 'bg-slate-900 text-white' : 'bg-white text-slate-600 hover:bg-slate-200 border border-slate-200'
+                    }`}
+                  >
+                    Semua ({telemetryLogs.length})
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setLogFilter('ERROR')}
+                    className={`px-3 py-1.5 rounded-lg text-xs font-bold transition flex items-center gap-1 cursor-pointer ${
+                      logFilter === 'ERROR' ? 'bg-rose-600 text-white' : 'bg-white text-rose-700 hover:bg-rose-50 border border-rose-200'
+                    }`}
+                  >
+                    🚨 Error ({telemetryLogs.filter(l => l.type === 'ERROR').length})
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setLogFilter('WRITE')}
+                    className={`px-3 py-1.5 rounded-lg text-xs font-bold transition flex items-center gap-1 cursor-pointer ${
+                      logFilter === 'WRITE' ? 'bg-emerald-600 text-white' : 'bg-white text-emerald-700 hover:bg-emerald-50 border border-emerald-200'
+                    }`}
+                  >
+                    📝 Tulis ({telemetryLogs.filter(l => l.type === 'WRITE').length})
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setLogFilter('READ')}
+                    className={`px-3 py-1.5 rounded-lg text-xs font-bold transition flex items-center gap-1 cursor-pointer ${
+                      logFilter === 'READ' ? 'bg-blue-600 text-white' : 'bg-white text-blue-700 hover:bg-blue-50 border border-blue-200'
+                    }`}
+                  >
+                    📖 Baca ({telemetryLogs.filter(l => l.type === 'READ').length})
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setLogFilter('ECO')}
+                    className={`px-3 py-1.5 rounded-lg text-xs font-bold transition flex items-center gap-1 cursor-pointer ${
+                      logFilter === 'ECO' ? 'bg-indigo-600 text-white' : 'bg-white text-indigo-700 hover:bg-indigo-50 border border-indigo-200'
+                    }`}
+                  >
+                    ⚡ Mode Eco ({telemetryLogs.filter(l => l.type === 'ECO_SAVE').length})
+                  </button>
+                </div>
+
+                {/* Search Bar */}
+                <div className="relative w-full sm:w-64">
+                  <Search className="w-3.5 h-3.5 absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+                  <input
+                    type="text"
+                    placeholder="Cari siswa, path, error..."
+                    value={logSearch}
+                    onChange={(e) => setLogSearch(e.target.value)}
+                    className="w-full pl-8 pr-3 py-1.5 bg-white border border-slate-200 rounded-lg text-xs text-slate-800 placeholder:text-slate-400 focus:outline-none focus:ring-1 focus:ring-indigo-500 font-mono"
+                  />
+                  {logSearch && (
+                    <button
+                      type="button"
+                      onClick={() => setLogSearch('')}
+                      className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 cursor-pointer"
+                    >
+                      <X className="w-3 h-3" />
+                    </button>
+                  )}
+                </div>
+              </div>
+
+              {/* Log Stream Container */}
+              <div className="p-4 bg-slate-950 text-slate-200 font-mono text-xs max-h-[500px] overflow-y-auto space-y-2">
+                {filteredLogs.length === 0 ? (
+                  <div className="py-12 text-center text-slate-500 space-y-2 font-sans">
+                    <Terminal className="w-8 h-8 mx-auto text-slate-600" />
+                    <p className="text-sm font-semibold text-slate-400">Belum ada riwayat aktivitas tercatat</p>
+                    <p className="text-xs text-slate-600">Aktivitas pembacaan, penulisan, dan error siswa akan muncul di sini secara real-time.</p>
+                  </div>
+                ) : (
+                  filteredLogs.map((log) => {
+                    const typeBadge = {
+                      ERROR: 'bg-rose-950 text-rose-400 border border-rose-800',
+                      WRITE: 'bg-emerald-950 text-emerald-400 border border-emerald-800',
+                      READ: 'bg-blue-950 text-blue-400 border border-blue-800',
+                      ECO_SAVE: 'bg-indigo-950 text-indigo-400 border border-indigo-800'
+                    }[log.type] || 'bg-slate-800 text-slate-300';
+
+                    return (
+                      <div
+                        key={log.id}
+                        className={`p-2.5 rounded-lg border transition text-left flex flex-col sm:flex-row sm:items-center justify-between gap-2 ${
+                          log.type === 'ERROR'
+                            ? 'bg-rose-950/40 border-rose-900/60 text-rose-200'
+                            : 'bg-slate-900/70 border-slate-800/80 hover:bg-slate-900 text-slate-300'
+                        }`}
+                      >
+                        <div className="flex items-start sm:items-center gap-2.5 flex-1 min-w-0">
+                          <span className="text-[10px] text-slate-500 font-bold shrink-0 pt-0.5 sm:pt-0">
+                            {log.timeFormatted}
+                          </span>
+                          <span className={`px-1.5 py-0.5 rounded text-[9px] font-black uppercase shrink-0 ${typeBadge}`}>
+                            {log.type === 'ECO_SAVE' ? 'ECO-CACHE' : log.type}
+                          </span>
+                          {log.count > 1 && (
+                            <span className="text-[9px] px-1 bg-slate-800 text-slate-400 rounded shrink-0">
+                              x{log.count}
+                            </span>
+                          )}
+                          <span className="text-[11px] font-bold text-slate-100 truncate">
+                            {log.details}
+                          </span>
+                        </div>
+                        {log.path && (
+                          <span className="text-[10px] text-slate-500 shrink-0 font-mono bg-slate-950/80 px-2 py-0.5 rounded border border-slate-850 self-start sm:self-auto">
+                            /{log.path}
+                          </span>
+                        )}
+                      </div>
+                    );
+                  })
+                )}
+              </div>
+            </div>
+          </div>
+        );
+      })()}
     </main>
 
     {/* Add Single Student Account Modal */}
@@ -6434,6 +7669,26 @@ export default function AdminPanel({
                     className="w-full px-3 py-2 bg-slate-50 border border-slate-200 focus:border-indigo-500 focus:bg-white rounded-lg text-slate-800 text-sm focus:outline-none transition"
                   />
                 </div>
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold text-slate-500 uppercase font-mono tracking-wider mb-2">
+                  Naskah / Mata Pelajaran
+                </label>
+                <select
+                  value={editSubjectId}
+                  onChange={(e) => setEditSubjectId(e.target.value)}
+                  className="w-full px-3 py-2 bg-slate-50 border border-slate-200 focus:border-indigo-500 focus:bg-white rounded-lg text-slate-800 text-sm focus:outline-none transition cursor-pointer font-medium"
+                >
+                  {subjects.map((sub) => (
+                    <option key={sub.id} value={sub.id}>
+                      {sub.name} ({sub.code || sub.id}) {sub.isActive === false ? ' [NONAKTIF]' : ''}
+                    </option>
+                  ))}
+                </select>
+                <span className="text-[10px] text-slate-400 mt-1 block">
+                  Pindahkan ke naskah yang benar jika siswa keliru memilih naskah saat login.
+                </span>
               </div>
 
               <div className="flex gap-2 pt-4 border-t border-slate-100">
@@ -7921,6 +9176,261 @@ export default function AdminPanel({
                 className="px-5 py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold text-xs rounded-xl transition cursor-pointer"
               >
                 Tutup
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* BROADCAST ANNOUNCEMENT MODAL */}
+      {showBroadcastModal && (
+        <div className="fixed inset-0 bg-slate-900/65 backdrop-blur-xs flex items-center justify-center p-4 z-50 animate-fade-in overflow-y-auto">
+          <div className="bg-white rounded-3xl shadow-2xl border border-slate-200 p-6 md:p-8 max-w-2xl w-full my-8 space-y-5">
+            {/* Modal Header */}
+            <div className="flex items-center justify-between pb-4 border-b border-slate-100">
+              <div className="flex items-center gap-3">
+                <div className="w-11 h-11 rounded-2xl bg-indigo-50 border border-indigo-100 text-indigo-600 flex items-center justify-center font-bold shadow-xs">
+                  <Megaphone className="w-6 h-6 text-indigo-600" />
+                </div>
+                <div>
+                  <h3 className="font-extrabold text-slate-900 text-base sm:text-lg">
+                    Pengumuman Massal ke Siswa
+                  </h3>
+                  <p className="text-xs text-slate-500">
+                    Disiarkan seketika ke layar seluruh siswa yang sedang mengerjakan ujian
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowBroadcastModal(false)}
+                className="p-2 text-slate-400 hover:bg-slate-100 rounded-full transition cursor-pointer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {/* Target Status Banner */}
+            <div className="p-3.5 bg-indigo-50/70 rounded-2xl border border-indigo-200/80 flex flex-wrap items-center justify-between gap-3 text-xs">
+              <div className="flex items-center gap-2 text-indigo-950 font-bold">
+                <span className="w-2.5 h-2.5 rounded-full bg-emerald-500 animate-ping" />
+                <span>Target Saat Ini:</span>
+                <span className="px-2.5 py-0.5 rounded-full bg-indigo-600 text-white font-mono font-extrabold text-[11px]">
+                  {students.filter(s => s.status === 'SEDANG_MENGERJAKAN').length} Siswa Sedang Aktif Mengerjakan
+                </span>
+              </div>
+              <span className="text-[11px] text-indigo-700 font-mono">
+                Notifikasi terdengar merdu &amp; tidak mengagetkan
+              </span>
+            </div>
+
+            {/* If an Announcement is currently ACTIVE */}
+            {config.activeAnnouncement && config.activeAnnouncement.active && (
+              <div className="p-4 bg-amber-50 rounded-2xl border border-amber-300 space-y-2.5 text-xs animate-fade-in">
+                <div className="flex items-center justify-between">
+                  <span className="font-bold text-amber-900 flex items-center gap-1.5 font-mono uppercase tracking-wider text-[11px]">
+                    <span className="w-2 h-2 rounded-full bg-amber-600 animate-pulse" />
+                    Sedang Tayang di Layar Siswa:
+                  </span>
+                  <button
+                    type="button"
+                    onClick={handleClearActiveBroadcast}
+                    className="px-2.5 py-1 bg-rose-600 hover:bg-rose-500 text-white rounded-lg font-bold text-[10px] transition cursor-pointer"
+                  >
+                    Tarik / Hapus Pengumuman Ini
+                  </button>
+                </div>
+                <div className="p-3 bg-white/80 rounded-xl border border-amber-200 text-slate-800 font-medium whitespace-pre-wrap text-sm leading-relaxed">
+                  "{config.activeAnnouncement.message}"
+                </div>
+                <div className="text-[10px] text-amber-700 font-mono flex items-center justify-between">
+                  <span>Pengirim: {config.activeAnnouncement.sender}</span>
+                  <span>
+                    Waktu: {new Date(config.activeAnnouncement.timestamp).toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit', second: '2-digit' })} WIB
+                  </span>
+                </div>
+              </div>
+            )}
+
+            {/* Quick Template Chips */}
+            <div className="space-y-2">
+              <label className="text-xs font-bold text-slate-700 font-mono uppercase tracking-wider block">
+                Pilih Pesan Cepat (Template Praktis):
+              </label>
+              <div className="flex flex-wrap gap-1.5">
+                {[
+                  {
+                    label: '⏱️ Sisa 15 Menit',
+                    text: 'Waktu ujian tersisa 15 menit lagi. Mohon periksa kembali nomor yang masih ragu-ragu dan pastikan seluruh jawaban telah terisi.'
+                  },
+                  {
+                    label: '⏱️ Sisa 5 Menit',
+                    text: 'Waktu ujian tersisa 5 menit lagi. Segera selesaikan soal yang belum terjawab dan bersiap untuk mengumpulkan lembar jawaban.'
+                  },
+                  {
+                    label: '⚠️ Harap Tenang',
+                    text: 'Perhatian seluruh peserta ujian: Harap tetap tenang, tertib, dan tidak berbisik atau menoleh. Fokus pada lembar ujian masing-masing.'
+                  },
+                  {
+                    label: '📝 Koreksi Nomor Soal',
+                    text: 'Pemberitahuan koreksi soal: Mohon perhatikan instruksi perbaikan redaksi/opsi soal yang disampaikan pengawas di depan kelas.'
+                  },
+                  {
+                    label: '🔒 Peringatan Layar Penuh',
+                    text: 'Peringatan: Dilarang keluar dari layar penuh atau membuka aplikasi lain karena akun ujian Anda akan otomatis terkunci.'
+                  }
+                ].map((tmpl, idx) => (
+                  <button
+                    key={idx}
+                    type="button"
+                    onClick={() => setBroadcastMessage(tmpl.text)}
+                    className="px-2.5 py-1.5 bg-slate-100 hover:bg-indigo-50 hover:text-indigo-700 hover:border-indigo-200 border border-slate-200 rounded-xl text-xs font-semibold text-slate-700 transition cursor-pointer text-left"
+                  >
+                    {tmpl.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {/* Message Input Textarea */}
+            <div className="space-y-1.5">
+              <div className="flex items-center justify-between">
+                <label className="text-xs font-bold text-slate-800 font-mono uppercase tracking-wider">
+                  Isi Pesan Pengumuman Custom:
+                </label>
+                <span className="text-[11px] font-mono text-slate-400">
+                  {broadcastMessage.length} karakter
+                </span>
+              </div>
+              <textarea
+                rows={4}
+                value={broadcastMessage}
+                onChange={(e) => setBroadcastMessage(e.target.value)}
+                placeholder="Ketikkan isi pengumuman yang ingin disampaikan ke seluruh siswa..."
+                className="w-full p-4 bg-slate-50 border border-slate-200 rounded-2xl text-sm text-slate-900 focus:bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-600 transition"
+              />
+            </div>
+
+            {/* Custom Sound Selector & Test Preview */}
+            <div className="p-4 bg-slate-50 rounded-2xl border border-slate-200 space-y-3">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                <div>
+                  <span className="text-xs font-bold text-slate-800 font-mono uppercase tracking-wider block">
+                    Pilihan Suara Notifikasi (Ramah Telinga):
+                  </span>
+                  <span className="text-[11px] text-slate-500">
+                    Pilih nada lonceng yang ingin dibunyikan saat pengumuman tiba di HP siswa
+                  </span>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => handleTestAnnouncementSound(broadcastSoundType)}
+                  className={`px-3 py-1.5 rounded-xl text-xs font-bold transition flex items-center gap-1.5 cursor-pointer shrink-0 shadow-2xs ${
+                    isPlayingAnnouncementTest
+                      ? 'bg-amber-600 text-white animate-pulse'
+                      : 'bg-white border border-slate-300 text-slate-700 hover:bg-slate-100'
+                  }`}
+                >
+                  <Volume2 className="w-3.5 h-3.5" />
+                  <span>{isPlayingAnnouncementTest ? 'Berhenti' : 'Putar Contoh Suara'}</span>
+                </button>
+              </div>
+
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                {[
+                  { id: 'CHIME_AIRPORT', label: '🔔 Ding-Dong Bandara' },
+                  { id: 'CHIME_HARMONY', label: '✨ Harmoni Kristal' },
+                  { id: 'CHIME_DIGITAL', label: '📱 Ping Digital' },
+                  { id: 'CHIME_ELEGANT', label: '🛎️ Bell Akustik' }
+                ].map((s) => (
+                  <button
+                    key={s.id}
+                    type="button"
+                    onClick={() => {
+                      setBroadcastSoundType(s.id as any);
+                      handleTestAnnouncementSound(s.id);
+                    }}
+                    className={`p-2.5 rounded-xl border text-xs font-bold text-center transition cursor-pointer ${
+                      broadcastSoundType === s.id
+                        ? 'bg-indigo-600 border-indigo-700 text-white shadow-xs'
+                        : 'bg-white border-slate-200 text-slate-700 hover:border-indigo-300'
+                    }`}
+                  >
+                    {s.label}
+                  </button>
+                ))}
+              </div>
+
+              {config.customAnnouncementAudioUrl && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setBroadcastSoundType('CUSTOM_AUDIO');
+                    handleTestAnnouncementSound('CUSTOM_AUDIO');
+                  }}
+                  className={`w-full p-2.5 rounded-xl border text-xs font-bold text-center transition cursor-pointer flex items-center justify-center gap-2 ${
+                    broadcastSoundType === 'CUSTOM_AUDIO'
+                      ? 'bg-emerald-600 border-emerald-700 text-white shadow-xs'
+                      : 'bg-white border-slate-200 text-slate-700 hover:border-emerald-300'
+                  }`}
+                >
+                  <Music className="w-3.5 h-3.5" />
+                  <span>Gunakan Audio Kustom Unggahan: "{config.customAnnouncementName || 'Audio Kustom'}"</span>
+                </button>
+              )}
+            </div>
+
+            {/* Target Subject & Sender Title */}
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <div>
+                <label className="text-xs font-bold text-slate-700 font-mono uppercase tracking-wider block mb-1">
+                  Target Mata Pelajaran:
+                </label>
+                <select
+                  value={broadcastTargetSubject}
+                  onChange={(e) => setBroadcastTargetSubject(e.target.value)}
+                  className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl text-xs font-bold text-slate-800 focus:bg-white focus:outline-none focus:border-indigo-600"
+                >
+                  <option value="all">Semua Mata Pelajaran (Seluruh Siswa Aktif)</option>
+                  {subjects.map((sub) => (
+                    <option key={sub.id} value={sub.id}>
+                      Hanya Mapel: {sub.name}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div>
+                <label className="text-xs font-bold text-slate-700 font-mono uppercase tracking-wider block mb-1">
+                  Nama Pengirim Pengumuman:
+                </label>
+                <input
+                  type="text"
+                  value={broadcastSender}
+                  onChange={(e) => setBroadcastSender(e.target.value)}
+                  placeholder="Contoh: Administrator Master / Pengawas Ruang 1"
+                  className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl text-xs font-bold text-slate-800 focus:bg-white focus:outline-none focus:border-indigo-600"
+                />
+              </div>
+            </div>
+
+            {/* Action Buttons */}
+            <div className="flex items-center justify-end gap-3 pt-4 border-t border-slate-100">
+              <button
+                type="button"
+                onClick={() => setShowBroadcastModal(false)}
+                className="px-5 py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold text-xs rounded-xl transition cursor-pointer"
+              >
+                Batal
+              </button>
+              <button
+                type="button"
+                disabled={!broadcastMessage.trim()}
+                onClick={handleSendBroadcast}
+                className="px-6 py-2.5 bg-gradient-to-r from-indigo-600 to-indigo-700 hover:from-indigo-500 hover:to-indigo-600 disabled:opacity-40 disabled:cursor-not-allowed text-white font-extrabold text-xs rounded-xl transition flex items-center gap-2 shadow-sm cursor-pointer"
+              >
+                <Megaphone className="w-4 h-4" />
+                <span>Kirim Pengumuman Sekarang</span>
               </button>
             </div>
           </div>

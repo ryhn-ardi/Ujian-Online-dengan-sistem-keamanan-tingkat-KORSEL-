@@ -300,3 +300,256 @@ function playBellSynth(durationSec = 5.0): { stop: () => void } {
     return { stop: () => {} };
   }
 }
+
+/**
+ * Play gentle Announcement Notification Sound (non-startling, polite, elegant).
+ * Can be customized by admin with airport chime, harmony chime, digital ping, or custom audio!
+ */
+export function playAnnouncementSound(config?: Partial<ExamConfig>): { stop: () => void } {
+  stopAllAlarmSounds();
+
+  // Subtle single pulse vibration on mobile (polite and gentle)
+  if (typeof navigator !== 'undefined' && navigator.vibrate) {
+    try {
+      navigator.vibrate([120, 80, 160]);
+    } catch (e) {}
+  }
+
+  const soundType = config?.announcementSoundType || 'CHIME_AIRPORT';
+
+  // 1. CUSTOM AUDIO FILE / URL
+  if (soundType === 'CUSTOM_AUDIO' && config?.customAnnouncementAudioUrl) {
+    try {
+      const audio = new Audio(config.customAnnouncementAudioUrl);
+      audio.volume = 0.85;
+      currentPlayingAudio = audio;
+
+      const playPromise = audio.play();
+      if (playPromise !== undefined) {
+        playPromise.catch((err) => {
+          console.warn('Custom announcement audio failed, fallback to airport chime:', err);
+          playAirportChimeSynth();
+        });
+      }
+
+      const timeoutId = setTimeout(() => {
+        if (currentPlayingAudio === audio) {
+          stopAllAlarmSounds();
+        }
+      }, 7000);
+
+      return {
+        stop: () => {
+          clearTimeout(timeoutId);
+          stopAllAlarmSounds();
+        }
+      };
+    } catch (err) {
+      console.warn('Custom announcement audio error, fallback:', err);
+    }
+  }
+
+  // 2. HARMONY CHIME (Soft 3-tone ascending crystal chime)
+  if (soundType === 'CHIME_HARMONY') {
+    return playHarmonyChimeSynth();
+  }
+
+  // 3. DIGITAL CHIME (Crisp modern ping)
+  if (soundType === 'CHIME_DIGITAL') {
+    return playDigitalChimeSynth();
+  }
+
+  // 4. ELEGANT BELL (Warm acoustic bell chime)
+  if (soundType === 'CHIME_ELEGANT') {
+    return playElegantBellSynth();
+  }
+
+  // 5. DEFAULT: AIRPORT PUBLIC CHIME (Ding-dong double tone F5 -> A4, universally gentle & pleasant)
+  return playAirportChimeSynth();
+}
+
+/**
+ * Airport Public Chime (Classic Ding-Dong F5 -> A4)
+ * Polite, soothing, and universally recognized as an announcement signal.
+ */
+function playAirportChimeSynth(): { stop: () => void } {
+  const ctx = getAudioContext();
+  if (!ctx) return { stop: () => {} };
+
+  try {
+    const now = ctx.currentTime;
+    
+    // Tone 1: F5 (698.46 Hz)
+    const osc1 = ctx.createOscillator();
+    const gain1 = ctx.createGain();
+    osc1.type = 'sine';
+    osc1.frequency.setValueAtTime(698.46, now);
+
+    gain1.gain.setValueAtTime(0, now);
+    gain1.gain.linearRampToValueAtTime(0.7, now + 0.03);
+    gain1.gain.exponentialRampToValueAtTime(0.001, now + 0.65);
+
+    osc1.connect(gain1);
+    gain1.connect(ctx.destination);
+    osc1.start(now);
+    osc1.stop(now + 0.7);
+
+    // Tone 2: A4 (440.00 Hz)
+    const t2 = now + 0.38;
+    const osc2 = ctx.createOscillator();
+    const gain2 = ctx.createGain();
+    osc2.type = 'sine';
+    osc2.frequency.setValueAtTime(440.0, t2);
+
+    gain2.gain.setValueAtTime(0, t2);
+    gain2.gain.linearRampToValueAtTime(0.85, t2 + 0.04);
+    gain2.gain.exponentialRampToValueAtTime(0.001, t2 + 1.1);
+
+    osc2.connect(gain2);
+    gain2.connect(ctx.destination);
+    osc2.start(t2);
+    osc2.stop(t2 + 1.2);
+
+    activeOscillators.push(osc1, osc2);
+
+    return {
+      stop: () => stopAllAlarmSounds()
+    };
+  } catch (e) {
+    return { stop: () => {} };
+  }
+}
+
+/**
+ * Harmony Chime (C5 -> E5 -> G5)
+ * Ascending warm musical triad chord.
+ */
+function playHarmonyChimeSynth(): { stop: () => void } {
+  const ctx = getAudioContext();
+  if (!ctx) return { stop: () => {} };
+
+  try {
+    const now = ctx.currentTime;
+    const notes = [523.25, 659.25, 783.99]; // C5, E5, G5
+
+    notes.forEach((freq, idx) => {
+      const startTime = now + (idx * 0.18);
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+
+      osc.type = 'triangle';
+      osc.frequency.setValueAtTime(freq, startTime);
+
+      gain.gain.setValueAtTime(0, startTime);
+      gain.gain.linearRampToValueAtTime(0.65, startTime + 0.03);
+      gain.gain.exponentialRampToValueAtTime(0.001, startTime + 0.9);
+
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+
+      osc.start(startTime);
+      osc.stop(startTime + 0.95);
+
+      activeOscillators.push(osc);
+    });
+
+    return {
+      stop: () => stopAllAlarmSounds()
+    };
+  } catch (e) {
+    return { stop: () => {} };
+  }
+}
+
+/**
+ * Digital Chime (A5 -> D6)
+ * Crisp modern friendly notification sound.
+ */
+function playDigitalChimeSynth(): { stop: () => void } {
+  const ctx = getAudioContext();
+  if (!ctx) return { stop: () => {} };
+
+  try {
+    const now = ctx.currentTime;
+    const notes = [880.0, 1174.66]; // A5 -> D6
+
+    notes.forEach((freq, idx) => {
+      const startTime = now + (idx * 0.14);
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(freq, startTime);
+
+      gain.gain.setValueAtTime(0, startTime);
+      gain.gain.linearRampToValueAtTime(0.7, startTime + 0.02);
+      gain.gain.exponentialRampToValueAtTime(0.001, startTime + 0.5);
+
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+
+      osc.start(startTime);
+      osc.stop(startTime + 0.55);
+
+      activeOscillators.push(osc);
+    });
+
+    return {
+      stop: () => stopAllAlarmSounds()
+    };
+  } catch (e) {
+    return { stop: () => {} };
+  }
+}
+
+/**
+ * Elegant Bell (D5 -> A5)
+ * Soft acoustic bell with warm resonance.
+ */
+function playElegantBellSynth(): { stop: () => void } {
+  const ctx = getAudioContext();
+  if (!ctx) return { stop: () => {} };
+
+  try {
+    const now = ctx.currentTime;
+    const osc1 = ctx.createOscillator();
+    const gain1 = ctx.createGain();
+
+    osc1.type = 'sine';
+    osc1.frequency.setValueAtTime(587.33, now);
+
+    gain1.gain.setValueAtTime(0, now);
+    gain1.gain.linearRampToValueAtTime(0.65, now + 0.03);
+    gain1.gain.exponentialRampToValueAtTime(0.001, now + 0.7);
+
+    osc1.connect(gain1);
+    gain1.connect(ctx.destination);
+    osc1.start(now);
+    osc1.stop(now + 0.75);
+
+    const t2 = now + 0.22;
+    const osc2 = ctx.createOscillator();
+    const gain2 = ctx.createGain();
+
+    osc2.type = 'sine';
+    osc2.frequency.setValueAtTime(880.0, t2);
+
+    gain2.gain.setValueAtTime(0, t2);
+    gain2.gain.linearRampToValueAtTime(0.75, t2 + 0.03);
+    gain2.gain.exponentialRampToValueAtTime(0.001, t2 + 1.2);
+
+    osc2.connect(gain2);
+    gain2.connect(ctx.destination);
+    osc2.start(t2);
+    osc2.stop(t2 + 1.25);
+
+    activeOscillators.push(osc1, osc2);
+
+    return {
+      stop: () => stopAllAlarmSounds()
+    };
+  } catch (e) {
+    return { stop: () => {} };
+  }
+}
+

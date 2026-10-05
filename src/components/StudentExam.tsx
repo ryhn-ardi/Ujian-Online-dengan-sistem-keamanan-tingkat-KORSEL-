@@ -1,10 +1,10 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Play, AlertTriangle, Wifi, WifiOff, CloudOff, ShieldAlert, KeyRound, Clock, ChevronLeft, ChevronRight, CheckSquare, Send, CheckCircle, RefreshCw, Check, Radio, Ticket, Lock, Unlock, BellOff, Smartphone, Volume2, Info } from 'lucide-react';
-import { Student, Question, ExamConfig } from '../types';
-import { getStudentFromServer } from '../utils/sync';
+import { Play, AlertTriangle, Wifi, WifiOff, CloudOff, ShieldAlert, KeyRound, Clock, ChevronLeft, ChevronRight, CheckSquare, Send, CheckCircle, RefreshCw, Check, Radio, Ticket, Lock, Unlock, BellOff, Smartphone, Volume2, Info, BookOpen, Megaphone } from 'lucide-react';
+import { Student, Question, ExamConfig, BroadcastAnnouncement } from '../types';
+import { getStudentFromServer, getExamSubjects } from '../utils/sync';
 import { RichExamContent } from './RichExamContent';
 import { useRealtimeWIB } from '../utils/timeWib';
-import { playAlarmSound } from '../utils/alarmAudio';
+import { playAlarmSound, playAnnouncementSound } from '../utils/alarmAudio';
 
 let sharedAudioContext: AudioContext | null = null;
 
@@ -164,9 +164,40 @@ export default function StudentExam({
   const [isGraceActive, setIsGraceActive] = useState(false);
   const [violationToast, setViolationToast] = useState<{ message: string; count: number; max: number } | null>(null);
   const [dndConfirmed, setDndConfirmed] = useState(false);
+  const [displayedAnnouncement, setDisplayedAnnouncement] = useState<BroadcastAnnouncement | null>(null);
+  const dismissedAnnouncementIdRef = useRef<string>('');
   const isUnlockingRef = useRef(false);
   const isSubmittingRef = useRef(false);
   const wibClock = useRealtimeWIB();
+
+  // Real-time broadcast announcement listener
+  useEffect(() => {
+    const ann = config.activeAnnouncement;
+    if (ann && ann.active && ann.id !== dismissedAnnouncementIdRef.current) {
+      if (ann.targetSubjectId && ann.targetSubjectId !== 'all' && ann.targetSubjectId !== student.subjectId) {
+        return;
+      }
+      setDisplayedAnnouncement(ann);
+      // Play polite, non-startling announcement chime
+      playAnnouncementSound({
+        announcementSoundType: ann.soundType || config.announcementSoundType || 'CHIME_AIRPORT',
+        customAnnouncementAudioUrl: ann.customAudioUrl || config.customAnnouncementAudioUrl
+      });
+    } else if (!ann || !ann.active) {
+      setDisplayedAnnouncement(null);
+    }
+  }, [config.activeAnnouncement, student.subjectId]);
+
+  const handleDismissAnnouncement = () => {
+    if (displayedAnnouncement) {
+      dismissedAnnouncementIdRef.current = displayedAnnouncement.id;
+      setDisplayedAnnouncement(null);
+    }
+  };
+
+  const allSubjects = getExamSubjects(config);
+  const activeSubject = allSubjects.find(s => s.id === (student.subjectId || 'sub1')) || allSubjects[0];
+  const activeSubjectName = activeSubject ? activeSubject.name : (student.subjectId || 'Ujian Digital');
 
   const isFullscreenSupported = typeof document !== 'undefined' && !!(
     document.documentElement?.requestFullscreen ||
@@ -945,6 +976,26 @@ export default function StudentExam({
             </p>
           </div>
 
+          {/* Active Exam Subject Card */}
+          <div className="p-4 bg-indigo-950/70 border border-indigo-500/40 rounded-2xl mb-5 flex items-center justify-between gap-3 text-left">
+            <div className="flex items-center gap-3 min-w-0">
+              <div className="w-10 h-10 rounded-xl bg-indigo-600 text-white flex items-center justify-center font-bold text-sm shrink-0 shadow-sm">
+                <BookOpen className="w-5 h-5 text-indigo-100" />
+              </div>
+              <div className="min-w-0">
+                <span className="text-[10px] font-mono uppercase font-bold text-indigo-300 tracking-wider block">
+                  Naskah Soal yang Dikerjakan
+                </span>
+                <h4 className="text-sm sm:text-base font-extrabold text-white truncate">
+                  {activeSubjectName}
+                </h4>
+              </div>
+            </div>
+            <span className="px-3 py-1 bg-indigo-900/80 border border-indigo-400/30 rounded-lg text-xs font-mono font-bold text-indigo-200 shrink-0">
+              {questions.length} Butir Soal
+            </span>
+          </div>
+
           {/* DND MODE & PROCTOR SECURITY GUIDE */}
           <div className="bg-slate-950/70 border border-amber-500/40 rounded-2xl p-4 sm:p-5 mb-5 space-y-3.5 text-left">
             <div className="flex items-center gap-2 text-amber-400 font-bold text-xs sm:text-sm font-mono uppercase tracking-wide">
@@ -1036,36 +1087,82 @@ export default function StudentExam({
 
   return (
     <div className="min-h-screen bg-slate-50 flex flex-col justify-between font-sans relative select-none">
-      {/* Real-time Violation Alert Toast */}
+      {/* Real-time Violation Alert Dialog with Large Touch-Friendly OK Button */}
       {violationToast && (
-        <div className="fixed top-14 sm:top-20 inset-x-3 sm:inset-x-4 max-w-xl mx-auto z-50 animate-bounce">
-          <div className="p-4 sm:p-5 bg-gradient-to-r from-red-600 via-rose-600 to-red-700 text-white rounded-2xl shadow-2xl border-2 border-white flex flex-col sm:flex-row items-center justify-between gap-4">
-            <div className="flex items-center gap-3 w-full sm:w-auto">
-              <div className="w-12 h-12 rounded-xl bg-white/20 border border-white/30 flex items-center justify-center shrink-0 shadow-sm">
-                <ShieldAlert className="w-7 h-7 text-white animate-pulse" />
-              </div>
-              <div className="text-left flex-1 min-w-0">
-                <div className="flex items-center gap-2 flex-wrap">
-                  <p className="font-black text-sm sm:text-base uppercase tracking-wide">
-                    Pelanggaran Terdeteksi!
-                  </p>
-                  <span className="bg-black/30 border border-white/20 px-2 py-0.5 rounded-lg text-xs font-mono font-bold">
-                    {violationToast.count} / {violationToast.max} Kali
-                  </span>
-                </div>
-                <p className="text-xs sm:text-sm text-red-100 font-medium leading-snug mt-1">
-                  {violationToast.message}
-                </p>
-              </div>
+        <div className="fixed inset-0 bg-slate-950/75 backdrop-blur-xs flex items-center justify-center p-4 z-50 animate-fade-in">
+          <div className="p-6 sm:p-7 bg-gradient-to-br from-red-600 via-rose-700 to-red-800 text-white rounded-3xl shadow-2xl border-2 border-white/40 max-w-lg w-full text-center space-y-4">
+            <div className="w-16 h-16 rounded-2xl bg-white/20 border border-white/30 flex items-center justify-center mx-auto shadow-inner">
+              <ShieldAlert className="w-9 h-9 text-white animate-pulse" />
             </div>
+            
+            <div className="space-y-1.5">
+              <div className="inline-flex items-center gap-2 bg-black/40 border border-white/20 px-3 py-1 rounded-full text-xs font-mono font-bold tracking-wider uppercase">
+                <span>Pelanggaran {violationToast.count} / {violationToast.max} Kali</span>
+              </div>
+              <h3 className="font-black text-xl sm:text-2xl uppercase tracking-tight">
+                Peringatan Pelanggaran!
+              </h3>
+              <p className="text-sm sm:text-base text-red-100 font-medium leading-relaxed max-w-md mx-auto">
+                {violationToast.message}
+              </p>
+            </div>
+
+            <div className="p-3 bg-red-950/40 rounded-xl border border-white/10 text-xs text-red-200 leading-snug">
+              Jangan membuka aplikasi lain, membagi layar (split screen), atau menarik bilah notifikasi agar ujian tidak dibekukan secara permanen.
+            </div>
+
             <button
               id="btn-dismiss-violation-toast"
               type="button"
               onClick={() => setViolationToast(null)}
-              className="w-full sm:w-auto px-6 py-3.5 bg-white hover:bg-red-50 text-red-700 active:scale-95 text-sm sm:text-base font-black rounded-xl shadow-xl ring-2 ring-white/90 transition-all flex items-center justify-center gap-2 shrink-0 cursor-pointer"
+              className="w-full py-4 px-8 bg-white hover:bg-slate-100 active:scale-95 text-red-700 text-base sm:text-lg font-black rounded-2xl shadow-2xl ring-4 ring-white/60 transition-all flex items-center justify-center gap-3 cursor-pointer min-h-[54px]"
             >
-              <Check className="w-5 h-5 text-red-700 stroke-[3]" />
+              <Check className="w-6 h-6 text-red-700 stroke-[3]" />
               <span>SAYA MENGERTI (OK)</span>
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Real-time Broadcast Announcement Modal with Gentle Chime */}
+      {displayedAnnouncement && (
+        <div className="fixed inset-0 bg-slate-950/70 backdrop-blur-xs flex items-center justify-center p-4 z-50 animate-fade-in notranslate" translate="no">
+          <div className="p-6 sm:p-7 bg-gradient-to-br from-indigo-900 via-slate-900 to-indigo-950 text-white rounded-3xl shadow-2xl border-2 border-indigo-400/40 max-w-lg w-full text-center space-y-4">
+            <div className="w-14 h-14 rounded-2xl bg-indigo-500/20 border border-indigo-400/40 flex items-center justify-center mx-auto shadow-inner text-indigo-300">
+              <Megaphone className="w-7 h-7 text-indigo-300 animate-bounce" />
+            </div>
+
+            <div className="space-y-1.5">
+              <div className="inline-flex items-center gap-2 bg-indigo-500/20 border border-indigo-400/30 px-3 py-1 rounded-full text-[11px] font-mono font-bold tracking-wider text-indigo-200">
+                <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
+                <span>PENGUMUMAN RESMI</span>
+                <span>•</span>
+                <span>
+                  {displayedAnnouncement.timestamp
+                    ? new Date(displayedAnnouncement.timestamp).toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' }) + ' WIB'
+                    : 'SEKARANG'}
+                </span>
+              </div>
+              <h3 className="font-black text-lg sm:text-xl text-white tracking-tight">
+                Pemberitahuan dari {displayedAnnouncement.sender || 'Pengawas'}
+              </h3>
+              <div className="p-4 bg-white/10 rounded-2xl border border-white/10 text-sm sm:text-base text-indigo-100 font-medium leading-relaxed max-w-md mx-auto whitespace-pre-wrap text-left shadow-inner">
+                {displayedAnnouncement.message}
+              </div>
+            </div>
+
+            <p className="text-[11px] text-indigo-300/70 font-mono">
+              Waktu ujian tetap berjalan normal di latar belakang. Silakan klik tombol di bawah untuk melanjutkan.
+            </p>
+
+            <button
+              id="btn-dismiss-announcement"
+              type="button"
+              onClick={handleDismissAnnouncement}
+              className="w-full py-4 px-6 bg-gradient-to-r from-indigo-500 to-indigo-600 hover:from-indigo-400 hover:to-indigo-500 active:scale-95 text-white text-base font-bold rounded-2xl shadow-xl ring-2 ring-indigo-300/50 transition-all flex items-center justify-center gap-2.5 cursor-pointer min-h-[50px]"
+            >
+              <Check className="w-5 h-5 stroke-[2.5]" />
+              <span>SAYA MENGERTI / TUTUP PENGUMUMAN</span>
             </button>
           </div>
         </div>
@@ -1093,12 +1190,17 @@ export default function StudentExam({
       <header className="bg-slate-900 text-white shadow-sm border-b border-slate-800 px-6 py-4 sticky top-0 z-40">
         <div className="max-w-5xl mx-auto flex flex-col sm:flex-row sm:items-center justify-between gap-4">
           <div>
-            <div className="flex items-center gap-2">
+            <div className="flex items-center gap-2 flex-wrap">
               <span className="px-2 py-0.5 bg-red-600 text-white font-mono text-[10px] font-bold tracking-widest rounded uppercase">
                 PROCTOR ACTIVE
               </span>
               <span className="text-slate-400 text-xs font-mono">
                 KELAS {student.studentClass} • ABSEN {student.absentNumber}
+              </span>
+              {/* Highlight Active Exam Subject */}
+              <span className="px-2.5 py-0.5 bg-indigo-600/90 text-indigo-100 font-bold text-xs rounded-md border border-indigo-400/30 flex items-center gap-1.5 shadow-2xs">
+                <BookOpen className="w-3.5 h-3.5 text-indigo-300" />
+                <span>Naskah: {activeSubjectName}</span>
               </span>
             </div>
             <h2 className="text-lg font-bold truncate tracking-tight">{student.name}</h2>
@@ -1157,7 +1259,7 @@ export default function StudentExam({
             </div>
           )}
 
-          <div className="bg-white rounded-2xl shadow-xs border border-slate-200/80 p-6 md:p-8 relative">
+          <div key={currentQuestion.id} className="notranslate bg-white rounded-2xl shadow-xs border border-slate-200/80 p-6 md:p-8 relative" translate="no">
             
             {/* Index heading */}
             <div className="flex justify-between items-center mb-6">
@@ -1214,7 +1316,7 @@ export default function StudentExam({
             })()}
 
             {/* Question Text & Media */}
-            <div className="mb-6">
+            <div className="mb-6 notranslate" translate="no">
               <RichExamContent
                 text={currentQuestion.questionText}
                 imageUrl={currentQuestion.imageUrl}
@@ -1224,8 +1326,8 @@ export default function StudentExam({
             </div>
 
             {/* Multiple Choice Options */}
-            <div className="space-y-4">
-              {currentQuestion.options.map((option, idx) => {
+            <div className="space-y-4 notranslate" translate="no">
+              {(currentQuestion.options || []).map((option, idx) => {
                 const labelLetter = String.fromCharCode(65 + idx); // A, B, C, D
                 const qAns = selectedAnswers[currentQuestion.id];
                 const isSelected = Array.isArray(qAns) ? qAns.includes(idx) : qAns === idx;
@@ -1233,7 +1335,7 @@ export default function StudentExam({
                 
                 return (
                   <button
-                    key={idx}
+                    key={`${currentQuestion.id}_opt_${idx}`}
                     id={`btn-option-${idx}`}
                     onClick={() => handleSelectOption(currentQuestion.id, idx)}
                     className={`w-full text-left px-5 py-4 rounded-xl border text-sm transition-all flex items-center justify-between gap-4 ${
@@ -1368,9 +1470,13 @@ export default function StudentExam({
       {showConfirmSubmit && (
         <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4 z-50">
           <div className="bg-white rounded-2xl border border-slate-200 shadow-xl max-w-sm w-full p-6 text-center animate-fade-in">
+            <div className="inline-flex items-center gap-1.5 px-3 py-1 bg-indigo-50 border border-indigo-200 text-indigo-700 rounded-full text-xs font-bold mb-3">
+              <BookOpen className="w-3.5 h-3.5" />
+              <span>Naskah: {activeSubjectName}</span>
+            </div>
             <h3 className="text-lg font-bold text-slate-800 mb-2">Selesaikan Ujian?</h3>
             <p className="text-sm text-slate-500 mb-6 leading-relaxed">
-              Anda telah menjawab {Object.keys(selectedAnswers).length} dari {questions.length} soal. Setelah Anda mengonfirmasi pengiriman, jawaban Anda tidak dapat diubah lagi.
+              Anda telah menjawab {Object.keys(selectedAnswers).length} dari {questions.length} soal untuk <strong>"{activeSubjectName}"</strong>. Setelah mengonfirmasi, jawaban Anda tidak dapat diubah lagi.
             </p>
 
             <div className="flex gap-2">
