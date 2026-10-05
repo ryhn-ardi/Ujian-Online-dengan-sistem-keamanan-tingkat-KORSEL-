@@ -192,16 +192,22 @@ export const RichExamContent: React.FC<RichExamContentProps> = ({
       ) : (
         /* Standard Question Paragraphs */
         <div className="space-y-3 text-slate-800 leading-relaxed">
-          {paragraphs.map((p, idx) => (
-            <p
-              key={idx}
-              className={`${
-                isMultiParagraph ? 'indent-6 sm:indent-8 mb-2 leading-[1.8] text-justify' : 'leading-relaxed'
-              }`}
-            >
-              {parseInlineMath(p)}
+          {paragraphs.length > 0 ? (
+            paragraphs.map((p, idx) => (
+              <p
+                key={idx}
+                className={`${
+                  isMultiParagraph ? 'indent-6 sm:indent-8 mb-2 leading-[1.8] text-justify' : 'leading-relaxed'
+                }`}
+              >
+                {parseInlineMath(p)}
+              </p>
+            ))
+          ) : (
+            <p className="leading-relaxed">
+              {text ? parseInlineMath(text) : null}
             </p>
-          ))}
+          )}
         </div>
       )}
 

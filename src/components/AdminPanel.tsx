@@ -6,6 +6,10 @@ import { DEFAULT_PROCTOR_PERMISSIONS } from '../data';
 import {
   getExamSubjects,
   saveSingleStudent,
+  saveMultipleStudents,
+  deleteSingleStudent,
+  deleteMultipleStudents,
+  saveStudentsLocally,
   clearAllStudents,
   isFirestoreQuotaExceeded,
   getFirestoreStats,
@@ -773,7 +777,7 @@ export default function AdminPanel({
     };
 
     saveSingleStudent(newStudentObj);
-    onUpdateStudents([...students, newStudentObj]);
+    saveStudentsLocally([...students, newStudentObj]);
 
     setShowAddStudentMonitorModal(false);
     setNewMonitorName('');
@@ -1858,7 +1862,7 @@ export default function AdminPanel({
         answers: student.answers || {}, // Preserve existing student answers on unlock
         lastActive: new Date().toISOString()
       };
-      // Direct Firestore document update for instant sub-second propagation
+      // Direct Firestore document update for instant sub-second propagation (1 write, 0 read)
       saveSingleStudent(unlockedStudent);
     }
 
@@ -1875,7 +1879,7 @@ export default function AdminPanel({
       }
       return s;
     });
-    onUpdateStudents(updated);
+    saveStudentsLocally(updated);
   };
 
   // Reset student entire attempt
@@ -1883,6 +1887,23 @@ export default function AdminPanel({
     if (!window.confirm('Apakah Anda yakin ingin mereset seluruh pengerjaan siswa ini? Jawaban yang ada akan dihapus dan siswa harus masuk layar penuh lagi.')) {
       return;
     }
+    const student = students.find(s => s.id === studentId);
+    if (student) {
+      const resetStd: Student = {
+        ...student,
+        status: 'BELUM_MULAI' as const,
+        answers: {},
+        violationCount: 0,
+        lockedReason: undefined,
+        score: undefined,
+        correctAnswersCount: undefined,
+        startTime: undefined,
+        endTime: undefined,
+        lastActive: new Date().toISOString()
+      };
+      saveSingleStudent(resetStd);
+    }
+
     const updated = students.map((s) => {
       if (s.id === studentId) {
         return {
@@ -1899,7 +1920,7 @@ export default function AdminPanel({
       }
       return s;
     });
-    onUpdateStudents(updated);
+    saveStudentsLocally(updated);
   };
 
   // Reset student violation count only (removes locks & keeps existing answers)
@@ -1907,6 +1928,18 @@ export default function AdminPanel({
     if (!window.confirm('Apakah Anda yakin ingin ME-RESET pelanggaran siswa ini menjadi 0? Jika status ujian terkunci, siswa akan bisa mengakses kembali naskah ujian setara tabungan jawaban sebelumnya.')) {
       return;
     }
+    const student = students.find(s => s.id === studentId);
+    if (student) {
+      const resetStd: Student = {
+        ...student,
+        violationCount: 0,
+        lockedReason: undefined,
+        status: student.status === 'TERKUNCI' ? ('SEDANG_MENGERJAKAN' as const) : student.status,
+        lastActive: new Date().toISOString()
+      };
+      saveSingleStudent(resetStd);
+    }
+
     const updated = students.map((s) => {
       if (s.id === studentId) {
         return {
@@ -1918,7 +1951,7 @@ export default function AdminPanel({
       }
       return s;
     });
-    onUpdateStudents(updated);
+    saveStudentsLocally(updated);
     alert('Pelanggaran berhasil di-reset menjadi 0 dan status ujian diaktifkan kembali!');
   };
 
@@ -1940,7 +1973,7 @@ export default function AdminPanel({
     await saveSingleStudent(updatedStudent);
 
     const updated = students.map((s) => (s.id === studentId ? updatedStudent : s));
-    onUpdateStudents(updated);
+    saveStudentsLocally(updated);
     alert(`Kuota token untuk "${student.name}" berhasil di-reset ke 0!`);
   };
 
@@ -1950,6 +1983,7 @@ export default function AdminPanel({
       return;
     }
 
+    const changed: Student[] = [];
     const updated = students.map((s) => {
       const resetStd: Student = {
         ...s,
@@ -1957,10 +1991,10 @@ export default function AdminPanel({
         tokenUnlockCount: 0,
         lastActive: new Date().toISOString()
       };
-      saveSingleStudent(resetStd);
+      changed.push(resetStd);
       return resetStd;
     });
-    onUpdateStudents(updated);
+    await saveMultipleStudents(changed);
     alert('Kuota token seluruh siswa berhasil di-reset!');
   };
 
@@ -1969,6 +2003,7 @@ export default function AdminPanel({
     e.preventDefault();
     if (!editingStudent) return;
 
+    let updatedTarget: Student | null = null;
     const updated = students.map((s) => {
       if (s.id === editingStudent.id) {
         const newSubId = editSubjectId || s.subjectId || 'sub1';
@@ -1981,16 +2016,21 @@ export default function AdminPanel({
           lastActive: new Date().toISOString()
         };
         const metrics = getStudentMetrics(subStudent, questions);
-        return {
+        const finalStudent: Student = {
           ...subStudent,
           score: s.status === 'SELESAI' ? metrics.score : (typeof s.score === 'number' ? s.score : undefined),
           correctAnswersCount: s.status === 'SELESAI' ? metrics.correctAnswersCount : s.correctAnswersCount,
           totalQuestions: metrics.totalQuestions
         };
+        updatedTarget = finalStudent;
+        return finalStudent;
       }
       return s;
     });
-    onUpdateStudents(updated);
+    if (updatedTarget) {
+      saveSingleStudent(updatedTarget);
+    }
+    saveStudentsLocally(updated);
     setEditingStudent(null);
   };
 
@@ -1999,8 +2039,7 @@ export default function AdminPanel({
     if (!window.confirm('Hapus siswa dari daftar ujian? Semua riwayat skor akan hilang.')) {
       return;
     }
-    const updated = students.filter((s) => s.id !== studentId);
-    onUpdateStudents(updated);
+    deleteSingleStudent(studentId);
   };
 
   // Unlock all locked students at once and reset their violations
@@ -2018,6 +2057,7 @@ export default function AdminPanel({
       return;
     }
     const targetIds = new Set(lockedStudents.map(s => s.id));
+    const changedStudents: Student[] = [];
     const updated = students.map((s) => {
       if (targetIds.has(s.id)) {
         const unlocked: Student = {
@@ -2028,12 +2068,12 @@ export default function AdminPanel({
           answers: s.answers || {}, // Preserve answers already typed
           lastActive: new Date().toISOString()
         };
-        saveSingleStudent(unlocked);
+        changedStudents.push(unlocked);
         return unlocked;
       }
       return s;
     });
-    onUpdateStudents(updated);
+    saveMultipleStudents(changedStudents);
     alert(`Sukses membuka kunci & me-reset pelanggaran untuk ${lockedStudents.length} siswa!`);
   };
 
@@ -2051,18 +2091,22 @@ export default function AdminPanel({
       return;
     }
     const targetIds = new Set(targetStudents.map(s => s.id));
+    const changedStudents: Student[] = [];
     const updated = students.map((s) => {
       if (targetIds.has(s.id)) {
-        return {
+        const resetStd: Student = {
           ...s,
           violationCount: 0,
           lockedReason: undefined,
-          status: s.status === 'TERKUNCI' ? ('SEDANG_MENGERJAKAN' as const) : s.status
+          status: s.status === 'TERKUNCI' ? ('SEDANG_MENGERJAKAN' as const) : s.status,
+          lastActive: new Date().toISOString()
         };
+        changedStudents.push(resetStd);
+        return resetStd;
       }
       return s;
     });
-    onUpdateStudents(updated);
+    saveMultipleStudents(changedStudents);
     alert(isFilterActive ? `Pelanggaran untuk ${targetStudents.length} siswa ter-filter berhasil di-reset bersih menjadi 0!` : 'Seluruh pelanggaran siswa berhasil di-reset bersih menjadi 0!');
   };
 
@@ -2086,7 +2130,7 @@ export default function AdminPanel({
     saveSingleStudent(updatedStudent);
 
     const updated = students.map((s) => (s.id === studentId ? updatedStudent : s));
-    onUpdateStudents(updated);
+    saveStudentsLocally(updated);
     alert(`Ujian siswa ${target.name} berhasil dikumpulkan! Nilai akhir: ${metrics.score.toFixed(1)} (${metrics.correctAnswersCount}/${metrics.totalQuestions} Benar).`);
   };
 
@@ -2102,6 +2146,7 @@ export default function AdminPanel({
       return;
     }
     const ongoingIds = new Set(ongoingList.map(s => s.id));
+    const changedStudents: Student[] = [];
     const updated = students.map((s) => {
       if (ongoingIds.has(s.id)) {
         const metrics = getStudentMetrics(s, questions);
@@ -2114,12 +2159,12 @@ export default function AdminPanel({
           endTime: s.endTime || new Date().toISOString(),
           lastActive: new Date().toISOString()
         };
-        saveSingleStudent(finished);
+        changedStudents.push(finished);
         return finished;
       }
       return s;
     });
-    onUpdateStudents(updated);
+    saveMultipleStudents(changedStudents);
     alert(`Berhasil mengumpulkan dan menetapkan nilai untuk ${ongoingList.length} siswa!`);
   };
 
@@ -2149,9 +2194,10 @@ export default function AdminPanel({
       return;
     }
     const targetIds = new Set(targetStudents.map(s => s.id));
+    const changedStudents: Student[] = [];
     const updated = students.map((s) => {
       if (targetIds.has(s.id)) {
-        return {
+        const resetStd: Student = {
           ...s,
           status: 'BELUM_MULAI' as const,
           answers: {},
@@ -2162,12 +2208,15 @@ export default function AdminPanel({
           startTime: undefined,
           endTime: undefined,
           usedTokens: [],
-          tokenUnlockCount: 0
+          tokenUnlockCount: 0,
+          lastActive: new Date().toISOString()
         };
+        changedStudents.push(resetStd);
+        return resetStd;
       }
       return s;
     });
-    onUpdateStudents(updated);
+    saveMultipleStudents(changedStudents);
     alert(isFilterActive ? `Progress pengerjaan dan nilai untuk ${targetStudents.length} siswa ter-filter berhasil di-reset bersih!` : 'Progress pengerjaan dan seluruh nilai siswa berhasil di-reset bersih!');
   };
 
@@ -2194,9 +2243,8 @@ export default function AdminPanel({
     if (!isFilterActive || targetStudents.length === students.length) {
       await clearAllStudents();
     } else {
-      const targetIds = new Set(targetStudents.map(s => s.id));
-      const remaining = students.filter(s => !targetIds.has(s.id));
-      onUpdateStudents(remaining);
+      const targetIds = Array.from(new Set(targetStudents.map(s => s.id)));
+      await deleteMultipleStudents(targetIds);
     }
     alert(isFilterActive ? `Sebanyak ${targetStudents.length} data siswa ter-filter berhasil dihapus bersih!` : 'Seluruh data siswa berhasil dihapus bersih hingga 0!');
   };

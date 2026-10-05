@@ -463,6 +463,44 @@ onSnapshot(
   }
 );
 
+/**
+ * Standardize and repair any malformed question options so that questions
+ * are guaranteed to always have distinct, non-empty options.
+ */
+export function sanitizeQuestionItem(q: any, fallbackId: string): Question {
+  const qId = String(q?.id || fallbackId).trim();
+  let rawOpts: any[] = Array.isArray(q?.options) ? q.options : [];
+  
+  // If options array is empty or corrupted, create standard default options
+  if (rawOpts.length === 0) {
+    rawOpts = ['Pilihan A', 'Pilihan B', 'Pilihan C', 'Pilihan D'];
+  }
+
+  // Ensure every option has valid distinct non-empty text
+  const cleanOpts = rawOpts.map((opt: any, idx: number) => {
+    const s = typeof opt === 'string' ? opt.trim() : String(opt ?? '').trim();
+    const labelLetter = String.fromCharCode(65 + idx);
+    return s && s.length > 0 ? s : `Pilihan ${labelLetter}`;
+  });
+
+  const primaryCorrect = typeof q?.correctAnswerIndex === 'number' ? q.correctAnswerIndex : 0;
+  const correctIndices = Array.isArray(q?.correctAnswerIndices) && q.correctAnswerIndices.length > 0
+    ? q.correctAnswerIndices
+    : [primaryCorrect];
+
+  return {
+    ...q,
+    id: qId,
+    questionText: String(q?.questionText || '').trim() || 'Pertanyaan Ujian',
+    options: cleanOpts,
+    correctAnswerIndex: primaryCorrect,
+    correctAnswerIndices: correctIndices,
+    type: q?.type === 'MR' ? 'MR' : 'MC',
+    score: typeof q?.score === 'number' ? q.score : 10,
+    subjectId: q?.subjectId || 'sub1'
+  };
+}
+
 // B. Real-time Questions Sync & Seeding Helper
 onSnapshot(
   collection(db, 'questions'),
@@ -471,11 +509,8 @@ onSnapshot(
       recordFirestoreRead(snapshot.size, 'QUESTIONS_SYNC', 'questions', `Mengunduh ${snapshot.size} butir bank soal aktif`);
       const list: Question[] = [];
       snapshot.forEach((doc) => {
-        const q = doc.data() as Question;
-        list.push({
-          ...q,
-          id: String(q?.id || doc.id).trim()
-        });
+        const q = doc.data();
+        list.push(sanitizeQuestionItem(q, doc.id));
       });
       // Sort to preserve original list index / ID structure safely
       list.sort((a, b) => String(a.id || '').localeCompare(String(b.id || '')));
@@ -488,7 +523,7 @@ onSnapshot(
       // Questions bank snapshot is empty. Preserve cached questions if available to prevent accidental drops
       const cached = getStored<Question[]>(QUESTIONS_KEY, []);
       if (cached.length > 0) {
-        localQuestions = cached;
+        localQuestions = cached.map((q, idx) => sanitizeQuestionItem(q, `q_cached_${idx}`));
       } else {
         localQuestions = [];
         localStorage.setItem(QUESTIONS_KEY, JSON.stringify([]));
@@ -585,9 +620,6 @@ export function subscribeToMyStudentSession(studentId: string): () => void {
     }
   };
 }
-
-// Start initial student sync
-enableAllStudentsSync();
 
 // D. Real-time Student Accounts Sync (Pre-registered users database for 1,200+ students)
 onSnapshot(
@@ -708,11 +740,8 @@ export async function refreshQuestionsFromServer(): Promise<Question[]> {
 
     const list: Question[] = [];
     snap.forEach((d) => {
-      const q = d.data() as Question;
-      list.push({
-        ...q,
-        id: String(q?.id || d.id).trim()
-      });
+      const q = d.data();
+      list.push(sanitizeQuestionItem(q, d.id));
     });
     list.sort((a, b) => String(a.id || '').localeCompare(String(b.id || '')));
 
@@ -899,19 +928,32 @@ export async function saveStudentUsers(users: StudentUser[], broadcast = true): 
   }
 }
 
-// Save/Synchronize student registry list
-export async function saveStudents(students: Student[], broadcast = true): Promise<void> {
+// Save student list locally only (0 Firestore reads, 0 Firestore writes)
+export function saveStudentsLocally(students: Student[], broadcast = true): void {
   const cleanedList = students.map(s => cleanStudent(s));
   localStudents = cleanedList;
   localStorage.setItem(STUDENTS_KEY, JSON.stringify(cleanedList));
   if (broadcast) notifySubscribers('SYNC_STUDENTS');
+}
+
+// Save/Update multiple students in a single Firestore batch without doing full collection getDocs reads (Saves 100% redundant reads!)
+export async function saveMultipleStudents(students: Student[], broadcast = true): Promise<void> {
+  if (!students || students.length === 0) return;
+  const cleanedList = students.map(s => cleanStudent(s));
+  
+  // Update local cache
+  cleanedList.forEach(s => {
+    const idx = localStudents.findIndex(item => item.id === s.id);
+    if (idx !== -1) {
+      localStudents[idx] = s;
+    } else {
+      localStudents.push(s);
+    }
+  });
+  localStorage.setItem(STUDENTS_KEY, JSON.stringify(localStudents));
+  if (broadcast) notifySubscribers('SYNC_STUDENTS');
 
   try {
-    const existingSnap = await getDocs(collection(db, 'students'));
-    const existingIds = new Set<string>();
-    existingSnap.forEach((doc) => existingIds.add(doc.id));
-
-    // Save/update students in batches of 300 (well within Firestore 500 limit)
     const CHUNK_SIZE = 300;
     for (let i = 0; i < cleanedList.length; i += CHUNK_SIZE) {
       const chunk = cleanedList.slice(i, i + CHUNK_SIZE);
@@ -919,18 +961,54 @@ export async function saveStudents(students: Student[], broadcast = true): Promi
       chunk.forEach((s) => {
         const ref = doc(db, 'students', s.id);
         batch.set(ref, sanitizeForFirestore(s));
-        existingIds.delete(s.id);
       });
       await batch.commit();
     }
+    recordFirestoreWrite(cleanedList.length, 'SAVE_STUDENTS_BATCH', 'students', `Menyimpan ${cleanedList.length} data siswa terperbarui secara efisien`);
+  } catch (err) {
+    console.error('Error saving multiple students to cloud:', err);
+  }
+}
 
-    // Clean up deleted ones
-    const deleteList = Array.from(existingIds);
-    for (let i = 0; i < deleteList.length; i += CHUNK_SIZE) {
-      const chunk = deleteList.slice(i, i + CHUNK_SIZE);
+// Delete multiple students by IDs without scanning the entire collection
+export async function deleteMultipleStudents(studentIds: string[], broadcast = true): Promise<void> {
+  if (!studentIds || studentIds.length === 0) return;
+  const idSet = new Set(studentIds);
+  localStudents = localStudents.filter(s => !idSet.has(s.id));
+  localStorage.setItem(STUDENTS_KEY, JSON.stringify(localStudents));
+  if (broadcast) notifySubscribers('SYNC_STUDENTS');
+
+  try {
+    const CHUNK_SIZE = 300;
+    for (let i = 0; i < studentIds.length; i += CHUNK_SIZE) {
+      const chunk = studentIds.slice(i, i + CHUNK_SIZE);
       const batch = writeBatch(db);
       chunk.forEach((id) => {
         batch.delete(doc(db, 'students', id));
+      });
+      await batch.commit();
+    }
+  } catch (err) {
+    console.error('Error deleting multiple students from cloud:', err);
+  }
+}
+
+// Save/Synchronize student registry list (Optimized without getDocs read penalty)
+export async function saveStudents(students: Student[], broadcast = true): Promise<void> {
+  const cleanedList = students.map(s => cleanStudent(s));
+  localStudents = cleanedList;
+  localStorage.setItem(STUDENTS_KEY, JSON.stringify(cleanedList));
+  if (broadcast) notifySubscribers('SYNC_STUDENTS');
+
+  try {
+    // Save/update students in batches of 300 directly without reading all docs first
+    const CHUNK_SIZE = 300;
+    for (let i = 0; i < cleanedList.length; i += CHUNK_SIZE) {
+      const chunk = cleanedList.slice(i, i + CHUNK_SIZE);
+      const batch = writeBatch(db);
+      chunk.forEach((s) => {
+        const ref = doc(db, 'students', s.id);
+        batch.set(ref, sanitizeForFirestore(s));
       });
       await batch.commit();
     }

@@ -178,19 +178,54 @@ export default function App() {
     }
   }, [students, currentStudentId, config]);
 
-  // Dynamic smart sync listener: Disables heavy all-students listener on student devices during exam (Saves 98% Firestore reads)
+  // Dynamic smart sync listener: ONLY enable heavy all-students sync on ADMIN and PROCTOR dashboards!
+  // Student devices (SETUP, STUDENT_EXAM, STUDENT_FINISHED) NEVER subscribe to the full 400+ students collection!
   useEffect(() => {
-    if (role === 'STUDENT_EXAM' && currentStudentId) {
-      disableAllStudentsSync();
-      const unsub = subscribeToMyStudentSession(currentStudentId);
+    if (role === 'ADMIN' || role === 'PROCTOR') {
+      enableAllStudentsSync();
       return () => {
-        unsub();
-        enableAllStudentsSync();
+        disableAllStudentsSync();
       };
     } else {
-      enableAllStudentsSync();
+      // Student views: disable global student monitoring listener
+      disableAllStudentsSync();
+      if (currentStudentId && role === 'STUDENT_EXAM') {
+        const unsub = subscribeToMyStudentSession(currentStudentId);
+        return () => {
+          unsub();
+        };
+      }
     }
   }, [role, currentStudentId]);
+
+  // Active Anti-Auto-Translate Runtime Guard (100% Client-Side In-Memory, 0 Firestore Reads/Writes)
+  useEffect(() => {
+    const enforceNoTranslate = () => {
+      if (document.documentElement.getAttribute('translate') !== 'no') {
+        document.documentElement.setAttribute('translate', 'no');
+      }
+      if (!document.documentElement.classList.contains('notranslate')) {
+        document.documentElement.classList.add('notranslate');
+      }
+      if (document.body && document.body.getAttribute('translate') !== 'no') {
+        document.body.setAttribute('translate', 'no');
+        document.body.classList.add('notranslate');
+      }
+    };
+
+    enforceNoTranslate();
+    const observer = new MutationObserver(() => {
+      enforceNoTranslate();
+    });
+
+    observer.observe(document.documentElement, {
+      attributes: true,
+      attributeFilter: ['class', 'lang', 'translate'],
+      subtree: false
+    });
+
+    return () => observer.disconnect();
+  }, []);
 
   // Admin Forced Mass Refresh Listener for Students (Khusus Admin Trigger)
   const [studentRefreshNotice, setStudentRefreshNotice] = useState<{
