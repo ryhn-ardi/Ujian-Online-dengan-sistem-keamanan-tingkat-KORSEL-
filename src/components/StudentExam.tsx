@@ -118,13 +118,24 @@ export default function StudentExam({
   const isSubmittingRef = useRef(false);
   const wibClock = useRealtimeWIB();
 
-  // Real-time broadcast announcement listener
+  // Real-time broadcast announcement listener (Supports mass broadcast & 1-on-1 private proctor message)
   useEffect(() => {
     const ann = config.activeAnnouncement;
     if (ann && ann.active && ann.id !== dismissedAnnouncementIdRef.current) {
+      // 1. Check if announcement is targeted to a specific subject
       if (ann.targetSubjectId && ann.targetSubjectId !== 'all' && ann.targetSubjectId !== student.subjectId) {
         return;
       }
+      // 2. Check if announcement is targeted to a specific student (1-on-1 private message)
+      if (
+        ann.targetStudentId &&
+        ann.targetStudentId !== 'all' &&
+        ann.targetStudentId !== student.id &&
+        ann.targetStudentId !== student.username
+      ) {
+        return;
+      }
+
       setDisplayedAnnouncement(ann);
       setIsAnnouncementMinimized(false);
       // Play polite, non-startling announcement chime
@@ -136,7 +147,7 @@ export default function StudentExam({
       setDisplayedAnnouncement(null);
       setIsAnnouncementMinimized(false);
     }
-  }, [config.activeAnnouncement, student.subjectId]);
+  }, [config.activeAnnouncement, student.subjectId, student.id, student.username]);
 
   const handleDismissAnnouncement = () => {
     if (displayedAnnouncement) {
@@ -354,6 +365,8 @@ export default function StudentExam({
 
     let blurTimeout: NodeJS.Timeout | null = null;
     let touchStartY = 0;
+    let touchStartX = 0;
+    let lastRightClickTime = 0;
 
     const checkIsFs = () => {
       return !!(
@@ -367,21 +380,19 @@ export default function StudentExam({
     const handleFullscreenChange = () => {
       const isFs = checkIsFs();
       setIsCurrentlyFullscreen(isFs);
-      if (!isFs && !isGraceActive) {
+      if (!isFs && !isGraceActive && examStartedRef.current) {
         triggerViolation('Keluar dari Mode Layar Penuh (Fullscreen)');
       }
     };
 
     const handleVisibilityChange = () => {
-      if (document.hidden && !isGraceActive) {
+      if ((document.hidden || document.visibilityState === 'hidden') && !isGraceActive && examStartedRef.current) {
         triggerViolation('Bilah Notifikasi / Jendela Terbuka (Layar Ujian Tersembunyi)');
       }
     };
 
-    let lastRightClickTime = 0;
-
     const handleWindowBlur = () => {
-      if (isGraceActive) return;
+      if (isGraceActive || !examStartedRef.current) return;
       // Jangan anggap klik kanan mouse sebagai pelanggaran bila menyebabkan blur sesaat
       if (Date.now() - lastRightClickTime < 1500) {
         return;
@@ -389,10 +400,10 @@ export default function StudentExam({
       if (blurTimeout) clearTimeout(blurTimeout);
       // On mobile devices, window.blur fires immediately when pulling down notification shade or opening quick settings or answering popup
       blurTimeout = setTimeout(() => {
-        if (!isGraceActive && Date.now() - lastRightClickTime >= 1500) {
+        if (!isGraceActive && examStartedRef.current && Date.now() - lastRightClickTime >= 1500) {
           triggerViolation('Membuka Bilah Notifikasi / Quick Settings HP atau Keluar Fokus Layar');
         }
-      }, 150);
+      }, 30);
     };
 
     const handleWindowFocus = () => {
@@ -405,33 +416,67 @@ export default function StudentExam({
     const handleTouchStart = (e: TouchEvent) => {
       if (e.touches && e.touches.length > 0) {
         touchStartY = e.touches[0].clientY;
+        touchStartX = e.touches[0].clientX;
       }
     };
 
     const handleTouchMove = (e: TouchEvent) => {
-      if (isGraceActive) return;
+      if (isGraceActive || !examStartedRef.current) return;
       if (e.touches && e.touches.length > 0) {
         const currentY = e.touches[0].clientY;
-        // If swipe began at the very top edge (<= 40px) and is dragged down (> 30px), this is pulling down status bar / quick settings
-        if (touchStartY <= 40 && (currentY - touchStartY) > 30) {
+        // If swipe began at the top edge (<= 140px or top 18% of screen) and is dragged down (> 10px), this is pulling down status bar / quick settings
+        const topThreshold = Math.max(140, window.innerHeight * 0.18);
+        if (touchStartY <= topThreshold && (currentY - touchStartY) > 10) {
           triggerViolation('Mencoba Menarik Bilah Quick Settings / Notifikasi HP');
         }
       }
     };
 
+    const handleTouchCancel = () => {
+      // When notification drawer intercepts touch on mobile, touchcancel is fired by browser
+      if (!isGraceActive && examStartedRef.current && Date.now() - lastRightClickTime >= 1500) {
+        triggerViolation('Interupsi Bilah Status / Notifikasi Sistem HP');
+      }
+    };
+
+    const handlePointerCancel = () => {
+      if (!isGraceActive && examStartedRef.current && Date.now() - lastRightClickTime >= 1500) {
+        triggerViolation('Interupsi Gestur Sistem / Bilah Notifikasi HP');
+      }
+    };
+
+    const handlePageHide = () => {
+      if (!isGraceActive && examStartedRef.current) {
+        triggerViolation('Aplikasi Berpindah ke Latar Belakang (Page Hide)');
+      }
+    };
+
     const handleResize = () => {
-      if (isGraceActive) return;
+      if (isGraceActive || !examStartedRef.current) return;
       const parsedWidthDiff = Math.abs(window.innerWidth - initialWidth.current);
       const parsedHeightDiff = Math.abs(window.innerHeight - initialHeight.current);
       
-      // If viewport drops significantly during exam, could be split screen
-      if (window.innerWidth < 640 || parsedWidthDiff > 250 || parsedHeightDiff > 200) {
-        triggerViolation('Mendeteksi Perubahan Jendela (Split Screen / Floating Apps)');
+      // If viewport drops significantly during exam, could be split screen or notification tray
+      if (parsedWidthDiff > 250 || parsedHeightDiff > 180) {
+        triggerViolation('Mendeteksi Perubahan Jendela (Split Screen / Floating Apps / Bilah Menu)');
+      }
+    };
+
+    // Visual Viewport tracking for mobile notification shades and split screen
+    const handleVisualViewportChange = () => {
+      if (isGraceActive || !examStartedRef.current) return;
+      if (window.visualViewport) {
+        // If active element is not an input and viewport height shrinks below 80% of window height
+        const activeTag = document.activeElement?.tagName?.toLowerCase();
+        const isInputActive = activeTag === 'input' || activeTag === 'textarea';
+        if (!isInputActive && window.visualViewport.height < window.innerHeight * 0.80) {
+          triggerViolation('Bilah Notifikasi / Jendela Mengambang (Split Screen) Terbuka');
+        }
       }
     };
 
     const handleKeyDown = (e: KeyboardEvent) => {
-      if (isGraceActive) return;
+      if (isGraceActive || !examStartedRef.current) return;
       if (
         e.key === 'Escape' ||
         e.key === 'F11' ||
@@ -459,7 +504,31 @@ export default function StudentExam({
       }
     };
 
-    // Quick delay listeners to allow user to enter fullscreen without immediate triggers
+    // Continuous Active Sentinel Heartbeat Monitor (Checks hasFocus & fullscreen every 150ms)
+    const heartbeatInterval = setInterval(() => {
+      if (!examStartedRef.current || isGraceActive || isSubmittingRef.current) return;
+      if (Date.now() - lastRightClickTime < 1500) return;
+
+      // 1. Check document focus (Lost immediately when pulling down notification drawer or opening popup)
+      if (typeof document.hasFocus === 'function' && !document.hasFocus()) {
+        triggerViolation('Membuka Bilah Notifikasi / Menu Cepat (Quick Settings) atau Keluar Fokus');
+        return;
+      }
+
+      // 2. Check visibility state
+      if (document.hidden || document.visibilityState === 'hidden') {
+        triggerViolation('Layar Ujian Tertutup / Beralih Aplikasi');
+        return;
+      }
+
+      // 3. Check fullscreen element presence
+      if (!checkIsFs()) {
+        triggerViolation('Keluar dari Mode Layar Penuh');
+        return;
+      }
+    }, 150);
+
+    // Arm listeners quickly to protect exam
     const setupTimer = setTimeout(() => {
       document.addEventListener('fullscreenchange', handleFullscreenChange);
       document.addEventListener('webkitfullscreenchange', handleFullscreenChange);
@@ -469,16 +538,28 @@ export default function StudentExam({
       document.addEventListener('contextmenu', handleContextMenu);
       window.addEventListener('mousedown', handleMouseDown, true);
       window.addEventListener('blur', handleWindowBlur);
+      document.addEventListener('blur', handleWindowBlur, true);
       window.addEventListener('focus', handleWindowFocus);
+      window.addEventListener('focusout', handleWindowBlur, true);
+      document.addEventListener('focusout', handleWindowBlur, true);
+      window.addEventListener('pagehide', handlePageHide);
+      (window as any).addEventListener?.('freeze', handlePageHide);
       window.addEventListener('resize', handleResize);
+      window.visualViewport?.addEventListener('resize', handleVisualViewportChange);
+      window.visualViewport?.addEventListener('scroll', handleVisualViewportChange);
       window.addEventListener('keydown', handleKeyDown);
       window.addEventListener('touchstart', handleTouchStart, { passive: true });
       window.addEventListener('touchmove', handleTouchMove, { passive: true });
+      window.addEventListener('touchcancel', handleTouchCancel, { passive: true });
+      document.addEventListener('touchcancel', handleTouchCancel, { passive: true });
+      window.addEventListener('pointercancel', handlePointerCancel, { passive: true });
+      document.addEventListener('pointercancel', handlePointerCancel, { passive: true });
       examStartedRef.current = true;
-    }, 800);
+    }, 350);
 
     return () => {
       clearTimeout(setupTimer);
+      clearInterval(heartbeatInterval);
       if (blurTimeout) clearTimeout(blurTimeout);
       document.removeEventListener('fullscreenchange', handleFullscreenChange);
       document.removeEventListener('webkitfullscreenchange', handleFullscreenChange);
@@ -488,11 +569,22 @@ export default function StudentExam({
       document.removeEventListener('contextmenu', handleContextMenu);
       window.removeEventListener('mousedown', handleMouseDown, true);
       window.removeEventListener('blur', handleWindowBlur);
+      document.removeEventListener('blur', handleWindowBlur, true);
       window.removeEventListener('focus', handleWindowFocus);
+      window.removeEventListener('focusout', handleWindowBlur, true);
+      document.removeEventListener('focusout', handleWindowBlur, true);
+      window.removeEventListener('pagehide', handlePageHide);
+      (window as any).removeEventListener?.('freeze', handlePageHide);
       window.removeEventListener('resize', handleResize);
+      window.visualViewport?.removeEventListener('resize', handleVisualViewportChange);
+      window.visualViewport?.removeEventListener('scroll', handleVisualViewportChange);
       window.removeEventListener('keydown', handleKeyDown);
       window.removeEventListener('touchstart', handleTouchStart);
       window.removeEventListener('touchmove', handleTouchMove);
+      window.removeEventListener('touchcancel', handleTouchCancel);
+      document.removeEventListener('touchcancel', handleTouchCancel);
+      window.removeEventListener('pointercancel', handlePointerCancel);
+      document.removeEventListener('pointercancel', handlePointerCancel);
     };
   }, [examStatus, config.strictSecurityEnabled, isGraceActive]);
 
@@ -1165,80 +1257,109 @@ export default function StudentExam({
       )}
 
       {/* Real-time Floating Non-Intrusive Broadcast Announcement Card */}
-      {displayedAnnouncement && (
-        <div className="fixed top-4 right-4 left-4 sm:left-auto sm:max-w-md z-40 animate-fade-in notranslate select-none" translate="no">
-          <div className="bg-slate-900/95 backdrop-blur-md text-white rounded-2xl shadow-2xl border-2 border-indigo-400/50 p-4 sm:p-5 space-y-3">
-            {/* Floating Card Header */}
-            <div className="flex items-start justify-between gap-3">
-              <div className="flex items-center gap-2.5 min-w-0">
-                <div className="w-8 h-8 rounded-xl bg-indigo-500/20 border border-indigo-400/30 flex items-center justify-center shrink-0 text-amber-300 shadow-inner">
-                  <Megaphone className="w-4 h-4 animate-bounce" />
-                </div>
-                <div className="min-w-0 truncate">
-                  <div className="flex items-center gap-1.5 text-[10px] font-mono font-bold tracking-wider text-indigo-300 uppercase">
-                    <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse shrink-0" />
-                    <span>Pengumuman</span>
-                    <span>•</span>
-                    <span className="text-slate-400">
-                      {displayedAnnouncement.timestamp
-                        ? new Date(displayedAnnouncement.timestamp).toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' }) + ' WIB'
-                        : 'Sekarang'}
-                    </span>
+      {displayedAnnouncement && (() => {
+        const isTargetedToMe = displayedAnnouncement.targetStudentId && displayedAnnouncement.targetStudentId === student.id;
+
+        return (
+          <div className="fixed top-4 right-4 left-4 sm:left-auto sm:max-w-md z-40 animate-fade-in notranslate select-none" translate="no">
+            <div className={`backdrop-blur-md text-white rounded-2xl shadow-2xl p-4 sm:p-5 space-y-3 ${
+              isTargetedToMe
+                ? 'bg-gradient-to-br from-slate-950 via-slate-900 to-amber-950/90 border-2 border-amber-400 shadow-amber-500/20'
+                : 'bg-slate-900/95 border-2 border-indigo-400/50'
+            }`}>
+              {/* Floating Card Header */}
+              <div className="flex items-start justify-between gap-3">
+                <div className="flex items-center gap-2.5 min-w-0">
+                  <div className={`w-8 h-8 rounded-xl flex items-center justify-center shrink-0 shadow-inner ${
+                    isTargetedToMe
+                      ? 'bg-amber-500/30 border border-amber-400 text-amber-300'
+                      : 'bg-indigo-500/20 border border-indigo-400/30 text-amber-300'
+                  }`}>
+                    <Megaphone className="w-4 h-4 animate-bounce" />
                   </div>
-                  <h4 className="font-extrabold text-xs sm:text-sm text-white truncate">
-                    {displayedAnnouncement.sender || 'Pengawas Ruang'}
-                  </h4>
-                </div>
-              </div>
-
-              {/* Header Action Buttons */}
-              <div className="flex items-center gap-1 shrink-0">
-                <button
-                  type="button"
-                  onClick={() => setIsAnnouncementMinimized(!isAnnouncementMinimized)}
-                  className="p-1 rounded-lg hover:bg-white/10 text-slate-400 hover:text-white transition cursor-pointer"
-                  title={isAnnouncementMinimized ? 'Buka Lengkap' : 'Kecilkan'}
-                >
-                  {isAnnouncementMinimized ? <ChevronDown className="w-4 h-4" /> : <ChevronUp className="w-4 h-4" />}
-                </button>
-                <button
-                  type="button"
-                  id="btn-dismiss-announcement-header"
-                  onClick={handleDismissAnnouncement}
-                  className="p-1 rounded-lg hover:bg-rose-500/20 text-slate-400 hover:text-rose-300 transition cursor-pointer"
-                  title="Tutup Pengumuman"
-                >
-                  <X className="w-4 h-4" />
-                </button>
-              </div>
-            </div>
-
-            {/* Collapsible Message Content */}
-            {!isAnnouncementMinimized && (
-              <>
-                <div className="p-3 bg-white/10 rounded-xl border border-white/10 text-xs sm:text-sm text-indigo-100 font-medium leading-relaxed max-h-48 overflow-y-auto whitespace-pre-wrap shadow-inner">
-                  {displayedAnnouncement.message}
+                  <div className="min-w-0 truncate">
+                    <div className="flex items-center gap-1.5 text-[10px] font-mono font-bold tracking-wider uppercase">
+                      <span className={`w-2 h-2 rounded-full animate-pulse shrink-0 ${
+                        isTargetedToMe ? 'bg-amber-400' : 'bg-emerald-400'
+                      }`} />
+                      <span className={isTargetedToMe ? 'text-amber-300 font-extrabold' : 'text-indigo-300'}>
+                        {isTargetedToMe ? 'Pesan Khusus Untuk Anda' : 'Pengumuman'}
+                      </span>
+                      <span>•</span>
+                      <span className="text-slate-400">
+                        {displayedAnnouncement.timestamp
+                          ? new Date(displayedAnnouncement.timestamp).toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' }) + ' WIB'
+                          : 'Sekarang'}
+                      </span>
+                    </div>
+                    <h4 className="font-extrabold text-xs sm:text-sm text-white truncate flex items-center gap-1.5">
+                      <span>{displayedAnnouncement.sender || 'Pengawas Ruang'}</span>
+                      {isTargetedToMe && (
+                        <span className="px-1.5 py-0.5 bg-amber-400/20 border border-amber-300/40 text-amber-200 text-[10px] rounded font-mono font-bold">
+                          Privat (1-on-1)
+                        </span>
+                      )}
+                    </h4>
+                  </div>
                 </div>
 
-                <div className="flex items-center justify-between gap-2 pt-1">
-                  <span className="text-[10px] text-indigo-300/70 font-mono">
-                    Waktu ujian tetap berjalan normal
-                  </span>
+                {/* Header Action Buttons */}
+                <div className="flex items-center gap-1 shrink-0">
                   <button
-                    id="btn-dismiss-announcement"
                     type="button"
-                    onClick={handleDismissAnnouncement}
-                    className="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-500 active:scale-95 text-white text-xs font-bold rounded-xl shadow-md transition flex items-center gap-1.5 cursor-pointer"
+                    onClick={() => setIsAnnouncementMinimized(!isAnnouncementMinimized)}
+                    className="p-1 rounded-lg hover:bg-white/10 text-slate-400 hover:text-white transition cursor-pointer"
+                    title={isAnnouncementMinimized ? 'Buka Lengkap' : 'Kecilkan'}
                   >
-                    <Check className="w-3.5 h-3.5 stroke-[2.5]" />
-                    <span>Saya Mengerti</span>
+                    {isAnnouncementMinimized ? <ChevronDown className="w-4 h-4" /> : <ChevronUp className="w-4 h-4" />}
+                  </button>
+                  <button
+                    type="button"
+                    id="btn-dismiss-announcement-header"
+                    onClick={handleDismissAnnouncement}
+                    className="p-1 rounded-lg hover:bg-rose-500/20 text-slate-400 hover:text-rose-300 transition cursor-pointer"
+                    title="Tutup Pengumuman"
+                  >
+                    <X className="w-4 h-4" />
                   </button>
                 </div>
-              </>
-            )}
+              </div>
+
+              {/* Collapsible Message Content */}
+              {!isAnnouncementMinimized && (
+                <>
+                  <div className={`p-3 rounded-xl border text-xs sm:text-sm font-medium leading-relaxed max-h-48 overflow-y-auto whitespace-pre-wrap shadow-inner ${
+                    isTargetedToMe
+                      ? 'bg-amber-950/40 border-amber-400/30 text-amber-100'
+                      : 'bg-white/10 border-white/10 text-indigo-100'
+                  }`}>
+                    {displayedAnnouncement.message}
+                  </div>
+
+                  <div className="flex items-center justify-between gap-2 pt-1">
+                    <span className="text-[10px] text-slate-400 font-mono">
+                      Waktu ujian tetap berjalan normal
+                    </span>
+                    <button
+                      id="btn-dismiss-announcement"
+                      type="button"
+                      onClick={handleDismissAnnouncement}
+                      className={`px-3 py-1.5 active:scale-95 text-white text-xs font-bold rounded-xl shadow-md transition flex items-center gap-1.5 cursor-pointer ${
+                        isTargetedToMe
+                          ? 'bg-amber-500 hover:bg-amber-400 text-slate-950 font-black'
+                          : 'bg-indigo-600 hover:bg-indigo-500'
+                      }`}
+                    >
+                      <Check className="w-3.5 h-3.5 stroke-[2.5]" />
+                      <span>Saya Mengerti</span>
+                    </button>
+                  </div>
+                </>
+              )}
+            </div>
           </div>
-        </div>
-      )}
+        );
+      })()}
 
             {/* Unobtrusive Offline Warning Indicator */}
       {!isOnline && (

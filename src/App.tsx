@@ -943,7 +943,7 @@ export default function App() {
             });
             setStudents(updated);
           }}
-          onBroadcastAnnouncement={(message, sender = 'Pengawas Ruangan') => {
+          onBroadcastAnnouncement={(message, sender = 'Pengawas Ruangan', targetSubjectId = 'all', targetStudentId, targetStudentName) => {
             const newAnnouncement: BroadcastAnnouncement = {
               id: `ann_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
               message: message.trim(),
@@ -951,6 +951,9 @@ export default function App() {
               timestamp: new Date().toISOString(),
               soundType: config.announcementSoundType || 'CHIME_AIRPORT',
               customAudioUrl: config.customAnnouncementAudioUrl,
+              targetSubjectId: targetSubjectId || 'all',
+              targetStudentId: targetStudentId || undefined,
+              targetStudentName: targetStudentName || undefined,
               active: true
             };
             handleUpdateConfig({

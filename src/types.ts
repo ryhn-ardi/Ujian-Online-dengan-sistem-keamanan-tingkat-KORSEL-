@@ -83,6 +83,8 @@ export interface BroadcastAnnouncement {
   soundType?: 'CHIME_AIRPORT' | 'CHIME_HARMONY' | 'CHIME_DIGITAL' | 'CHIME_ELEGANT' | 'CUSTOM_AUDIO';
   customAudioUrl?: string; // Optional audio data URL
   targetSubjectId?: string; // 'all' or specific subjectId
+  targetStudentId?: string; // 'all' or specific studentId for 1-on-1 private proctor message
+  targetStudentName?: string; // Student display name for targeted announcement
   active: boolean; // True while the announcement is actively broadcast
 }
 

@@ -44,7 +44,7 @@ interface ProctorPanelProps {
   onResetStudentViolations?: (studentId: string) => void;
   onForceSubmitStudent?: (studentId: string) => void;
   onChangeStudentSubject?: (studentId: string, newSubjectId: string) => void;
-  onBroadcastAnnouncement?: (message: string, senderTitle?: string) => void;
+  onBroadcastAnnouncement?: (message: string, senderTitle?: string, targetSubjectId?: string, targetStudentId?: string, targetStudentName?: string) => void;
   onClearAnnouncement?: () => void;
   onExit: () => void;
 }
@@ -69,10 +69,13 @@ export default function ProctorPanel({
   // Navigation tabs for proctor: MONITOR (default), CHARTS, ITEM_ANALYSIS
   const [activeTab, setActiveTab] = useState<'MONITOR' | 'CHARTS' | 'ITEM_ANALYSIS'>('MONITOR');
 
-  // Broadcast modal state
+  // Broadcast modal state (Supports Mass Broadcast & 1-on-1 Targeted Student Message)
   const [showBroadcastModal, setShowBroadcastModal] = useState(false);
   const [broadcastMessage, setBroadcastMessage] = useState('');
   const [broadcastSender, setBroadcastSender] = useState('Pengawas Ruangan');
+  const [broadcastTargetType, setBroadcastTargetType] = useState<'ALL' | 'SPECIFIC_STUDENT' | 'SUBJECT'>('ALL');
+  const [broadcastTargetStudentId, setBroadcastTargetStudentId] = useState<string>('');
+  const [broadcastTargetSubject, setBroadcastTargetSubject] = useState<string>('all');
   const [isPlayingTestSound, setIsPlayingTestSound] = useState(false);
 
   const handleTestSound = () => {
@@ -90,9 +93,37 @@ export default function ProctorPanel({
       alert('Tuliskan isi pesan pengumuman terlebih dahulu!');
       return;
     }
+
+    let targetStdId: string | undefined = undefined;
+    let targetStdName: string | undefined = undefined;
+
+    if (broadcastTargetType === 'SPECIFIC_STUDENT') {
+      if (!broadcastTargetStudentId) {
+        alert('Pilih siswa penerima pesan terlebih dahulu!');
+        return;
+      }
+      const targetStudent = students.find(s => s.id === broadcastTargetStudentId);
+      if (!targetStudent) {
+        alert('Data siswa yang dipilih tidak ditemukan.');
+        return;
+      }
+      targetStdId = targetStudent.id;
+      targetStdName = targetStudent.name;
+    }
+
     if (onBroadcastAnnouncement) {
-      onBroadcastAnnouncement(broadcastMessage.trim(), broadcastSender.trim() || 'Pengawas Ruangan');
-      alert('✅ Pengumuman massal berhasil disiarkan ke seluruh siswa yang sedang mengerjakan!');
+      onBroadcastAnnouncement(
+        broadcastMessage.trim(),
+        broadcastSender.trim() || 'Pengawas Ruangan',
+        broadcastTargetType === 'SUBJECT' ? broadcastTargetSubject : 'all',
+        targetStdId,
+        targetStdName
+      );
+      if (broadcastTargetType === 'SPECIFIC_STUDENT') {
+        alert(`✅ Pesan khusus berhasil dikirimkan ke layar siswa: ${targetStdName}!`);
+      } else {
+        alert('✅ Pengumuman massal berhasil disiarkan ke seluruh siswa yang sedang mengerjakan!');
+      }
       setShowBroadcastModal(false);
     }
   };
@@ -843,6 +874,25 @@ export default function ProctorPanel({
                                     title="Koreksi / Pindahkan Naskah Ujian Siswa (Jika Siswa Salah Memilih Mapel)"
                                   >
                                     <Shuffle className="w-3.5 h-3.5" />
+                                  </button>
+                                )}
+
+                                {/* 6. Kirim Pesan / Pengumuman 1-on-1 Privat ke Siswa Ini */}
+                                {onBroadcastAnnouncement && (
+                                  <button
+                                    type="button"
+                                    id={`btn-proctor-msg-${s.id}`}
+                                    onClick={() => {
+                                      setBroadcastTargetType('SPECIFIC_STUDENT');
+                                      setBroadcastTargetStudentId(s.id);
+                                      setBroadcastMessage('');
+                                      setShowBroadcastModal(true);
+                                    }}
+                                    className="px-2 py-1 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 rounded-lg border border-indigo-200 transition cursor-pointer flex items-center gap-1 font-bold text-xs"
+                                    title={`Kirim pengumuman / pesan khusus langsung ke layar HP ${s.name}`}
+                                  >
+                                    <Megaphone className="w-3.5 h-3.5 text-indigo-600" />
+                                    <span>Pesan</span>
                                   </button>
                                 )}
                               </div>

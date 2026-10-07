@@ -303,13 +303,15 @@ export default function AdminPanel({
     }
   };
 
-  // Broadcast Announcement States & Handlers
+  // Broadcast Announcement States & Handlers (Supports Mass Broadcast & 1-on-1 Targeted Student Messages)
   const [showBroadcastModal, setShowBroadcastModal] = useState(false);
   const [broadcastMessage, setBroadcastMessage] = useState('');
   const [broadcastSender, setBroadcastSender] = useState('Administrator Master');
   const [broadcastSoundType, setBroadcastSoundType] = useState<'CHIME_AIRPORT' | 'CHIME_HARMONY' | 'CHIME_DIGITAL' | 'CHIME_ELEGANT' | 'CUSTOM_AUDIO'>(
     () => config.announcementSoundType || 'CHIME_AIRPORT'
   );
+  const [broadcastTargetType, setBroadcastTargetType] = useState<'ALL' | 'SPECIFIC_STUDENT' | 'SUBJECT'>('ALL');
+  const [broadcastTargetStudentId, setBroadcastTargetStudentId] = useState<string>('');
   const [broadcastTargetSubject, setBroadcastTargetSubject] = useState<string>('all');
   const [isPlayingAnnouncementTest, setIsPlayingAnnouncementTest] = useState(false);
   const announcementControllerRef = useRef<{ stop: () => void } | null>(null);
@@ -361,10 +363,30 @@ export default function AdminPanel({
       alert('Mohon tuliskan isi pesan pengumuman terlebih dahulu!');
       return;
     }
+
+    let targetStdId: string | undefined = undefined;
+    let targetStdName: string | undefined = undefined;
+
+    if (broadcastTargetType === 'SPECIFIC_STUDENT') {
+      if (!broadcastTargetStudentId) {
+        alert('Pilih siswa penerima pesan terlebih dahulu!');
+        return;
+      }
+      const targetStudent = students.find(s => s.id === broadcastTargetStudentId);
+      if (!targetStudent) {
+        alert('Data siswa yang dipilih tidak ditemukan.');
+        return;
+      }
+      targetStdId = targetStudent.id;
+      targetStdName = targetStudent.name;
+    }
+
     const activeWorkingCount = students.filter(s => s.status === 'SEDANG_MENGERJAKAN').length;
-    const confirmSend = window.confirm(
-      `Kirimkan pengumuman ini ke ${activeWorkingCount} siswa yang sedang aktif mengerjakan ujian sekarang?`
-    );
+    const confirmMessage = broadcastTargetType === 'SPECIFIC_STUDENT'
+      ? `Kirimkan pesan khusus/pribadi ini langsung ke layar siswa "${targetStdName}"? Pesan HANYA akan tampil di HP siswa tersebut.`
+      : `Kirimkan pengumuman ini ke ${activeWorkingCount} siswa yang sedang aktif mengerjakan ujian sekarang?`;
+
+    const confirmSend = window.confirm(confirmMessage);
     if (!confirmSend) return;
 
     const newAnnouncement: BroadcastAnnouncement = {
@@ -374,7 +396,9 @@ export default function AdminPanel({
       timestamp: new Date().toISOString(),
       soundType: broadcastSoundType,
       customAudioUrl: config.customAnnouncementAudioUrl,
-      targetSubjectId: broadcastTargetSubject,
+      targetSubjectId: broadcastTargetType === 'SUBJECT' ? broadcastTargetSubject : 'all',
+      targetStudentId: targetStdId,
+      targetStudentName: targetStdName,
       active: true
     };
 
@@ -384,7 +408,11 @@ export default function AdminPanel({
       activeAnnouncement: newAnnouncement
     });
 
-    alert('✅ Pengumuman massal berhasil dikirimkan ke layar seluruh siswa yang sedang mengerjakan!');
+    if (broadcastTargetType === 'SPECIFIC_STUDENT') {
+      alert(`✅ Pesan khusus berhasil dikirimkan ke layar siswa: ${targetStdName}!`);
+    } else {
+      alert('✅ Pengumuman massal berhasil dikirimkan ke layar seluruh siswa yang sedang mengerjakan!');
+    }
     setShowBroadcastModal(false);
   };
 
@@ -3900,6 +3928,23 @@ export default function AdminPanel({
                               )}
                             </td>
                             <td className="px-6 py-4 text-right space-x-1.5 whitespace-nowrap">
+                              {/* Option to send 1-on-1 private proctor message */}
+                              <button
+                                type="button"
+                                id={`btn-msg-student-${s.id}`}
+                                onClick={() => {
+                                  setBroadcastTargetType('SPECIFIC_STUDENT');
+                                  setBroadcastTargetStudentId(s.id);
+                                  setBroadcastMessage('');
+                                  setShowBroadcastModal(true);
+                                }}
+                                className="px-2 py-1 text-xs font-bold text-indigo-700 bg-indigo-50 hover:bg-indigo-100 border border-indigo-200 rounded-lg shadow-2xs transition inline-flex items-center gap-1 cursor-pointer"
+                                title={`Kirim pengumuman / pesan khusus langsung ke layar HP ${s.name}`}
+                              >
+                                <Megaphone className="w-3 h-3 text-indigo-600" />
+                                <span>Pesan</span>
+                              </button>
+
                               {/* Option to Force Finish / Submit */}
                               {s.status !== 'SELESAI' && (
                                 <button
@@ -9730,38 +9775,119 @@ export default function AdminPanel({
               )}
             </div>
 
-            {/* Target Subject & Sender Title */}
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-              <div>
-                <label className="text-xs font-bold text-slate-700 font-mono uppercase tracking-wider block mb-1">
-                  Target Mata Pelajaran:
-                </label>
-                <select
-                  value={broadcastTargetSubject}
-                  onChange={(e) => setBroadcastTargetSubject(e.target.value)}
-                  className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl text-xs font-bold text-slate-800 focus:bg-white focus:outline-none focus:border-indigo-600"
+            {/* Target Selection: ALL vs SPECIFIC_STUDENT vs SUBJECT */}
+            <div className="space-y-2">
+              <label className="text-xs font-bold text-slate-800 font-mono uppercase tracking-wider block">
+                Target Penerima Pengumuman:
+              </label>
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                <button
+                  type="button"
+                  onClick={() => setBroadcastTargetType('ALL')}
+                  className={`p-3 rounded-2xl border text-xs font-bold text-left transition flex items-center gap-2.5 cursor-pointer ${
+                    broadcastTargetType === 'ALL'
+                      ? 'bg-indigo-600 border-indigo-700 text-white shadow-xs'
+                      : 'bg-slate-50 border-slate-200 text-slate-700 hover:border-indigo-300 hover:bg-white'
+                  }`}
                 >
-                  <option value="all">Semua Mata Pelajaran (Seluruh Siswa Aktif)</option>
-                  {subjects.map((sub) => (
-                    <option key={sub.id} value={sub.id}>
-                      Hanya Mapel: {sub.name}
-                    </option>
-                  ))}
-                </select>
+                  <Users className="w-4 h-4 shrink-0" />
+                  <div>
+                    <div className="font-extrabold">Seluruh Siswa</div>
+                    <div className={`text-[10px] font-normal ${broadcastTargetType === 'ALL' ? 'text-indigo-100' : 'text-slate-500'}`}>Semua kelas &amp; mapel</div>
+                  </div>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setBroadcastTargetType('SPECIFIC_STUDENT')}
+                  className={`p-3 rounded-2xl border text-xs font-bold text-left transition flex items-center gap-2.5 cursor-pointer ${
+                    broadcastTargetType === 'SPECIFIC_STUDENT'
+                      ? 'bg-amber-500 border-amber-600 text-slate-950 shadow-xs'
+                      : 'bg-slate-50 border-slate-200 text-slate-700 hover:border-amber-400 hover:bg-white'
+                  }`}
+                >
+                  <UserCheck className="w-4 h-4 shrink-0" />
+                  <div>
+                    <div className="font-extrabold">1 Siswa Spesifik</div>
+                    <div className={`text-[10px] font-normal ${broadcastTargetType === 'SPECIFIC_STUDENT' ? 'text-amber-950 font-bold' : 'text-slate-500'}`}>Pesan 1-on-1 privat</div>
+                  </div>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setBroadcastTargetType('SUBJECT')}
+                  className={`p-3 rounded-2xl border text-xs font-bold text-left transition flex items-center gap-2.5 cursor-pointer ${
+                    broadcastTargetType === 'SUBJECT'
+                      ? 'bg-indigo-600 border-indigo-700 text-white shadow-xs'
+                      : 'bg-slate-50 border-slate-200 text-slate-700 hover:border-indigo-300 hover:bg-white'
+                  }`}
+                >
+                  <BookOpen className="w-4 h-4 shrink-0" />
+                  <div>
+                    <div className="font-extrabold">Per Mata Pelajaran</div>
+                    <div className={`text-[10px] font-normal ${broadcastTargetType === 'SUBJECT' ? 'text-indigo-100' : 'text-slate-500'}`}>Hanya mapel tertentu</div>
+                  </div>
+                </button>
               </div>
 
-              <div>
-                <label className="text-xs font-bold text-slate-700 font-mono uppercase tracking-wider block mb-1">
-                  Nama Pengirim Pengumuman:
-                </label>
-                <input
-                  type="text"
-                  value={broadcastSender}
-                  onChange={(e) => setBroadcastSender(e.target.value)}
-                  placeholder="Contoh: Administrator Master / Pengawas Ruang 1"
-                  className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl text-xs font-bold text-slate-800 focus:bg-white focus:outline-none focus:border-indigo-600"
-                />
-              </div>
+              {/* If SPECIFIC_STUDENT selected */}
+              {broadcastTargetType === 'SPECIFIC_STUDENT' && (
+                <div className="p-3.5 bg-amber-50 rounded-2xl border border-amber-200 space-y-2 animate-fade-in">
+                  <label className="text-xs font-bold text-amber-900 font-mono uppercase tracking-wider block">
+                    Pilih Siswa Penerima Pesan:
+                  </label>
+                  <select
+                    value={broadcastTargetStudentId}
+                    onChange={(e) => setBroadcastTargetStudentId(e.target.value)}
+                    className="w-full p-2.5 bg-white border border-amber-300 rounded-xl text-xs font-bold text-slate-900 focus:outline-none focus:ring-2 focus:ring-amber-500"
+                  >
+                    <option value="">-- Klik untuk Memilih Siswa --</option>
+                    {students.map((std) => (
+                      <option key={std.id} value={std.id}>
+                        [{std.studentClass || 'Kelas -'}] Absen {std.absentNumber || '-'} : {std.name} ({std.status === 'SEDANG_MENGERJAKAN' ? 'Aktif Mengerjakan' : std.status})
+                      </option>
+                    ))}
+                  </select>
+                  <p className="text-[11px] text-amber-800">
+                    💡 Pesan ini <strong>hanya akan tampil di layar HP siswa yang dipilih</strong> (1-on-1 privat), siswa lain tidak akan terganggu.
+                  </p>
+                </div>
+              )}
+
+              {/* If SUBJECT selected */}
+              {broadcastTargetType === 'SUBJECT' && (
+                <div className="p-3.5 bg-indigo-50 rounded-2xl border border-indigo-200 space-y-2 animate-fade-in">
+                  <label className="text-xs font-bold text-indigo-900 font-mono uppercase tracking-wider block">
+                    Pilih Mata Pelajaran Target:
+                  </label>
+                  <select
+                    value={broadcastTargetSubject}
+                    onChange={(e) => setBroadcastTargetSubject(e.target.value)}
+                    className="w-full p-2.5 bg-white border border-indigo-300 rounded-xl text-xs font-bold text-slate-900 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                  >
+                    <option value="all">Semua Mata Pelajaran</option>
+                    {subjects.map((sub) => (
+                      <option key={sub.id} value={sub.id}>
+                        Mapel: {sub.name} ({sub.code})
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              )}
+            </div>
+
+            {/* Sender Title */}
+            <div>
+              <label className="text-xs font-bold text-slate-700 font-mono uppercase tracking-wider block mb-1">
+                Nama Pengirim Pengumuman:
+              </label>
+              <input
+                type="text"
+                value={broadcastSender}
+                onChange={(e) => setBroadcastSender(e.target.value)}
+                placeholder="Contoh: Administrator Master / Pengawas Ruang 1"
+                className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl text-xs font-bold text-slate-800 focus:bg-white focus:outline-none focus:border-indigo-600"
+              />
             </div>
 
             {/* Action Buttons */}
