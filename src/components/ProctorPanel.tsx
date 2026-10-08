@@ -1148,11 +1148,11 @@ export default function ProctorPanel({
 
       {/* PROCTOR BROADCAST ANNOUNCEMENT MODAL */}
       {showBroadcastModal && (
-        <div className="fixed inset-0 bg-slate-900/65 backdrop-blur-xs flex items-center justify-center p-4 z-50 animate-fade-in overflow-y-auto">
-          <div className="bg-white rounded-3xl shadow-2xl border border-slate-200 p-6 md:p-8 max-w-xl w-full my-8 space-y-5">
+        <div className="fixed inset-0 bg-slate-900/70 backdrop-blur-xs z-50 animate-fade-in overflow-y-auto p-3 sm:p-6 flex justify-center items-start">
+          <div className="bg-white rounded-3xl shadow-2xl border border-slate-200 p-5 sm:p-7 md:p-8 max-w-xl w-full my-4 sm:my-8 space-y-5 relative">
             <div className="flex items-center justify-between pb-4 border-b border-slate-100">
               <div className="flex items-center gap-3">
-                <div className="w-10 h-10 rounded-2xl bg-indigo-50 text-indigo-600 flex items-center justify-center font-bold">
+                <div className="w-10 h-10 rounded-2xl bg-indigo-50 text-indigo-600 flex items-center justify-center font-bold shrink-0">
                   <Megaphone className="w-5 h-5" />
                 </div>
                 <div>
@@ -1167,7 +1167,7 @@ export default function ProctorPanel({
               <button
                 type="button"
                 onClick={() => setShowBroadcastModal(false)}
-                className="p-1.5 text-slate-400 hover:bg-slate-100 rounded-full transition cursor-pointer"
+                className="p-1.5 text-slate-400 hover:bg-slate-100 rounded-full transition cursor-pointer shrink-0"
               >
                 <X className="w-5 h-5" />
               </button>

@@ -9579,12 +9579,12 @@ export default function AdminPanel({
 
       {/* BROADCAST ANNOUNCEMENT MODAL */}
       {showBroadcastModal && (
-        <div className="fixed inset-0 bg-slate-900/65 backdrop-blur-xs flex items-center justify-center p-4 z-50 animate-fade-in overflow-y-auto">
-          <div className="bg-white rounded-3xl shadow-2xl border border-slate-200 p-6 md:p-8 max-w-2xl w-full my-8 space-y-5">
+        <div className="fixed inset-0 bg-slate-900/70 backdrop-blur-xs z-50 animate-fade-in overflow-y-auto p-3 sm:p-6 flex justify-center items-start">
+          <div className="bg-white rounded-3xl shadow-2xl border border-slate-200 p-5 sm:p-7 md:p-8 max-w-2xl w-full my-4 sm:my-8 space-y-5 relative">
             {/* Modal Header */}
             <div className="flex items-center justify-between pb-4 border-b border-slate-100">
               <div className="flex items-center gap-3">
-                <div className="w-11 h-11 rounded-2xl bg-indigo-50 border border-indigo-100 text-indigo-600 flex items-center justify-center font-bold shadow-xs">
+                <div className="w-11 h-11 rounded-2xl bg-indigo-50 border border-indigo-100 text-indigo-600 flex items-center justify-center font-bold shadow-xs shrink-0">
                   <Megaphone className="w-6 h-6 text-indigo-600" />
                 </div>
                 <div>
@@ -9599,7 +9599,7 @@ export default function AdminPanel({
               <button
                 type="button"
                 onClick={() => setShowBroadcastModal(false)}
-                className="p-2 text-slate-400 hover:bg-slate-100 rounded-full transition cursor-pointer"
+                className="p-2 text-slate-400 hover:bg-slate-100 rounded-full transition cursor-pointer shrink-0"
               >
                 <X className="w-5 h-5" />
               </button>
@@ -9915,12 +9915,12 @@ export default function AdminPanel({
 
       {/* ADMIN FORCED MASS REFRESH MODAL (KHUSUS ADMIN) */}
       {showRefreshModal && (
-        <div className="fixed inset-0 bg-slate-900/65 backdrop-blur-xs flex items-center justify-center p-4 z-50 animate-fade-in overflow-y-auto">
-          <div className="bg-white rounded-3xl shadow-2xl border border-slate-200 p-6 md:p-8 max-w-xl w-full my-8 space-y-5">
+        <div className="fixed inset-0 bg-slate-900/70 backdrop-blur-xs z-50 animate-fade-in overflow-y-auto p-3 sm:p-6 flex justify-center items-start">
+          <div className="bg-white rounded-3xl shadow-2xl border border-slate-200 p-5 sm:p-7 md:p-8 max-w-xl w-full my-4 sm:my-8 space-y-5 relative">
             {/* Modal Header */}
             <div className="flex items-center justify-between pb-4 border-b border-slate-100">
               <div className="flex items-center gap-3">
-                <div className="w-11 h-11 rounded-2xl bg-emerald-50 border border-emerald-100 text-emerald-600 flex items-center justify-center font-bold shadow-xs">
+                <div className="w-11 h-11 rounded-2xl bg-emerald-50 border border-emerald-100 text-emerald-600 flex items-center justify-center font-bold shadow-xs shrink-0">
                   <RefreshCw className="w-6 h-6 text-emerald-600" />
                 </div>
                 <div>
@@ -9938,9 +9938,9 @@ export default function AdminPanel({
               <button
                 type="button"
                 onClick={() => setShowRefreshModal(false)}
-                className="w-8 h-8 rounded-full bg-slate-100 hover:bg-slate-200 text-slate-500 hover:text-slate-800 flex items-center justify-center transition cursor-pointer"
+                className="p-2 text-slate-400 hover:bg-slate-100 rounded-full transition cursor-pointer shrink-0"
               >
-                ✕
+                <X className="w-5 h-5" />
               </button>
             </div>
 
