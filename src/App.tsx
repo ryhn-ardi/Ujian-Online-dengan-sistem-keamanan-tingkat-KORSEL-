@@ -145,67 +145,90 @@ export default function App() {
   }, []);
 
   // Monitor initial database and student sync to restore student session on refresh
-  useEffect(() => {
-    if (currentStudentId) {
-      const active = students.find((s) => s.id === currentStudentId);
-      if (active) {
-        if (active.status === 'SELESAI') {
-          setRole('STUDENT_FINISHED');
-        } else {
-          // Check if subject is still active in system
-          const subjects = getExamSubjects(config);
-          const studentSub = subjects.find(sub => sub.id === (active.subjectId || 'sub1'));
-          
-          if (studentSub && studentSub.isActive === false) {
-            console.warn(`Subject ${active.subjectId} (${studentSub.name}) is currently deactivated by admin.`);
-            setCurrentStudentId('');
-            try {
-              localStorage.removeItem('active_student_id');
-            } catch (e) {}
-            setRole('SETUP');
-            return;
-          }
+  const verifiedStudentIdRef = useRef<string>('');
 
+  useEffect(() => {
+    if (!currentStudentId) {
+      verifiedStudentIdRef.current = '';
+      return;
+    }
+
+    const active = students.find((s) => s.id === currentStudentId);
+
+    // If this session has already been verified with the server, synchronize state smoothly without re-querying Firestore
+    if (verifiedStudentIdRef.current === currentStudentId) {
+      if (active) {
+        if (active.status === 'SELESAI' && role !== 'STUDENT_FINISHED') {
+          setRole('STUDENT_FINISHED');
+        } else if (active.status === 'BELUM_MULAI' && role !== 'SETUP') {
+          setCurrentStudentId('');
+          try {
+            localStorage.removeItem('active_student_id');
+          } catch (e) {}
+          setRole('SETUP');
+        } else if (active.status !== 'SELESAI' && active.status !== 'BELUM_MULAI' && role !== 'STUDENT_EXAM') {
           setRole('STUDENT_EXAM');
         }
-
-        // VERIFIKASI LANGSUNG DENGAN SERVER FIRESTORE:
-        // Jika admin master telah menghapus dokumen sesi siswa ini di cloud, bersihkan cache lokal dan kembalikan ke SETUP!
-        getStudentFromServer(currentStudentId).then((serverStudent) => {
-          if (!serverStudent) {
-            console.log('Sesi siswa telah dihapus oleh Admin Master di cloud. Membersihkan sesi lokal...');
-            setCurrentStudentId('');
-            try {
-              localStorage.removeItem('active_student_id');
-            } catch (e) {}
-            setRole('SETUP');
-          } else if (serverStudent.status === 'BELUM_MULAI') {
-            // Sesi di-reset oleh admin master
-            setRole('SETUP');
-          }
-        });
       } else {
-        // Sesi lokal tidak ditemukan, periksa server firestore sebelum menghapus
-        getStudentFromServer(currentStudentId).then((serverStudent) => {
-          if (!serverStudent) {
-            setCurrentStudentId('');
-            try {
-              localStorage.removeItem('active_student_id');
-            } catch (e) {}
-            setRole('SETUP');
-          } else {
-            if (serverStudent.status === 'SELESAI') {
-              setRole('STUDENT_FINISHED');
-            } else if (serverStudent.status === 'BELUM_MULAI') {
-              setRole('SETUP');
-            } else {
-              setRole('STUDENT_EXAM');
-            }
-          }
-        });
+        // Active student was purged / deleted by admin
+        setCurrentStudentId('');
+        try {
+          localStorage.removeItem('active_student_id');
+        } catch (e) {}
+        if (role !== 'ADMIN' && role !== 'PROCTOR') {
+          setRole('SETUP');
+        }
+      }
+      return;
+    }
+
+    // First time encountering currentStudentId (e.g. on page mount / reload / fresh login)
+    verifiedStudentIdRef.current = currentStudentId;
+
+    if (active) {
+      if (active.status === 'SELESAI') {
+        if (role !== 'STUDENT_FINISHED') setRole('STUDENT_FINISHED');
+      } else {
+        // Check if subject is still active in system
+        const subjects = getExamSubjects(config);
+        const studentSub = subjects.find(sub => sub.id === (active.subjectId || 'sub1'));
+        
+        if (studentSub && studentSub.isActive === false) {
+          console.warn(`Subject ${active.subjectId} (${studentSub.name}) is currently deactivated by admin.`);
+          setCurrentStudentId('');
+          try {
+            localStorage.removeItem('active_student_id');
+          } catch (e) {}
+          setRole('SETUP');
+          return;
+        }
+
+        if (role !== 'STUDENT_EXAM') setRole('STUDENT_EXAM');
       }
     }
-  }, [students, currentStudentId, config]);
+
+    // Verify ONCE with server in case admin deleted or reset this student while student was away
+    getStudentFromServer(currentStudentId).then((serverStudent) => {
+      if (!serverStudent) {
+        console.log('Sesi siswa telah dihapus oleh Admin Master di cloud. Membersihkan sesi lokal...');
+        setCurrentStudentId('');
+        try {
+          localStorage.removeItem('active_student_id');
+        } catch (e) {}
+        setRole('SETUP');
+      } else if (serverStudent.status === 'BELUM_MULAI') {
+        setCurrentStudentId('');
+        try {
+          localStorage.removeItem('active_student_id');
+        } catch (e) {}
+        setRole('SETUP');
+      } else if (serverStudent.status === 'SELESAI') {
+        if (role !== 'STUDENT_FINISHED') setRole('STUDENT_FINISHED');
+      } else {
+        if (role !== 'STUDENT_EXAM') setRole('STUDENT_EXAM');
+      }
+    });
+  }, [students, currentStudentId, config, role]);
 
   // Dynamic smart sync listener: ONLY enable heavy all-students sync on ADMIN and PROCTOR dashboards!
   // Student devices (SETUP, STUDENT_EXAM, STUDENT_FINISHED) NEVER subscribe to the full 400+ students collection!
@@ -302,9 +325,13 @@ export default function App() {
         });
 
         if (refreshType === 'HARD') {
-          setTimeout(() => {
-            window.location.reload();
-          }, 2500);
+          // Only execute HARD browser reload if command was triggered recently (within 60s)
+          const isFresh = (Date.now() - config.forcedRefreshTimestamp) < 60000;
+          if (isFresh) {
+            setTimeout(() => {
+              window.location.reload();
+            }, 2500);
+          }
         } else {
           // Auto hide banner after 6s
           setTimeout(() => {

@@ -601,23 +601,33 @@ export function subscribeToMyStudentSession(studentId: string): () => void {
         recordFirestoreRead(1, 'STUDENT_DOC_SYNC', `students/${studentId}`, 'Sinkronisasi status sesi siswa');
         const studentData = snap.data() as Student;
         const index = localStudents.findIndex((s) => s.id === studentData.id);
+        let changed = false;
         if (index !== -1) {
-          localStudents[index] = { ...localStudents[index], ...studentData };
+          if (JSON.stringify(localStudents[index]) !== JSON.stringify(studentData)) {
+            localStudents[index] = { ...localStudents[index], ...studentData };
+            changed = true;
+          }
         } else {
           localStudents.push(studentData);
+          changed = true;
         }
-        localStorage.setItem(STUDENTS_KEY, JSON.stringify(localStudents));
-        notifySubscribers('SYNC_STUDENTS');
+        if (changed) {
+          localStorage.setItem(STUDENTS_KEY, JSON.stringify(localStudents));
+          notifySubscribers('SYNC_STUDENTS');
+        }
       } else {
         // Document was deleted from Firestore by Admin! Purge local cache immediately
-        localStudents = localStudents.filter((s) => s.id !== studentId);
-        localStorage.setItem(STUDENTS_KEY, JSON.stringify(localStudents));
-        try {
-          if (localStorage.getItem('active_student_id') === studentId) {
-            localStorage.removeItem('active_student_id');
-          }
-        } catch (e) {}
-        notifySubscribers('SYNC_STUDENTS');
+        const existed = localStudents.some((s) => s.id === studentId);
+        if (existed) {
+          localStudents = localStudents.filter((s) => s.id !== studentId);
+          localStorage.setItem(STUDENTS_KEY, JSON.stringify(localStudents));
+          try {
+            if (localStorage.getItem('active_student_id') === studentId) {
+              localStorage.removeItem('active_student_id');
+            }
+          } catch (e) {}
+          notifySubscribers('SYNC_STUDENTS');
+        }
       }
     },
     (error) => {
@@ -1174,26 +1184,36 @@ export async function getStudentFromServer(studentId: string): Promise<Student |
     }
     if (snap && snap.exists()) {
       const student = snap.data() as Student;
-      // Also update local list in memory
+      // Also update local list in memory only if changed
       const index = localStudents.findIndex((s) => s.id === student.id);
+      let changed = false;
       if (index !== -1) {
-        localStudents[index] = student;
+        if (JSON.stringify(localStudents[index]) !== JSON.stringify(student)) {
+          localStudents[index] = student;
+          changed = true;
+        }
       } else {
         localStudents.push(student);
+        changed = true;
       }
-      localStorage.setItem(STUDENTS_KEY, JSON.stringify(localStudents));
-      notifySubscribers('SYNC_STUDENTS');
+      if (changed) {
+        localStorage.setItem(STUDENTS_KEY, JSON.stringify(localStudents));
+        notifySubscribers('SYNC_STUDENTS');
+      }
       return student;
     } else if (snap && !snap.exists()) {
       // Document NOT found on server -> was permanently deleted by admin master!
-      localStudents = localStudents.filter((s) => s.id !== studentId);
-      localStorage.setItem(STUDENTS_KEY, JSON.stringify(localStudents));
-      try {
-        if (localStorage.getItem('active_student_id') === studentId) {
-          localStorage.removeItem('active_student_id');
-        }
-      } catch (e) {}
-      notifySubscribers('SYNC_STUDENTS');
+      const existed = localStudents.some((s) => s.id === studentId);
+      if (existed) {
+        localStudents = localStudents.filter((s) => s.id !== studentId);
+        localStorage.setItem(STUDENTS_KEY, JSON.stringify(localStudents));
+        try {
+          if (localStorage.getItem('active_student_id') === studentId) {
+            localStorage.removeItem('active_student_id');
+          }
+        } catch (e) {}
+        notifySubscribers('SYNC_STUDENTS');
+      }
       return null;
     }
   } catch (err) {
@@ -1211,18 +1231,7 @@ export async function syncStudentSessionsForUser(username?: string, name?: strin
 
     if (!cleanUser && !cleanName) return [];
 
-    // 1. First, verify all candidates currently in local cache that match this user/name
-    const cachedCandidates = localStudents.filter(s => {
-      if (cleanUser && s.username && s.username.toLowerCase() === cleanUser) return true;
-      if (cleanName && s.name && s.name.trim().toLowerCase().replace(/\s+/g, '') === cleanName) return true;
-      return false;
-    });
-
-    for (const session of cachedCandidates) {
-      await getStudentFromServer(session.id);
-    }
-
-    // 2. Query Firestore server directly for all active sessions of this username or name
+    // Query Firestore server directly for all active sessions of this username or name
     const serverSessions: Student[] = [];
     if (cleanUser) {
       try {
@@ -1246,43 +1255,49 @@ export async function syncStudentSessionsForUser(username?: string, name?: strin
       }
     }
 
-    if (cleanUser) {
-      const serverSessionIds = new Set(serverSessions.map(s => s.id));
-      // Purge any local student for this username that is NOT present in serverSessions (meaning deleted by admin)
-      localStudents = localStudents.filter(s => {
-        const matchesThisUser = s.username && s.username.toLowerCase() === cleanUser;
-        if (matchesThisUser && !serverSessionIds.has(s.id)) {
-          // This session was deleted by admin master from cloud!
-          try {
-            if (localStorage.getItem('active_student_id') === s.id) {
-              localStorage.removeItem('active_student_id');
-            }
-          } catch (e) {}
-          return false;
-        }
-        return true;
-      });
+    const serverSessionIds = new Set(serverSessions.map(s => s.id));
+    let hasChanges = false;
 
-      // Merge fresh server sessions into localStudents
-      serverSessions.forEach(srv => {
-        const idx = localStudents.findIndex(s => s.id === srv.id);
-        if (idx !== -1) {
-          localStudents[idx] = srv;
-        } else {
-          localStudents.push(srv);
-        }
-      });
+    // Purge any local student matching this user/name that is NOT present in serverSessions (meaning deleted by admin)
+    const prevCount = localStudents.length;
+    localStudents = localStudents.filter(s => {
+      const matchesUser = cleanUser && s.username && s.username.toLowerCase() === cleanUser;
+      const matchesName = cleanName && s.name && s.name.trim().toLowerCase().replace(/\s+/g, '') === cleanName;
+      if ((matchesUser || matchesName) && !serverSessionIds.has(s.id)) {
+        try {
+          if (localStorage.getItem('active_student_id') === s.id) {
+            localStorage.removeItem('active_student_id');
+          }
+        } catch (e) {}
+        return false;
+      }
+      return true;
+    });
 
-      localStorage.setItem(STUDENTS_KEY, JSON.stringify(localStudents));
-      notifySubscribers('SYNC_STUDENTS');
-      return serverSessions;
+    if (localStudents.length !== prevCount) {
+      hasChanges = true;
     }
 
-    return localStudents.filter(s => {
-      if (cleanUser && s.username && s.username.toLowerCase() === cleanUser) return true;
-      if (cleanName && s.name && s.name.trim().toLowerCase().replace(/\s+/g, '') === cleanName) return true;
-      return false;
+    // Merge fresh server sessions into localStudents
+    serverSessions.forEach(srv => {
+      const idx = localStudents.findIndex(s => s.id === srv.id);
+      if (idx !== -1) {
+        if (JSON.stringify(localStudents[idx]) !== JSON.stringify(srv)) {
+          localStudents[idx] = srv;
+          hasChanges = true;
+        }
+      } else {
+        localStudents.push(srv);
+        hasChanges = true;
+      }
     });
+
+    if (hasChanges) {
+      localStorage.setItem(STUDENTS_KEY, JSON.stringify(localStudents));
+      notifySubscribers('SYNC_STUDENTS');
+    }
+
+    return serverSessions;
   } catch (err) {
     console.warn('Error in syncStudentSessionsForUser:', err);
     return [];
