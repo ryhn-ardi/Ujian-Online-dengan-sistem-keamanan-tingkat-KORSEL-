@@ -2063,11 +2063,14 @@ export default function AdminPanel({
   };
 
   // Delete student completely
-  const handleDeleteStudent = (studentId: string) => {
-    if (!window.confirm('Hapus siswa dari daftar ujian? Semua riwayat skor akan hilang.')) {
+  const handleDeleteStudent = async (studentId: string) => {
+    const student = students.find(s => s.id === studentId);
+    const studentName = student ? student.name : 'siswa ini';
+    if (!window.confirm(`Hapus seluruh riwayat pengerjaan dan nilai untuk "${studentName}"?\n\nSemua riwayat skor akan hilang dan siswa dapat login kembali untuk mengerjakan soal dari awal.`)) {
       return;
     }
-    deleteSingleStudent(studentId);
+    await deleteSingleStudent(studentId);
+    alert(`Riwayat pengerjaan & nilai "${studentName}" berhasil dihapus bersih dari database cloud! Siswa kini dapat login kembali untuk mengerjakan soal.`);
   };
 
   // Unlock all locked students at once and reset their violations

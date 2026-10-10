@@ -18,7 +18,8 @@ import {
   disableAllStudentsSync,
   enableAllStudentsSync,
   subscribeToMyStudentSession,
-  refreshQuestionsFromServer
+  refreshQuestionsFromServer,
+  getStudentFromServer
 } from './utils/sync';
 import { Student, Question, ExamConfig, StudentStatus, StudentUser, BroadcastAnnouncement } from './types';
 import StudentRegistration from './components/StudentRegistration';
@@ -167,13 +168,41 @@ export default function App() {
 
           setRole('STUDENT_EXAM');
         }
-      } else if (students.length > 0) {
-        // Cached session was deleted from admin panel, wipe local cache
-        setCurrentStudentId('');
-        try {
-          localStorage.removeItem('active_student_id');
-        } catch (e) {}
-        setRole('SETUP');
+
+        // VERIFIKASI LANGSUNG DENGAN SERVER FIRESTORE:
+        // Jika admin master telah menghapus dokumen sesi siswa ini di cloud, bersihkan cache lokal dan kembalikan ke SETUP!
+        getStudentFromServer(currentStudentId).then((serverStudent) => {
+          if (!serverStudent) {
+            console.log('Sesi siswa telah dihapus oleh Admin Master di cloud. Membersihkan sesi lokal...');
+            setCurrentStudentId('');
+            try {
+              localStorage.removeItem('active_student_id');
+            } catch (e) {}
+            setRole('SETUP');
+          } else if (serverStudent.status === 'BELUM_MULAI') {
+            // Sesi di-reset oleh admin master
+            setRole('SETUP');
+          }
+        });
+      } else {
+        // Sesi lokal tidak ditemukan, periksa server firestore sebelum menghapus
+        getStudentFromServer(currentStudentId).then((serverStudent) => {
+          if (!serverStudent) {
+            setCurrentStudentId('');
+            try {
+              localStorage.removeItem('active_student_id');
+            } catch (e) {}
+            setRole('SETUP');
+          } else {
+            if (serverStudent.status === 'SELESAI') {
+              setRole('STUDENT_FINISHED');
+            } else if (serverStudent.status === 'BELUM_MULAI') {
+              setRole('SETUP');
+            } else {
+              setRole('STUDENT_EXAM');
+            }
+          }
+        });
       }
     }
   }, [students, currentStudentId, config]);
@@ -189,7 +218,7 @@ export default function App() {
     } else {
       // Student views: disable global student monitoring listener
       disableAllStudentsSync();
-      if (currentStudentId && role === 'STUDENT_EXAM') {
+      if (currentStudentId && (role === 'STUDENT_EXAM' || role === 'STUDENT_FINISHED')) {
         const unsub = subscribeToMyStudentSession(currentStudentId);
         return () => {
           unsub();
@@ -303,7 +332,7 @@ export default function App() {
   };
 
   // 3. STUDENT FLOW: Registration Action (Supports Multi-Subject exams, Reconnection & Randomized question sampling)
-  const handleRegisterStudent = (data: { name: string; absentNumber: string; studentClass: string; subjectId: string; username?: string }) => {
+  const handleRegisterStudent = async (data: { name: string; absentNumber: string; studentClass: string; subjectId: string; username?: string }) => {
     const existingStudents = getStudents();
     
     const normalizedNewName = data.name.trim().toLowerCase().replace(/\s+/g, '');
@@ -311,7 +340,7 @@ export default function App() {
     const targetSubjectId = data.subjectId || 'sub1';
 
     // Look for existing session for THIS SPECIFIC SUBJECT so students can take multiple subjects
-    const existing = existingStudents.find((s) => {
+    let existing = existingStudents.find((s) => {
       const sSubId = s.subjectId || 'sub1';
       if (sSubId !== targetSubjectId) return false;
 
@@ -321,6 +350,17 @@ export default function App() {
       const normalizedExisting = s.name.trim().toLowerCase().replace(/\s+/g, '');
       return normalizedExisting === normalizedNewName;
     });
+
+    // Verifikasi kepastian status sesi langsung dari server cloud (bukan hanya cache lokal)
+    if (existing) {
+      const serverStudent = await getStudentFromServer(existing.id);
+      if (!serverStudent) {
+        // Dokumen telah dihapus oleh admin master di cloud! Anggap sebagai sesi baru bersih
+        existing = undefined;
+      } else {
+        existing = serverStudent;
+      }
+    }
 
     const sampleQuestionsForSubject = (subId: string): string[] | undefined => {
       // Find the specific subject configuration

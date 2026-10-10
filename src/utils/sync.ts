@@ -10,7 +10,9 @@ import {
   getDoc,
   writeBatch,
   doc as fsDoc,
-  getDocFromServer
+  getDocFromServer,
+  query,
+  where
 } from 'firebase/firestore';
 import { db } from '../lib/firebase';
 import {
@@ -606,6 +608,16 @@ export function subscribeToMyStudentSession(studentId: string): () => void {
         }
         localStorage.setItem(STUDENTS_KEY, JSON.stringify(localStudents));
         notifySubscribers('SYNC_STUDENTS');
+      } else {
+        // Document was deleted from Firestore by Admin! Purge local cache immediately
+        localStudents = localStudents.filter((s) => s.id !== studentId);
+        localStorage.setItem(STUDENTS_KEY, JSON.stringify(localStudents));
+        try {
+          if (localStorage.getItem('active_student_id') === studentId) {
+            localStorage.removeItem('active_student_id');
+          }
+        } catch (e) {}
+        notifySubscribers('SYNC_STUDENTS');
       }
     },
     (error) => {
@@ -1097,6 +1109,11 @@ export async function saveSingleStudent(student: Student, broadcast = true): Pro
 export async function deleteSingleStudent(studentId: string, broadcast = true): Promise<void> {
   localStudents = localStudents.filter((s) => s.id !== studentId);
   localStorage.setItem(STUDENTS_KEY, JSON.stringify(localStudents));
+  try {
+    if (localStorage.getItem('active_student_id') === studentId) {
+      localStorage.removeItem('active_student_id');
+    }
+  } catch (e) {}
   if (broadcast) notifySubscribers('SYNC_STUDENTS');
 
   try {
@@ -1110,6 +1127,9 @@ export async function deleteSingleStudent(studentId: string, broadcast = true): 
 export async function clearAllStudents(broadcast = true): Promise<void> {
   localStudents = [];
   localStorage.setItem(STUDENTS_KEY, JSON.stringify([]));
+  try {
+    localStorage.removeItem('active_student_id');
+  } catch (e) {}
   if (broadcast) notifySubscribers('SYNC_STUDENTS');
 
   try {
@@ -1129,12 +1149,30 @@ export async function clearAllStudents(broadcast = true): Promise<void> {
   }
 }
 
+// Explicitly purge a single student from local storage and memory (e.g. when deleted on cloud)
+export function purgeStudentLocally(studentId: string): void {
+  localStudents = localStudents.filter((s) => s.id !== studentId);
+  try {
+    localStorage.setItem(STUDENTS_KEY, JSON.stringify(localStudents));
+    if (localStorage.getItem('active_student_id') === studentId) {
+      localStorage.removeItem('active_student_id');
+    }
+  } catch (e) {}
+  notifySubscribers('SYNC_STUDENTS');
+}
+
 // Fetch single student data directly from server to override cache/snapshots
 export async function getStudentFromServer(studentId: string): Promise<Student | null> {
+  if (!studentId) return null;
   try {
     const docRef = fsDoc(db, 'students', studentId);
-    const snap = await getDocFromServer(docRef);
-    if (snap.exists()) {
+    let snap;
+    try {
+      snap = await getDocFromServer(docRef);
+    } catch {
+      snap = await getDoc(docRef);
+    }
+    if (snap && snap.exists()) {
       const student = snap.data() as Student;
       // Also update local list in memory
       const index = localStudents.findIndex((s) => s.id === student.id);
@@ -1146,11 +1184,109 @@ export async function getStudentFromServer(studentId: string): Promise<Student |
       localStorage.setItem(STUDENTS_KEY, JSON.stringify(localStudents));
       notifySubscribers('SYNC_STUDENTS');
       return student;
+    } else if (snap && !snap.exists()) {
+      // Document NOT found on server -> was permanently deleted by admin master!
+      localStudents = localStudents.filter((s) => s.id !== studentId);
+      localStorage.setItem(STUDENTS_KEY, JSON.stringify(localStudents));
+      try {
+        if (localStorage.getItem('active_student_id') === studentId) {
+          localStorage.removeItem('active_student_id');
+        }
+      } catch (e) {}
+      notifySubscribers('SYNC_STUDENTS');
+      return null;
     }
   } catch (err) {
-    console.error('Error fetching student directly from server:', err);
+    console.warn('Error fetching student directly from server:', err);
   }
   return null;
+}
+
+// Synchronize and verify student sessions directly with Firestore server for a specific student/username
+// Cleans up any zombie/stale deleted sessions from local cache if admin master deleted them from cloud
+export async function syncStudentSessionsForUser(username?: string, name?: string): Promise<Student[]> {
+  try {
+    const cleanUser = username ? username.trim().toLowerCase() : '';
+    const cleanName = name ? name.trim().toLowerCase().replace(/\s+/g, '') : '';
+
+    if (!cleanUser && !cleanName) return [];
+
+    // 1. First, verify all candidates currently in local cache that match this user/name
+    const cachedCandidates = localStudents.filter(s => {
+      if (cleanUser && s.username && s.username.toLowerCase() === cleanUser) return true;
+      if (cleanName && s.name && s.name.trim().toLowerCase().replace(/\s+/g, '') === cleanName) return true;
+      return false;
+    });
+
+    for (const session of cachedCandidates) {
+      await getStudentFromServer(session.id);
+    }
+
+    // 2. Query Firestore server directly for all active sessions of this username or name
+    const serverSessions: Student[] = [];
+    if (cleanUser) {
+      try {
+        const q = query(collection(db, 'students'), where('username', '==', cleanUser));
+        const snap = await getDocs(q);
+        snap.forEach(d => {
+          serverSessions.push(d.data() as Student);
+        });
+      } catch (e) {
+        console.warn('Query students by username warning:', e);
+      }
+    } else if (cleanName) {
+      try {
+        const q = query(collection(db, 'students'), where('name', '==', name?.trim() || ''));
+        const snap = await getDocs(q);
+        snap.forEach(d => {
+          serverSessions.push(d.data() as Student);
+        });
+      } catch (e) {
+        console.warn('Query students by name warning:', e);
+      }
+    }
+
+    if (cleanUser) {
+      const serverSessionIds = new Set(serverSessions.map(s => s.id));
+      // Purge any local student for this username that is NOT present in serverSessions (meaning deleted by admin)
+      localStudents = localStudents.filter(s => {
+        const matchesThisUser = s.username && s.username.toLowerCase() === cleanUser;
+        if (matchesThisUser && !serverSessionIds.has(s.id)) {
+          // This session was deleted by admin master from cloud!
+          try {
+            if (localStorage.getItem('active_student_id') === s.id) {
+              localStorage.removeItem('active_student_id');
+            }
+          } catch (e) {}
+          return false;
+        }
+        return true;
+      });
+
+      // Merge fresh server sessions into localStudents
+      serverSessions.forEach(srv => {
+        const idx = localStudents.findIndex(s => s.id === srv.id);
+        if (idx !== -1) {
+          localStudents[idx] = srv;
+        } else {
+          localStudents.push(srv);
+        }
+      });
+
+      localStorage.setItem(STUDENTS_KEY, JSON.stringify(localStudents));
+      notifySubscribers('SYNC_STUDENTS');
+      return serverSessions;
+    }
+
+    return localStudents.filter(s => {
+      if (cleanUser && s.username && s.username.toLowerCase() === cleanUser) return true;
+      if (cleanName && s.name && s.name.trim().toLowerCase().replace(/\s+/g, '') === cleanName) return true;
+      return false;
+    });
+  } catch (err) {
+    console.warn('Error in syncStudentSessionsForUser:', err);
+    return [];
+  }
 }
 
 export async function saveSingleStudentUser(user: StudentUser): Promise<void> {

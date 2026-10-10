@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { ShieldCheck, UserCheck, Settings, AlertTriangle, AlertCircle, Info, RefreshCw, BookOpen, Check, Eye, EyeOff, KeyRound, Clock, Timer, Calendar, GraduationCap } from 'lucide-react';
 import { Student, Question, ExamConfig, ExamSubject, StudentUser } from '../types';
-import { getExamSubjects } from '../utils/sync';
+import { getExamSubjects, getStudentFromServer, syncStudentSessionsForUser, purgeStudentLocally } from '../utils/sync';
 import { useRealtimeWIB, evaluateSubjectSchedule, formatDurationCountdown, formatWIBShort, formatWIBDateTime } from '../utils/timeWib';
 import { isSubjectMatchingStudentClass, getGradeBadge } from '../utils/gradeHelper';
 
@@ -139,12 +139,20 @@ export default function StudentRegistration({
       setStudentClass(matchedUser.studentClass);
       setAbsentNumber(matchedUser.absentNumber || '');
       setLoginError('');
+
+      // SINKRONISASI SERVER OTOMATIS:
+      // Verifikasi seluruh riwayat/sesi ujian siswa ini langsung dari server Firestore.
+      // Jika admin master telah menghapus riwayat nilai siswa ini di cloud, cache lokal langsung dibersihkan
+      // sehingga siswa tidak terblokir dengan status SELESAI / nilai lama!
+      syncStudentSessionsForUser(matchedUser.username, matchedUser.name);
     } else {
       setLoginError('Username atau Password siswa salah / belum terdaftar! Pastikan data akun siswa sudah ditambahkan di menu Admin (ikon gembok di kanan atas > Data Akun Siswa).');
     }
   };
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const [isVerifyingWithServer, setIsVerifyingWithServer] = useState(false);
+
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     const finalName = authenticatedUser ? authenticatedUser.name : name.trim();
     const finalClass = authenticatedUser ? authenticatedUser.studentClass : studentClass.trim().toUpperCase();
@@ -163,7 +171,7 @@ export default function StudentRegistration({
     // Per-subject validation: Student can take Subject B (Naskah B) even if they completed Subject A (Naskah A)
     const normalizedNewName = finalName.trim().toLowerCase().replace(/\s+/g, '');
     const targetSubjectId = effectiveSubjectId || 'sub1';
-    const existingSubjectSession = students.find((s) => {
+    let existingSubjectSession = students.find((s) => {
       const sSubId = s.subjectId || 'sub1';
       if (sSubId !== targetSubjectId) return false;
 
@@ -173,6 +181,26 @@ export default function StudentRegistration({
       const normalizedExisting = s.name.trim().toLowerCase().replace(/\s+/g, '');
       return normalizedExisting === normalizedNewName;
     });
+
+    // VERIFIKASI LANGSUNG DENGAN SERVER FIRESTORE:
+    // Jangan hanya percaya cache lokal browser siswa. Jika admin master telah menghapus riwayat nilai siswa ini,
+    // dokumen di cloud sudah musnah dan getStudentFromServer akan mengembalikan null!
+    if (existingSubjectSession) {
+      setIsVerifyingWithServer(true);
+      try {
+        const serverStudent = await getStudentFromServer(existingSubjectSession.id);
+        if (!serverStudent) {
+          // Dokumen telah dihapus bersih oleh Admin Master di Firestore cloud!
+          existingSubjectSession = undefined;
+        } else {
+          existingSubjectSession = serverStudent;
+        }
+      } catch (err) {
+        console.warn('Gagal memverifikasi status sesi dengan server:', err);
+      } finally {
+        setIsVerifyingWithServer(false);
+      }
+    }
 
     if (existingSubjectSession) {
       if (existingSubjectSession.status === 'SELESAI') {
@@ -400,9 +428,32 @@ export default function StudentRegistration({
             {authenticatedUser && (
               <form onSubmit={handleSubmit} className="space-y-6">
                 {error && (
-                  <div className="p-3.5 bg-red-50 border border-red-200 rounded-xl text-red-600 text-xs flex items-center gap-2">
-                    <AlertCircle className="w-4 h-4 shrink-0" />
-                    <span>{error}</span>
+                  <div className="p-4 bg-red-50 border border-red-200 rounded-2xl text-red-700 text-xs space-y-2 shadow-xs">
+                    <div className="flex items-start gap-2.5">
+                      <AlertCircle className="w-4 h-4 text-red-650 shrink-0 mt-0.5" />
+                      <div className="space-y-1.5 flex-1">
+                        <span className="font-semibold leading-relaxed block">{error}</span>
+                        {error.includes('sudah menyelesaikan') && (
+                          <div className="pt-1 flex flex-wrap items-center gap-2">
+                            <button
+                              type="button"
+                              onClick={async () => {
+                                setIsVerifyingWithServer(true);
+                                const u = authenticatedUser ? authenticatedUser.username : usernameInput;
+                                const n = authenticatedUser ? authenticatedUser.name : name;
+                                await syncStudentSessionsForUser(u, n);
+                                setError('');
+                                setIsVerifyingWithServer(false);
+                              }}
+                              className="px-3 py-1.5 bg-red-100 hover:bg-red-200 text-red-800 font-bold rounded-lg text-[11px] transition inline-flex items-center gap-1.5 cursor-pointer shadow-xs active:scale-[0.98]"
+                            >
+                              <RefreshCw className={`w-3.5 h-3.5 ${isVerifyingWithServer ? 'animate-spin' : ''}`} />
+                              <span>Admin Sudah Menghapus Nilai? Sinkronkan Ulang dari Cloud</span>
+                            </button>
+                          </div>
+                        )}
+                      </div>
+                    </div>
                   </div>
                 )}
 
