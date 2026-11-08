@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Play, AlertTriangle, Wifi, WifiOff, CloudOff, ShieldAlert, KeyRound, Clock, ChevronLeft, ChevronRight, CheckSquare, Send, CheckCircle, CheckCircle2, RefreshCw, Check, Radio, Ticket, Lock, Unlock, BellOff, Smartphone, Volume2, Info, BookOpen, Megaphone, X, ChevronDown, ChevronUp } from 'lucide-react';
+import { Play, AlertTriangle, Wifi, WifiOff, CloudOff, ShieldAlert, KeyRound, Clock, ChevronLeft, ChevronRight, CheckSquare, Send, CheckCircle, CheckCircle2, RefreshCw, Check, Radio, Ticket, Lock, Unlock, BellOff, Smartphone, Volume2, Info, BookOpen, Megaphone, X, ChevronDown, ChevronUp, Maximize2, Minimize2 } from 'lucide-react';
 import { Student, Question, ExamConfig, BroadcastAnnouncement } from '../types';
 import { getStudentFromServer, getExamSubjects } from '../utils/sync';
 import { RichExamContent } from './RichExamContent';
@@ -327,6 +327,41 @@ export default function StudentExam({
     }
   };
 
+  // Exit Fullscreen helper
+  const exitFullscreen = async () => {
+    try {
+      const doc = document as any;
+      if (doc.exitFullscreen) {
+        await doc.exitFullscreen();
+      } else if (doc.webkitExitFullscreen) {
+        await doc.webkitExitFullscreen();
+      } else if (doc.mozCancelFullScreen) {
+        await doc.mozCancelFullScreen();
+      } else if (doc.msExitFullscreen) {
+        await doc.msExitFullscreen();
+      }
+      setIsCurrentlyFullscreen(false);
+    } catch (err) {
+      console.warn('Exit fullscreen error:', err);
+    }
+  };
+
+  // Full Screen Mode Toggle using Screen Fullscreen API
+  const toggleFullscreen = async () => {
+    const isFs = !!(
+      document.fullscreenElement ||
+      (document as any).webkitFullscreenElement ||
+      (document as any).mozFullScreenElement ||
+      (document as any).msFullscreenElement
+    );
+
+    if (isFs) {
+      await exitFullscreen();
+    } else {
+      await requestFullscreen();
+    }
+  };
+
   const triggerViolation = (reason: string) => {
     if (isSubmittingRef.current) return; // Do not trigger violation during exam submission
     if (config.strictSecurityEnabled === false) return; // Ignore if security is off
@@ -393,17 +428,15 @@ export default function StudentExam({
 
     const handleWindowBlur = () => {
       if (isGraceActive || !examStartedRef.current) return;
-      // Jangan anggap klik kanan mouse sebagai pelanggaran bila menyebabkan blur sesaat
-      if (Date.now() - lastRightClickTime < 1500) {
-        return;
-      }
+      if (Date.now() - lastRightClickTime < 1500) return;
       if (blurTimeout) clearTimeout(blurTimeout);
-      // On mobile devices, window.blur fires immediately when pulling down notification shade or opening quick settings or answering popup
+
+      // Grace window of 400ms for internal DOM focus transitions
       blurTimeout = setTimeout(() => {
-        if (!isGraceActive && examStartedRef.current && Date.now() - lastRightClickTime >= 1500) {
-          triggerViolation('Membuka Bilah Notifikasi / Quick Settings HP atau Keluar Fokus Layar');
+        if (!isGraceActive && examStartedRef.current && (document.hidden || document.visibilityState === 'hidden' || !document.hasFocus())) {
+          triggerViolation('Keluar Fokus Layar / Membuka Aplikasi Lain');
         }
-      }, 30);
+      }, 400);
     };
 
     const handleWindowFocus = () => {
@@ -424,24 +457,10 @@ export default function StudentExam({
       if (isGraceActive || !examStartedRef.current) return;
       if (e.touches && e.touches.length > 0) {
         const currentY = e.touches[0].clientY;
-        // If swipe began at the top edge (<= 140px or top 18% of screen) and is dragged down (> 10px), this is pulling down status bar / quick settings
-        const topThreshold = Math.max(140, window.innerHeight * 0.18);
-        if (touchStartY <= topThreshold && (currentY - touchStartY) > 10) {
+        // Only trigger if touch started at the extreme top status bar edge (<= 25px) and dragged down > 40px
+        if (touchStartY <= 25 && (currentY - touchStartY) > 40) {
           triggerViolation('Mencoba Menarik Bilah Quick Settings / Notifikasi HP');
         }
-      }
-    };
-
-    const handleTouchCancel = () => {
-      // When notification drawer intercepts touch on mobile, touchcancel is fired by browser
-      if (!isGraceActive && examStartedRef.current && Date.now() - lastRightClickTime >= 1500) {
-        triggerViolation('Interupsi Bilah Status / Notifikasi Sistem HP');
-      }
-    };
-
-    const handlePointerCancel = () => {
-      if (!isGraceActive && examStartedRef.current && Date.now() - lastRightClickTime >= 1500) {
-        triggerViolation('Interupsi Gestur Sistem / Bilah Notifikasi HP');
       }
     };
 
@@ -453,24 +472,12 @@ export default function StudentExam({
 
     const handleResize = () => {
       if (isGraceActive || !examStartedRef.current) return;
-      const parsedWidthDiff = Math.abs(window.innerWidth - initialWidth.current);
-      const parsedHeightDiff = Math.abs(window.innerHeight - initialHeight.current);
-      
-      // If viewport drops significantly during exam, could be split screen or notification tray
-      if (parsedWidthDiff > 250 || parsedHeightDiff > 180) {
-        triggerViolation('Mendeteksi Perubahan Jendela (Split Screen / Floating Apps / Bilah Menu)');
-      }
-    };
-
-    // Visual Viewport tracking for mobile notification shades and split screen
-    const handleVisualViewportChange = () => {
-      if (isGraceActive || !examStartedRef.current) return;
-      if (window.visualViewport) {
-        // If active element is not an input and viewport height shrinks below 80% of window height
+      // Detect real split screen / multi-window overlay
+      if (window.visualViewport && window.screen) {
         const activeTag = document.activeElement?.tagName?.toLowerCase();
         const isInputActive = activeTag === 'input' || activeTag === 'textarea';
-        if (!isInputActive && window.visualViewport.height < window.innerHeight * 0.80) {
-          triggerViolation('Bilah Notifikasi / Jendela Mengambang (Split Screen) Terbuka');
+        if (!isInputActive && window.visualViewport.height < window.screen.height * 0.55) {
+          triggerViolation('Mendeteksi Perubahan Jendela (Split Screen / Floating Apps)');
         }
       }
     };
@@ -491,7 +498,6 @@ export default function StudentExam({
     };
 
     const handleContextMenu = (e: MouseEvent) => {
-      // User requested right-click is not treated as violation
       e.preventDefault();
       e.stopPropagation();
       lastRightClickTime = Date.now();
@@ -504,31 +510,25 @@ export default function StudentExam({
       }
     };
 
-    // Continuous Active Sentinel Heartbeat Monitor (Checks hasFocus & fullscreen every 150ms)
+    // Continuous Active Sentinel Heartbeat Monitor (Checks fullscreen & visibility every 300ms)
     const heartbeatInterval = setInterval(() => {
       if (!examStartedRef.current || isGraceActive || isSubmittingRef.current) return;
       if (Date.now() - lastRightClickTime < 1500) return;
 
-      // 1. Check document focus (Lost immediately when pulling down notification drawer or opening popup)
-      if (typeof document.hasFocus === 'function' && !document.hasFocus()) {
-        triggerViolation('Membuka Bilah Notifikasi / Menu Cepat (Quick Settings) atau Keluar Fokus');
-        return;
-      }
-
-      // 2. Check visibility state
+      // Check visibility state
       if (document.hidden || document.visibilityState === 'hidden') {
         triggerViolation('Layar Ujian Tertutup / Beralih Aplikasi');
         return;
       }
 
-      // 3. Check fullscreen element presence
+      // Check fullscreen element presence
       if (!checkIsFs()) {
         triggerViolation('Keluar dari Mode Layar Penuh');
         return;
       }
-    }, 150);
+    }, 300);
 
-    // Arm listeners quickly to protect exam
+    // Arm listeners cleanly without focusout/pointercancel false positive triggers
     const setupTimer = setTimeout(() => {
       document.addEventListener('fullscreenchange', handleFullscreenChange);
       document.addEventListener('webkitfullscreenchange', handleFullscreenChange);
@@ -538,24 +538,15 @@ export default function StudentExam({
       document.addEventListener('contextmenu', handleContextMenu);
       window.addEventListener('mousedown', handleMouseDown, true);
       window.addEventListener('blur', handleWindowBlur);
-      document.addEventListener('blur', handleWindowBlur, true);
       window.addEventListener('focus', handleWindowFocus);
-      window.addEventListener('focusout', handleWindowBlur, true);
-      document.addEventListener('focusout', handleWindowBlur, true);
       window.addEventListener('pagehide', handlePageHide);
       (window as any).addEventListener?.('freeze', handlePageHide);
       window.addEventListener('resize', handleResize);
-      window.visualViewport?.addEventListener('resize', handleVisualViewportChange);
-      window.visualViewport?.addEventListener('scroll', handleVisualViewportChange);
       window.addEventListener('keydown', handleKeyDown);
-      window.addEventListener('touchstart', handleTouchStart, { passive: true });
-      window.addEventListener('touchmove', handleTouchMove, { passive: true });
-      window.addEventListener('touchcancel', handleTouchCancel, { passive: true });
-      document.addEventListener('touchcancel', handleTouchCancel, { passive: true });
-      window.addEventListener('pointercancel', handlePointerCancel, { passive: true });
-      document.addEventListener('pointercancel', handlePointerCancel, { passive: true });
+      document.addEventListener('touchstart', handleTouchStart, { passive: true });
+      document.addEventListener('touchmove', handleTouchMove, { passive: true });
       examStartedRef.current = true;
-    }, 350);
+    }, 300);
 
     return () => {
       clearTimeout(setupTimer);
@@ -569,22 +560,13 @@ export default function StudentExam({
       document.removeEventListener('contextmenu', handleContextMenu);
       window.removeEventListener('mousedown', handleMouseDown, true);
       window.removeEventListener('blur', handleWindowBlur);
-      document.removeEventListener('blur', handleWindowBlur, true);
       window.removeEventListener('focus', handleWindowFocus);
-      window.removeEventListener('focusout', handleWindowBlur, true);
-      document.removeEventListener('focusout', handleWindowBlur, true);
       window.removeEventListener('pagehide', handlePageHide);
       (window as any).removeEventListener?.('freeze', handlePageHide);
       window.removeEventListener('resize', handleResize);
-      window.visualViewport?.removeEventListener('resize', handleVisualViewportChange);
-      window.visualViewport?.removeEventListener('scroll', handleVisualViewportChange);
       window.removeEventListener('keydown', handleKeyDown);
-      window.removeEventListener('touchstart', handleTouchStart);
-      window.removeEventListener('touchmove', handleTouchMove);
-      window.removeEventListener('touchcancel', handleTouchCancel);
-      document.removeEventListener('touchcancel', handleTouchCancel);
-      window.removeEventListener('pointercancel', handlePointerCancel);
-      document.removeEventListener('pointercancel', handlePointerCancel);
+      document.removeEventListener('touchstart', handleTouchStart);
+      document.removeEventListener('touchmove', handleTouchMove);
     };
   }, [examStatus, config.strictSecurityEnabled, isGraceActive]);
 
@@ -694,13 +676,12 @@ export default function StudentExam({
       return;
     }
 
-    // Instant check: if this specific token was already used globally or on this account
+    // Instant check: if this specific token was already used on this account attempt
     const normalized = tokenInput.trim().toUpperCase();
     const usedUpper = (student.usedTokens || []).map(t => t.trim().toUpperCase());
-    const globalUpper = (config.usedGlobalTokens || []).map(t => t.trim().toUpperCase());
     
-    if (usedUpper.includes(normalized) || globalUpper.includes(normalized)) {
-      setTokenError(`Token "${tokenInput.trim()}" sudah TERPAKAI dan tidak bisa digunakan lagi! Harap minta token berikutnya dari Pengawas.`);
+    if (usedUpper.includes(normalized)) {
+      setTokenError(`Token "${tokenInput.trim()}" sudah TERPAKAI pada akun ini! Harap minta token berikutnya dari Pengawas.`);
       return;
     }
 
@@ -1062,6 +1043,39 @@ export default function StudentExam({
             </span>
           </div>
 
+          {/* Full Screen Mode Toggle Card */}
+          {isFullscreenSupported && (
+            <div className="p-3.5 bg-slate-950/80 border border-indigo-500/40 rounded-2xl mb-4 flex items-center justify-between gap-3 text-left">
+              <div className="flex items-center gap-2.5 min-w-0">
+                <div className={`w-9 h-9 rounded-xl flex items-center justify-center shrink-0 ${
+                  isCurrentlyFullscreen ? 'bg-emerald-600 text-white' : 'bg-amber-600 text-white animate-pulse'
+                }`}>
+                  {isCurrentlyFullscreen ? <Minimize2 className="w-5 h-5" /> : <Maximize2 className="w-5 h-5" />}
+                </div>
+                <div className="min-w-0">
+                  <span className="text-[10px] font-mono uppercase font-bold text-indigo-300 tracking-wider block">
+                    Mode Layar Penuh (Fullscreen API):
+                  </span>
+                  <span className="text-xs font-extrabold text-white truncate block">
+                    {isCurrentlyFullscreen ? '✓ Layar Penuh Aktif' : '⚠️ Belum Fullscreen'}
+                  </span>
+                </div>
+              </div>
+              <button
+                type="button"
+                id="btn-toggle-fullscreen-preexam"
+                onClick={toggleFullscreen}
+                className={`px-3 py-1.5 rounded-xl text-xs font-bold font-mono transition flex items-center gap-1.5 shrink-0 cursor-pointer shadow-xs active:scale-95 ${
+                  isCurrentlyFullscreen
+                    ? 'bg-slate-700 text-slate-200 hover:bg-slate-600'
+                    : 'bg-amber-500 text-slate-950 hover:bg-amber-400 font-black'
+                }`}
+              >
+                {isCurrentlyFullscreen ? 'Kecilkan' : 'Aktifkan Fullscreen'}
+              </button>
+            </div>
+          )}
+
           {/* Audio Alarm Verification & Pre-warm Card */}
           <div className="p-3.5 bg-slate-950/80 border border-indigo-500/40 rounded-2xl mb-5 flex items-center justify-between gap-3 text-left">
             <div className="flex items-center gap-2.5 min-w-0">
@@ -1407,6 +1421,34 @@ export default function StudentExam({
               <span className="font-bold text-white tracking-wide">{wibClock.formattedTimeOnly}</span>
             </div>
 
+            {/* Full Screen Mode Toggle Button */}
+            {isFullscreenSupported && (
+              <button
+                type="button"
+                id="btn-toggle-fullscreen-header"
+                onClick={toggleFullscreen}
+                title={isCurrentlyFullscreen ? 'Keluar Mode Layar Penuh' : 'Masuk Mode Layar Penuh (Fullscreen)'}
+                className={`px-3 py-2 rounded-xl text-xs font-mono font-bold transition flex items-center gap-1.5 cursor-pointer shadow-xs border ${
+                  isCurrentlyFullscreen
+                    ? 'bg-slate-800 text-emerald-300 border-emerald-500/40 hover:bg-slate-700'
+                    : 'bg-amber-500/20 text-amber-300 border-amber-500/50 hover:bg-amber-500/30 animate-pulse'
+                }`}
+              >
+                {isCurrentlyFullscreen ? (
+                  <>
+                    <Minimize2 className="w-4 h-4 text-emerald-400 shrink-0" />
+                    <span className="hidden md:inline">Layar Penuh</span>
+                    <span className="w-2 h-2 rounded-full bg-emerald-400 shrink-0" />
+                  </>
+                ) : (
+                  <>
+                    <Maximize2 className="w-4 h-4 text-amber-400 shrink-0" />
+                    <span>Layar Penuh</span>
+                  </>
+                )}
+              </button>
+            )}
+
             {/* Timer countdown view */}
             <div className="flex items-center gap-2 bg-slate-800 border border-slate-700 px-4 py-2 rounded-xl text-yellow-400 font-mono font-bold text-lg min-w-[120px] justify-center shadow-inner">
               <Clock className="w-5 h-5 shrink-0" />
@@ -1700,6 +1742,33 @@ export default function StudentExam({
             </div>
           </div>
         </div>
+      )}
+
+      {/* Floating Quick Access Full Screen Mode Toggle Button */}
+      {isFullscreenSupported && examStatus === 'SEDANG_MENGERJAKAN' && (
+        <button
+          type="button"
+          id="btn-floating-fullscreen-toggle"
+          onClick={toggleFullscreen}
+          title={isCurrentlyFullscreen ? 'Kecilkan / Keluar Fullscreen' : 'Masuk Mode Layar Penuh (Fullscreen)'}
+          className={`fixed bottom-6 right-6 z-40 p-3.5 rounded-2xl shadow-2xl border font-bold text-xs flex items-center gap-2 transition-all duration-200 cursor-pointer active:scale-95 ${
+            isCurrentlyFullscreen
+              ? 'bg-slate-900/90 hover:bg-slate-800 text-slate-200 border-slate-700 backdrop-blur-sm'
+              : 'bg-amber-500 hover:bg-amber-400 text-slate-950 border-amber-400 animate-bounce'
+          }`}
+        >
+          {isCurrentlyFullscreen ? (
+            <>
+              <Minimize2 className="w-5 h-5 text-emerald-400" />
+              <span className="hidden sm:inline font-mono">Layar Penuh (Aktif)</span>
+            </>
+          ) : (
+            <>
+              <Maximize2 className="w-5 h-5" />
+              <span className="font-mono font-extrabold">Masuk Layar Penuh</span>
+            </>
+          )}
+        </button>
       )}
     </div>
   );

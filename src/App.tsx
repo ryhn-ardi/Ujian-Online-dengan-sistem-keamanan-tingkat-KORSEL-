@@ -552,7 +552,7 @@ export default function App() {
     }
   };
 
-  // 4b. STUDENT FLOW: Token-based Self Unlock (Channel 2: Single-use burned token)
+  // 4b. STUDENT FLOW: Token-based Self Unlock (Channel 2: Per-student single-use token)
   const handleStudentTokenUnlock = async (tokenCode: string): Promise<{ success: boolean; message: string }> => {
     const freshStudents = getStudents();
     const active = freshStudents.find((s) => s.id === currentStudentId);
@@ -569,14 +569,13 @@ export default function App() {
       return { success: false, message: 'Kode token tidak valid. Silakan minta token yang benar kepada Pengawas/Proktor.' };
     }
 
-    // 2. Strict Check: Has this token been burned globally or by this student?
+    // 2. Strict Check: Has this token been used by this student on this attempt?
     const currentUsedTokens = (active.usedTokens || []).map(t => t.trim().toUpperCase());
-    const currentGlobalTokens = (config.usedGlobalTokens || []).map(t => t.trim().toUpperCase());
 
-    if (currentUsedTokens.includes(normalizedInput) || currentGlobalTokens.includes(normalizedInput)) {
+    if (currentUsedTokens.includes(normalizedInput)) {
       return {
         success: false,
-        message: `Token "${tokenCode.trim()}" sudah TERPAKAI dan hangus! Setiap token hanya dapat digunakan 1 kali. Harap minta kode token lain yang belum terpakai kepada Pengawas/Proktor.`
+        message: `Token "${tokenCode.trim()}" sudah TERPAKAI pada akun ini! Setiap token hanya dapat digunakan 1 kali per akun. Harap minta kode token lain yang belum terpakai kepada Pengawas/Proktor.`
       };
     }
 
@@ -589,9 +588,8 @@ export default function App() {
       };
     }
 
-    // 4. Update student state & burn token globally in exam config
+    // 4. Update student state (record used token per student)
     const nextUsedTokens = [...(active.usedTokens || []), normalizedInput];
-    const nextGlobalTokens = [...(config.usedGlobalTokens || []), normalizedInput];
     const nextUnlockCount = (active.tokenUnlockCount || 0) + 1;
     const remainingAttempts = Math.max(0, maxAllowedTokens - nextUsedTokens.length);
 
@@ -608,7 +606,6 @@ export default function App() {
 
     await saveSingleStudent(updatedActive);
     setStudents(prev => prev.map(s => s.id === updatedActive.id ? updatedActive : s));
-    setConfig(prev => ({ ...prev, usedGlobalTokens: nextGlobalTokens }));
 
     return {
       success: true,
