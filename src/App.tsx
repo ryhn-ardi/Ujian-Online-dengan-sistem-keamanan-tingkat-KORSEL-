@@ -160,13 +160,7 @@ export default function App() {
       if (active) {
         if (active.status === 'SELESAI' && role !== 'STUDENT_FINISHED') {
           setRole('STUDENT_FINISHED');
-        } else if (active.status === 'BELUM_MULAI' && role !== 'SETUP') {
-          setCurrentStudentId('');
-          try {
-            localStorage.removeItem('active_student_id');
-          } catch (e) {}
-          setRole('SETUP');
-        } else if (active.status !== 'SELESAI' && active.status !== 'BELUM_MULAI' && role !== 'STUDENT_EXAM') {
+        } else if (active.status !== 'SELESAI' && role !== 'STUDENT_EXAM') {
           setRole('STUDENT_EXAM');
         }
       } else {
@@ -211,12 +205,6 @@ export default function App() {
     getStudentFromServer(currentStudentId).then((serverStudent) => {
       if (!serverStudent) {
         console.log('Sesi siswa telah dihapus oleh Admin Master di cloud. Membersihkan sesi lokal...');
-        setCurrentStudentId('');
-        try {
-          localStorage.removeItem('active_student_id');
-        } catch (e) {}
-        setRole('SETUP');
-      } else if (serverStudent.status === 'BELUM_MULAI') {
         setCurrentStudentId('');
         try {
           localStorage.removeItem('active_student_id');

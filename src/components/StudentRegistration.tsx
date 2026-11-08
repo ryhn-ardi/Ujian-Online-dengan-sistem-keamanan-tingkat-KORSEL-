@@ -71,12 +71,24 @@ export default function StudentRegistration({
     return visibleSubjects[0]?.id || '';
   });
 
-  // Automatically adjust subjectId if current selection is not in visibleSubjects list
+  // Automatically adjust subjectId if current selection is not in visibleSubjects list or auto-select in-progress subject
   useEffect(() => {
-    if (visibleSubjects.length > 0 && !visibleSubjects.some(s => s.id === subjectId)) {
-      setSubjectId(visibleSubjects[0].id);
+    if (visibleSubjects.length > 0) {
+      if (authenticatedUser) {
+        const inProgressSub = visibleSubjects.find(sub => {
+          const session = getStudentSessionForSubject(sub.id);
+          return session && (session.status === 'SEDANG_MENGERJAKAN' || session.status === 'TERKUNCI');
+        });
+        if (inProgressSub && inProgressSub.id !== subjectId) {
+          setSubjectId(inProgressSub.id);
+          return;
+        }
+      }
+      if (!visibleSubjects.some(s => s.id === subjectId)) {
+        setSubjectId(visibleSubjects[0].id);
+      }
     }
-  }, [authenticatedUser, visibleSubjects, subjectId]);
+  }, [authenticatedUser, visibleSubjects, students, subjectId]);
 
   // Determine effective subject ID strictly from active visible subjects
   const effectiveSubjectId = visibleSubjects.find(s => s.id === subjectId)?.id || visibleSubjects[0]?.id || '';
