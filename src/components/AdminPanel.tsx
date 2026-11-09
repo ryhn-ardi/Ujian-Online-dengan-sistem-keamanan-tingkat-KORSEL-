@@ -194,7 +194,7 @@ export default function AdminPanel({
   const wibClock = useRealtimeWIB();
 
   // Vertical Navigation Tab in CONFIG tab
-  const [configSectionTab, setConfigSectionTab] = useState<'GENERAL' | 'SECURITY' | 'ALARM' | 'TOKENS' | 'STUDENT_ACCESS' | 'STAFF_PASSWORDS' | 'PROCTOR_PERMISSIONS'>('GENERAL');
+  const [configSectionTab, setConfigSectionTab] = useState<'GENERAL' | 'SECURITY' | 'ALARM' | 'TOKENS' | 'STUDENT_ACCESS' | 'STAFF_PASSWORDS' | 'PROCTOR_PERMISSIONS' | 'REMEDI_MODE'>('GENERAL');
 
   // Password Management with Ultimate Authorization Code
   const [authCodeInput, setAuthCodeInput] = useState('');
@@ -5017,6 +5017,7 @@ export default function AdminPanel({
                     { id: 'STUDENT_ACCESS', label: 'Akses & Akun Siswa', icon: UserCheck },
                     { id: 'STAFF_PASSWORDS', label: 'Sandi Petugas', icon: KeyRound },
                     { id: 'PROCTOR_PERMISSIONS', label: 'Wewenang Pengawas', icon: SlidersHorizontal },
+                    { id: 'REMEDI_MODE', label: 'Mode Remidi', icon: RefreshCw },
                   ].map((tab) => {
                     const TabIcon = tab.icon;
                     const isActive = configSectionTab === tab.id;
@@ -5042,7 +5043,7 @@ export default function AdminPanel({
                 <div className="hidden md:flex flex-col space-y-1.5 bg-white p-2.5 rounded-2xl border border-slate-200 shadow-xs">
                   <div className="px-3 py-2 text-[10px] font-mono font-bold text-slate-400 uppercase tracking-wider flex items-center justify-between">
                     <span>Menu Konfigurasi</span>
-                    <span className="text-indigo-600 font-bold">7 Bagian</span>
+                    <span className="text-indigo-600 font-bold">8 Bagian</span>
                   </div>
 
                   {[
@@ -5094,6 +5095,13 @@ export default function AdminPanel({
                       desc: 'Unlock, Reset, Skor, Analisis',
                       icon: SlidersHorizontal,
                       badge: 'Otoritas'
+                    },
+                    {
+                      id: 'REMEDI_MODE',
+                      name: 'Mode Remidi & Percobaan',
+                      desc: `Status: ${config.enableRemedialMode ? 'Aktif' : 'Mati'} • Max ${config.maxRemedialAttempts || 2}x`,
+                      icon: RefreshCw,
+                      badge: config.enableRemedialMode ? 'ON' : 'OFF'
                     }
                   ].map((tab) => {
                     const TabIcon = tab.icon;
@@ -7174,6 +7182,83 @@ export default function AdminPanel({
                       </div>
                     );
                   })()}
+
+                  {/* TAB 8: MODE REMIDI & PERCOBAAN UJIAN ULANG */}
+                  {configSectionTab === 'REMEDI_MODE' && (
+                    <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-xs space-y-6">
+                      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-100 pb-4">
+                        <div className="flex items-center gap-3">
+                          <div className="w-10 h-10 rounded-xl bg-purple-100 text-purple-700 flex items-center justify-center font-bold shrink-0">
+                            <RefreshCw className="w-5 h-5" />
+                          </div>
+                          <div>
+                            <h3 className="text-base font-extrabold text-slate-900">Pengaturan Mode Remidi & Batas Percobaan Ujian</h3>
+                            <p className="text-xs text-slate-500">Izinkan siswa yang telah SELESAI untuk mengulang ujian dalam mode remidi dengan pencatatan nilai ganda (Nilai Utama vs Nilai Remidi).</p>
+                          </div>
+                        </div>
+                        <span className={`px-3 py-1 rounded-full text-xs font-mono font-bold border self-start sm:self-auto ${
+                          config.enableRemedialMode ? 'bg-purple-100 text-purple-800 border-purple-300' : 'bg-slate-100 text-slate-600 border-slate-200'
+                        }`}>
+                          {config.enableRemedialMode ? 'REMIDI AKTIF' : 'REMIDI NONAKTIF'}
+                        </span>
+                      </div>
+
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                        {/* Toggle ON/OFF */}
+                        <div className="p-5 bg-slate-50 rounded-2xl border border-slate-200 space-y-4">
+                          <div className="flex items-center justify-between gap-4">
+                            <div>
+                              <h4 className="text-sm font-bold text-slate-800">Aktifkan Mode Remidi</h4>
+                              <p className="text-xs text-slate-500 mt-0.5">
+                                Siswa yang statusnya sudah SELESAI tetap bisa login dan mengerjakan kembali naskah ujian dalam mode Remidi.
+                              </p>
+                            </div>
+                            <button
+                              type="button"
+                              onClick={() => onUpdateConfig({ ...config, enableRemedialMode: !config.enableRemedialMode })}
+                              className={`w-14 h-8 shrink-0 rounded-full transition-colors relative cursor-pointer ${
+                                config.enableRemedialMode ? 'bg-purple-600' : 'bg-slate-300'
+                              }`}
+                            >
+                              <div className={`w-7 h-7 rounded-full bg-white shadow-md transition-transform absolute top-0.5 ${
+                                config.enableRemedialMode ? 'right-0.5' : 'left-0.5'
+                              }`} />
+                            </button>
+                          </div>
+                        </div>
+
+                        {/* Max Attempts */}
+                        <div className="p-5 bg-slate-50 rounded-2xl border border-slate-200 space-y-3">
+                          <label className="block text-sm font-bold text-slate-800">Batas Maksimal Percobaan Per Akun</label>
+                          <p className="text-xs text-slate-500">Maksimal jumlah percobaan (Ujian Utama + Remidi) yang diizinkan untuk setiap akun siswa.</p>
+                          <select
+                            value={config.maxRemedialAttempts || 2}
+                            onChange={(e) => onUpdateConfig({ ...config, maxRemedialAttempts: parseInt(e.target.value, 10) })}
+                            className="w-full px-4 py-2.5 bg-white border border-slate-300 rounded-xl text-sm font-bold text-slate-800 focus:outline-none focus:ring-2 focus:ring-purple-500 cursor-pointer"
+                          >
+                            <option value={1}>1x Percobaan (Hanya Ujian Utama / Tanpa Remidi)</option>
+                            <option value={2}>2x Percobaan (1 Ujian Utama + 1 Remidi) [Rekomendasi]</option>
+                            <option value={3}>3x Percobaan (1 Ujian Utama + 2 Remidi)</option>
+                            <option value={4}>4x Percobaan (1 Ujian Utama + 3 Remidi)</option>
+                            <option value={5}>5x Percobaan (1 Ujian Utama + 4 Remidi)</option>
+                          </select>
+                        </div>
+                      </div>
+
+                      {/* Info & Rule Details */}
+                      <div className="p-4 bg-purple-50/70 border border-purple-200 rounded-2xl space-y-2 text-xs text-purple-900">
+                        <div className="font-bold uppercase tracking-wider font-mono flex items-center gap-1.5 text-purple-800">
+                          <Sparkles className="w-4 h-4 text-purple-600" />
+                          Aturan Pengelolaan Nilai Ganda (Utama & Remidi)
+                        </div>
+                        <ul className="list-disc list-inside space-y-1 text-slate-700 text-[11px] leading-relaxed">
+                          <li>Riwayat nilai percobaan pertama (Nilai Utama) tersimpan permanen di cloud dan tidak akan tertimpa.</li>
+                          <li>Ketika siswa pengerjaan ulang (Remidi), sistem mencatat hasil sebagai <strong>Nilai Remidi</strong> dengan penanda percobaan.</li>
+                          <li>Administrator dan Pengawas dapat melihat komparasi seluruh riwayat nilai siswa pada tabel pengawasan dan laporan Excel.</li>
+                        </ul>
+                      </div>
+                    </div>
+                  )}
 
                   {/* Action Button: Save & Broadcast Refresh */}
                   <div className="flex flex-col sm:flex-row items-center justify-between gap-4 p-5 bg-white rounded-2xl border border-slate-200 shadow-sm">

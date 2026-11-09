@@ -410,6 +410,56 @@ export default function App() {
 
     if (existing) {
       if (existing.status === 'SELESAI') {
+        const currentAttempt = existing.attemptNumber || 1;
+        const maxAttempts = config.maxRemedialAttempts || 2;
+        const isRemedialEnabled = config.enableRemedialMode === true;
+
+        if (isRemedialEnabled && currentAttempt < maxAttempts) {
+          const nextAttemptNum = currentAttempt + 1;
+          const sampledQuestionIds = sampleQuestionsForSubject(targetSubjectId);
+          
+          const existingHistory = existing.attemptHistory || [];
+          const hasHistoryForCurrent = existingHistory.some(h => h.attemptNumber === currentAttempt);
+          const updatedHistory = hasHistoryForCurrent ? existingHistory : [
+            ...existingHistory,
+            {
+              attemptNumber: currentAttempt,
+              attemptType: ((currentAttempt > 1 || existing.isRemedial) ? 'REMIDI' : 'UTAMA') as 'UTAMA' | 'REMIDI',
+              score: existing.score || 0,
+              correctAnswersCount: existing.correctAnswersCount || 0,
+              totalQuestions: existing.totalQuestions || 0,
+              completedAt: existing.endTime || new Date().toISOString(),
+              answers: existing.answers || {}
+            }
+          ];
+
+          const remedialStudent: Student = {
+            ...existing,
+            attemptNumber: nextAttemptNum,
+            isRemedial: true,
+            status: 'BELUM_MULAI',
+            violationCount: 0,
+            lockedReason: undefined,
+            answers: {},
+            score: undefined,
+            correctAnswersCount: undefined,
+            totalQuestions: undefined,
+            startTime: undefined,
+            endTime: undefined,
+            usedTokens: [],
+            tokenUnlockCount: 0,
+            assignedQuestionIds: sampledQuestionIds && sampledQuestionIds.length > 0 ? sampledQuestionIds : undefined,
+            lastActive: new Date().toISOString(),
+            attemptHistory: updatedHistory
+          };
+
+          await saveSingleStudent(remedialStudent);
+          setCurrentStudentId(existing.id);
+          localStorage.setItem('active_student_id', existing.id);
+          setRole('STUDENT_EXAM');
+          return;
+        }
+
         // Student already finished this specific subject
         setCurrentStudentId(existing.id);
         localStorage.setItem('active_student_id', existing.id);
@@ -623,6 +673,23 @@ export default function App() {
     const activeWithNewAnswers = { ...active, answers: selectedAnswers };
     const metrics = getStudentMetrics(activeWithNewAnswers, questions);
 
+    const currentAttemptNum = active.attemptNumber || 1;
+    const currentAttemptType = (currentAttemptNum > 1 || active.isRemedial) ? 'REMIDI' : 'UTAMA';
+
+    const newAttemptRecord = {
+      attemptNumber: currentAttemptNum,
+      attemptType: currentAttemptType as 'UTAMA' | 'REMIDI',
+      score: metrics.score,
+      correctAnswersCount: metrics.correctAnswersCount,
+      totalQuestions: metrics.totalQuestions,
+      completedAt: new Date().toISOString(),
+      answers: selectedAnswers
+    };
+
+    const existingHistory = active.attemptHistory || [];
+    const filteredHistory = existingHistory.filter(h => h.attemptNumber !== currentAttemptNum);
+    const updatedHistory = [...filteredHistory, newAttemptRecord];
+
     const updatedActive: Student = {
       ...active,
       status: 'SELESAI',
@@ -631,7 +698,8 @@ export default function App() {
       totalQuestions: metrics.totalQuestions,
       score: metrics.score,
       endTime: new Date().toISOString(),
-      lastActive: new Date().toISOString()
+      lastActive: new Date().toISOString(),
+      attemptHistory: updatedHistory
     };
 
     await saveSingleStudent(updatedActive);
@@ -803,12 +871,22 @@ export default function App() {
                 <div className="bg-slate-50 p-4 rounded-xl border border-slate-100 my-6 text-left space-y-1 text-sm">
                   <div className="flex justify-between"><span className="text-slate-400 font-medium">Nama Siswa:</span> <span className="font-bold text-slate-800">{activeStudent.name}</span></div>
                   <div className="flex justify-between"><span className="text-slate-400 font-medium">No Absen / Kelas:</span> <span className="font-bold text-slate-800">{activeStudent.absentNumber} / {activeStudent.studentClass}</span></div>
+                  <div className="flex justify-between">
+                    <span className="text-slate-400 font-medium">Sesi Ujian:</span>
+                    <span className="font-bold text-indigo-700">
+                      {activeStudent.isRemedial || (activeStudent.attemptNumber && activeStudent.attemptNumber > 1) 
+                        ? `MODE REMIDI (Percobaan ${activeStudent.attemptNumber || 2})` 
+                        : 'UJIAN UTAMA (Percobaan 1)'}
+                    </span>
+                  </div>
                   <div className="flex justify-between"><span className="text-slate-400 font-medium">Status Pengawasan:</span> <span className="text-green-600 font-bold flex items-center gap-1">Lulus Verifikasi ({activeStudent.violationCount} Pelanggaran)</span></div>
                 </div>
 
                 {/* Real-time score display */}
                 <div className="p-6 bg-slate-900 rounded-2xl text-white">
-                  <span className="text-[10px] font-bold text-slate-400 tracking-widest uppercase block mb-1 font-mono">Nilai Hasil Ujian</span>
+                  <span className="text-[10px] font-bold text-slate-400 tracking-widest uppercase block mb-1 font-mono">
+                    Nilai Ujian Saat Ini {activeStudent.isRemedial ? '(Mode Remidi)' : '(Utama)'}
+                  </span>
                   <div className="text-5xl font-black tracking-tight text-yellow-400 font-mono">
                     {metrics.score !== undefined ? metrics.score.toFixed(1) : '0.0'}
                   </div>
@@ -816,6 +894,35 @@ export default function App() {
                     Berhasil menjawab benar <strong className="text-white">{metrics.correctAnswersCount}</strong> dari <strong className="text-white">{metrics.totalQuestions}</strong> pertanyaan.
                   </div>
                 </div>
+
+                {/* Riwayat Seluruh Percobaan (Nilai Utama & Nilai Remidi) */}
+                {activeStudent.attemptHistory && activeStudent.attemptHistory.length > 0 && (
+                  <div className="mt-6 text-left bg-slate-50 p-4 rounded-2xl border border-slate-200">
+                    <h3 className="text-xs font-bold text-slate-700 font-mono uppercase tracking-wider mb-2.5 flex items-center justify-between">
+                      <span>Riwayat Nilai Percobaan</span>
+                      <span className="text-[10px] text-slate-400 font-normal">{activeStudent.attemptHistory.length} Percobaan Terekam</span>
+                    </h3>
+                    <div className="space-y-2">
+                      {activeStudent.attemptHistory.map((h, idx) => (
+                        <div key={idx} className="flex items-center justify-between p-2.5 bg-white rounded-xl border border-slate-200 text-xs font-mono">
+                          <div className="flex items-center gap-2">
+                            <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${
+                              h.attemptType === 'REMIDI' ? 'bg-purple-100 text-purple-800' : 'bg-blue-100 text-blue-800'
+                            }`}>
+                              {h.attemptType === 'REMIDI' ? `REMIDI (${h.attemptNumber})` : 'UTAMA'}
+                            </span>
+                            <span className="text-slate-600 font-medium font-sans">
+                              {h.correctAnswersCount}/{h.totalQuestions} Benar
+                            </span>
+                          </div>
+                          <div className="font-extrabold text-slate-900 text-sm">
+                            {h.score.toFixed(1)}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
               </div>
 
               {/* Navigation Back */}

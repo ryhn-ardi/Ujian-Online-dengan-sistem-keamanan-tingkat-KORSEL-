@@ -1409,6 +1409,11 @@ export default function StudentExam({
                 <BookOpen className="w-3.5 h-3.5 text-indigo-300" />
                 <span>Naskah: {activeSubjectName}</span>
               </span>
+              {(student.isRemedial || (student.attemptNumber && student.attemptNumber > 1)) && (
+                <span className="px-2.5 py-0.5 bg-purple-600 text-purple-100 font-bold text-xs rounded-md border border-purple-400/30 flex items-center gap-1 shadow-2xs">
+                  <span>MODE REMIDI (Percobaan {student.attemptNumber || 2})</span>
+                </span>
+              )}
             </div>
             <h2 className="text-lg font-bold truncate tracking-tight">{student.name}</h2>
           </div>

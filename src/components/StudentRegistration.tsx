@@ -216,10 +216,20 @@ export default function StudentRegistration({
 
     if (existingSubjectSession) {
       if (existingSubjectSession.status === 'SELESAI') {
-        const subName = visibleSubjects.find(sub => sub.id === targetSubjectId)?.name || 'naskah ini';
-        return setError(
-          `Siswa "${finalName}" sudah menyelesaikan naskah "${subName}" (Nilai: ${typeof existingSubjectSession.score === 'number' ? existingSubjectSession.score.toFixed(1) : '-'}). Anda dapat memilih naskah ujian lain yang belum dikerjakan pada menu pilihan naskah di atas!`
-        );
+        const currentAttempt = existingSubjectSession.attemptNumber || 1;
+        const maxAttempts = config?.maxRemedialAttempts || 2;
+        const isRemedialEnabled = config?.enableRemedialMode === true;
+        const canTakeRemedial = isRemedialEnabled && currentAttempt < maxAttempts;
+
+        if (!canTakeRemedial) {
+          const subName = visibleSubjects.find(sub => sub.id === targetSubjectId)?.name || 'naskah ini';
+          const attemptInfo = isRemedialEnabled
+            ? ` (Telah mencapai batas maksimal ${maxAttempts} percobaan)`
+            : '';
+          return setError(
+            `Siswa "${finalName}" sudah menyelesaikan naskah "${subName}" (Nilai: ${typeof existingSubjectSession.score === 'number' ? existingSubjectSession.score.toFixed(1) : '-'})${attemptInfo}. Anda dapat memilih naskah ujian lain yang belum dikerjakan pada menu pilihan naskah di atas!`
+          );
+        }
       }
       if (existingSubjectSession.status === 'TERKUNCI') {
         return setError(
@@ -638,12 +648,26 @@ export default function StudentRegistration({
 
                           {/* Student Status Badge for this Subject */}
                           {studentSession && (
-                            <div className="mt-1.5">
-                              {studentSession.status === 'SELESAI' && (
-                                <span className="text-[10px] font-mono font-bold px-2 py-0.5 rounded-md bg-emerald-100 text-emerald-800 border border-emerald-300 inline-flex items-center gap-1">
-                                  <Check className="w-3 h-3" /> SELESAI {typeof studentSession.score === 'number' ? `(Nilai: ${studentSession.score.toFixed(1)})` : ''}
-                                </span>
-                              )}
+                            <div className="mt-1.5 flex flex-wrap gap-1">
+                              {studentSession.status === 'SELESAI' && (() => {
+                                const currentAttempt = studentSession.attemptNumber || 1;
+                                const maxAttempts = config?.maxRemedialAttempts || 2;
+                                const isRemedialEnabled = config?.enableRemedialMode === true;
+                                const canRemedial = isRemedialEnabled && currentAttempt < maxAttempts;
+
+                                return (
+                                  <span className={`text-[10px] font-mono font-bold px-2 py-0.5 rounded-md border inline-flex items-center gap-1 ${
+                                    canRemedial
+                                      ? 'bg-purple-100 text-purple-900 border-purple-300'
+                                      : 'bg-emerald-100 text-emerald-800 border-emerald-300'
+                                  }`}>
+                                    <Check className="w-3 h-3" />
+                                    {canRemedial
+                                      ? `REMIDI TERSEDIA (Ujian Ke-${currentAttempt + 1})`
+                                      : `SELESAI ${typeof studentSession.score === 'number' ? `(Nilai: ${studentSession.score.toFixed(1)})` : ''}`}
+                                  </span>
+                                );
+                              })()}
                               {studentSession.status === 'SEDANG_MENGERJAKAN' && (
                                 <span className="text-[10px] font-mono font-bold px-2 py-0.5 rounded-md bg-blue-100 text-blue-800 border border-blue-300 inline-flex items-center gap-1 animate-pulse">
                                   SEDANG DIKERJAKAN ({Object.keys(studentSession.answers || {}).length}/{qCount})

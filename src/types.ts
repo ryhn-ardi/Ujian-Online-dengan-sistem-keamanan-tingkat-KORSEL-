@@ -24,6 +24,16 @@ export interface StudentUser {
 
 export type StudentStatus = 'BELUM_MULAI' | 'SEDANG_MENGERJAKAN' | 'TERKUNCI' | 'SELESAI';
 
+export interface StudentAttemptHistory {
+  attemptNumber: number;
+  attemptType: 'UTAMA' | 'REMIDI';
+  score: number;
+  correctAnswersCount: number;
+  totalQuestions: number;
+  completedAt: string;
+  answers?: Record<string, number | number[]>;
+}
+
 export interface Student {
   id: string; // Generated id
   username?: string; // Predefined login username
@@ -44,6 +54,10 @@ export interface Student {
   usedTokens?: string[]; // Array of token strings already used by this student
   tokenUnlockCount?: number; // Total token unlocks used by this student
   assignedQuestionIds?: string[]; // Preserved list of randomized question IDs for this student
+  // Mode Remidi & Ujian Ulang (Double Score & Retake History)
+  attemptNumber?: number; // Percobaan ke-berapa (1 = Utama, 2 = Remidi 1, dst)
+  isRemedial?: boolean; // True jika sesi saat ini adalah mode Remidi
+  attemptHistory?: StudentAttemptHistory[]; // Riwayat seluruh percobaan & nilai siswa (Utama & Remidi)
 }
 
 export interface ExamSubject {
@@ -116,6 +130,9 @@ export interface ExamConfig {
   hasCustomAnnouncementAudio?: boolean; // Indikator ada audio pengumuman kustom
   activeAnnouncement?: BroadcastAnnouncement | null; // Pengumuman massal aktif saat ini
   ecoSyncMode?: boolean; // Mode Hemat Kuota Ekstrem: Hanya kirim pelanggaran, unlock, dan kumpul nilai ke server (hemat 99% kuota)
+  // Fitur Mode Remidi & Ujian Ulang
+  enableRemedialMode?: boolean; // Toggle ON/OFF Mode Remidi untuk siswa yang sudah SELESAI
+  maxRemedialAttempts?: number; // Batas maksimal percobaan per akun per naskah (default: 2, e.g. 1-5)
   // Fitur Khusus Admin: Refresh Massal Seluruh Siswa saat ada Perubahan Konfigurasi
   forcedRefreshTimestamp?: number; // Waktu timestamp perintah refresh dikirim oleh Admin
   forcedRefreshType?: 'SOFT' | 'HARD'; // 'SOFT' = update config & bank soal secara instan tanpa reload, 'HARD' = reload browser

@@ -717,6 +717,11 @@ export default function ProctorPanel({
                                 }`}>
                                   {subName} {isSubInactive ? '(NONAKTIF)' : ''}
                                 </span>
+                                {(s.isRemedial || (s.attemptNumber && s.attemptNumber > 1)) && (
+                                  <span className="px-1.5 py-0.5 rounded font-bold bg-purple-100 text-purple-900 border border-purple-300">
+                                    REMIDI (Ke-{s.attemptNumber || 2})
+                                  </span>
+                                )}
                                 {s.username && <span>@{s.username}</span>}
                               </div>
                             </td>
