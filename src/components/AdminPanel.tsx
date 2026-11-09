@@ -1,5 +1,5 @@
 import React, { useState, useRef } from 'react';
-import { Users, FileSpreadsheet, RefreshCw, KeyRound, Edit, Trash2, Plus, Save, BookOpen, Clock, X, ChevronRight, Check, AlertTriangle, ShieldCheck, Search, Eye, EyeOff, Layers, Settings2, Sparkles, Ticket, Download, Upload, Shuffle, UserCheck, Lock, CheckCircle2, ChevronLeft, Image as ImageIcon, AlignLeft, HelpCircle, FileText, Calendar, Timer, CheckSquare, Radio, BarChart3, Volume2, VolumeX, Music, FileAudio, AlertCircle, Copy, SlidersHorizontal, Megaphone, Bell, Activity, Database, Server, Terminal, FileCode } from 'lucide-react';
+import { Users, FileSpreadsheet, RefreshCw, KeyRound, Edit, Trash2, Plus, Save, BookOpen, Clock, X, ChevronRight, Check, AlertTriangle, ShieldCheck, Search, Eye, EyeOff, Layers, Settings2, Sparkles, Ticket, Download, Upload, Shuffle, UserCheck, Lock, CheckCircle2, ChevronLeft, Image as ImageIcon, AlignLeft, HelpCircle, FileText, Calendar, Timer, CheckSquare, Radio, BarChart3, Volume2, VolumeX, Music, FileAudio, AlertCircle, Copy, SlidersHorizontal, Megaphone, Bell, Activity, Database, Server, Terminal, FileCode, Menu, ChevronDown, ChevronUp } from 'lucide-react';
 import * as XLSX from 'xlsx';
 import { Student, Question, ExamConfig, ExamSubject, StudentUser, ProctorPermissions, BroadcastAnnouncement } from '../types';
 import { DEFAULT_PROCTOR_PERMISSIONS } from '../data';
@@ -117,6 +117,10 @@ export default function AdminPanel({
 }: AdminPanelProps) {
   // Tabs for the Admin Control Panel
   const [activeTab, setActiveTab] = useState<'MONITOR' | 'CHARTS' | 'ITEM_ANALYSIS' | 'QUESTIONS' | 'CONFIG' | 'ACCOUNTS' | 'TELEMETRY'>('MONITOR');
+
+  // Navigation Drawer States
+  const [isNavDrawerOpen, setIsNavDrawerOpen] = useState(false);
+  const [isDrawerConfigExpanded, setIsDrawerConfigExpanded] = useState(true);
 
   // Telemetry & Quota Monitoring State
   const [telemetryStats, setTelemetryStats] = useState<FirestoreStats>(() => getFirestoreStats());
@@ -3116,21 +3120,33 @@ export default function AdminPanel({
   return (
     <div className="min-h-screen bg-slate-50 flex flex-col font-sans">
       {/* Admin Nav Bar */}
-      <header className="bg-slate-950 text-white shadow-xl px-6 py-5 sticky top-0 z-40">
+      <header className="bg-slate-950 text-white shadow-xl px-4 sm:px-6 py-4 sticky top-0 z-40">
         <div className="max-w-6xl mx-auto flex flex-col md:flex-row md:items-center justify-between gap-4">
           <div className="flex items-center gap-3">
-            <div className="flex items-center justify-center p-2.5 bg-indigo-500 rounded-xl text-white">
+            {/* Navigation Drawer Trigger Button */}
+            <button
+              type="button"
+              id="btn-open-admin-nav-drawer"
+              onClick={() => setIsNavDrawerOpen(true)}
+              className="p-2.5 bg-slate-900 hover:bg-slate-800 text-indigo-400 hover:text-white rounded-xl border border-slate-700 transition cursor-pointer flex items-center gap-2 shadow-xs shrink-0 active:scale-95"
+              title="Buka Menu Navigation Drawer (Monitoring, Soal, Konfigurasi Ujian, Sub-Menu)"
+            >
+              <Menu className="w-5 h-5" />
+              <span className="text-xs font-bold font-mono tracking-wider hidden sm:inline uppercase">Menu Navigation Drawer</span>
+            </button>
+
+            <div className="flex items-center justify-center p-2.5 bg-indigo-600 rounded-xl text-white shrink-0">
               <Users className="w-5 h-5" />
             </div>
-            <div>
-              <div className="flex items-center gap-2">
+            <div className="min-w-0">
+              <div className="flex items-center gap-2 flex-wrap">
                 <span className="text-[10px] bg-indigo-600 px-1.5 py-0.5 rounded font-mono font-bold tracking-widest text-indigo-100">
                   MASTER CONSOLE
                 </span>
                 <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
-                <span className="text-[11px] text-emerald-400 font-mono font-bold">REAL-TIME SYNC</span>
+                <span className="text-[11px] text-emerald-400 font-mono font-bold">LIVE SYNC</span>
               </div>
-              <h1 className="text-xl font-bold tracking-tight">Kabin Kontrol Pengawas & Proktor</h1>
+              <h1 className="text-base sm:text-xl font-bold tracking-tight truncate">Kabin Kontrol Pengawas & Proktor</h1>
             </div>
           </div>
 
@@ -10142,6 +10158,290 @@ export default function AdminPanel({
                 <span>{isSendingRefresh ? 'Menyiarkan Sinyal...' : 'Siarkan Refresh Sekarang'}</span>
               </button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* NAVIGATION DRAWER OVERLAY PANEL */}
+      {isNavDrawerOpen && (
+        <div className="fixed inset-0 z-[999999] flex select-none animate-fade-in" translate="no">
+          {/* Backdrop */}
+          <div
+            onClick={() => setIsNavDrawerOpen(false)}
+            className="fixed inset-0 bg-slate-950/80 backdrop-blur-sm transition-opacity"
+          />
+
+          {/* Slide-over Drawer Panel */}
+          <div className="relative w-80 max-w-[85vw] bg-slate-900 text-white shadow-2xl flex flex-col h-full z-10 border-r border-slate-800">
+            
+            {/* Drawer Header */}
+            <div className="p-5 bg-slate-950 border-b border-slate-800 flex items-center justify-between">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-2xl bg-indigo-600 text-white flex items-center justify-center font-black shadow-md">
+                  <ShieldCheck className="w-5 h-5 text-indigo-100" />
+                </div>
+                <div>
+                  <span className="text-[10px] font-mono font-bold text-indigo-400 uppercase tracking-widest block">
+                    MASTER CONSOLE
+                  </span>
+                  <h2 className="text-sm font-black text-white tracking-tight">Navigation Drawer</h2>
+                </div>
+              </div>
+
+              <button
+                type="button"
+                onClick={() => setIsNavDrawerOpen(false)}
+                className="p-2 text-slate-400 hover:text-white hover:bg-slate-800 rounded-xl transition cursor-pointer"
+                title="Tutup Menu Navigation Drawer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {/* Drawer Body - Scrollable Items */}
+            <div className="flex-1 overflow-y-auto p-4 space-y-6 scrollbar-thin">
+              
+              {/* GROUP 1: MONITORING & PRESENSI */}
+              <div className="space-y-1.5">
+                <div className="px-3 py-1 text-[10px] font-mono font-bold text-slate-400 uppercase tracking-wider">
+                  Monitoring &amp; Statistik
+                </div>
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    setActiveTab('MONITOR');
+                    setIsNavDrawerOpen(false);
+                  }}
+                  className={`w-full p-3 rounded-2xl text-xs font-bold transition flex items-center justify-between gap-3 cursor-pointer ${
+                    activeTab === 'MONITOR'
+                      ? 'bg-indigo-600 text-white shadow-md'
+                      : 'bg-slate-800/60 hover:bg-slate-800 text-slate-300 hover:text-white'
+                  }`}
+                >
+                  <div className="flex items-center gap-3">
+                    <Users className="w-4 h-4 text-indigo-400" />
+                    <span>Monitoring Siswa</span>
+                  </div>
+                  <span className="px-2 py-0.5 rounded-full bg-slate-950/60 text-indigo-200 text-[10px] font-mono font-extrabold">
+                    {students.length} Siswa
+                  </span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    setActiveTab('CHARTS');
+                    setIsNavDrawerOpen(false);
+                  }}
+                  className={`w-full p-3 rounded-2xl text-xs font-bold transition flex items-center justify-between gap-3 cursor-pointer ${
+                    activeTab === 'CHARTS'
+                      ? 'bg-indigo-600 text-white shadow-md'
+                      : 'bg-slate-800/60 hover:bg-slate-800 text-slate-300 hover:text-white'
+                  }`}
+                >
+                  <div className="flex items-center gap-3">
+                    <BarChart3 className="w-4 h-4 text-indigo-400" />
+                    <span>Grafik &amp; Performa</span>
+                  </div>
+                  <span className="text-[10px] text-slate-400 font-mono">Real-time</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    setActiveTab('ITEM_ANALYSIS');
+                    setIsNavDrawerOpen(false);
+                  }}
+                  className={`w-full p-3 rounded-2xl text-xs font-bold transition flex items-center justify-between gap-3 cursor-pointer ${
+                    activeTab === 'ITEM_ANALYSIS'
+                      ? 'bg-indigo-600 text-white shadow-md'
+                      : 'bg-slate-800/60 hover:bg-slate-800 text-slate-300 hover:text-white'
+                  }`}
+                >
+                  <div className="flex items-center gap-3">
+                    <FileSpreadsheet className="w-4 h-4 text-emerald-400" />
+                    <span>Analisis Butir Soal</span>
+                  </div>
+                  <span className="text-[10px] text-emerald-400 font-mono">Excel</span>
+                </button>
+              </div>
+
+              {/* GROUP 2: MANAJEMEN SOAL & AKUN */}
+              <div className="space-y-1.5">
+                <div className="px-3 py-1 text-[10px] font-mono font-bold text-slate-400 uppercase tracking-wider">
+                  Manajemen Ujian &amp; Akun
+                </div>
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    setActiveTab('QUESTIONS');
+                    setIsNavDrawerOpen(false);
+                  }}
+                  className={`w-full p-3 rounded-2xl text-xs font-bold transition flex items-center justify-between gap-3 cursor-pointer ${
+                    activeTab === 'QUESTIONS'
+                      ? 'bg-indigo-600 text-white shadow-md'
+                      : 'bg-slate-800/60 hover:bg-slate-800 text-slate-300 hover:text-white'
+                  }`}
+                >
+                  <div className="flex items-center gap-3">
+                    <BookOpen className="w-4 h-4 text-amber-400" />
+                    <span>Bank Soal Ujian</span>
+                  </div>
+                  <span className="px-2 py-0.5 rounded-full bg-slate-950/60 text-amber-300 text-[10px] font-mono font-extrabold">
+                    {questions.length} Soal
+                  </span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    setActiveTab('ACCOUNTS');
+                    setIsNavDrawerOpen(false);
+                  }}
+                  className={`w-full p-3 rounded-2xl text-xs font-bold transition flex items-center justify-between gap-3 cursor-pointer ${
+                    activeTab === 'ACCOUNTS'
+                      ? 'bg-indigo-600 text-white shadow-md'
+                      : 'bg-slate-800/60 hover:bg-slate-800 text-slate-300 hover:text-white'
+                  }`}
+                >
+                  <div className="flex items-center gap-3">
+                    <UserCheck className="w-4 h-4 text-sky-400" />
+                    <span>Database Akun Siswa</span>
+                  </div>
+                  <span className="px-2 py-0.5 rounded-full bg-slate-950/60 text-sky-300 text-[10px] font-mono font-extrabold">
+                    {(studentUsers || []).length} Akun
+                  </span>
+                </button>
+              </div>
+
+              {/* GROUP 3: KONFIGURASI UJIAN (WITH SUB-DRAWER NAV) */}
+              <div className="space-y-1.5">
+                <div className="px-3 py-1 text-[10px] font-mono font-bold text-slate-400 uppercase tracking-wider flex items-center justify-between">
+                  <span>Konfigurasi Ujian &amp; System</span>
+                  <button
+                    type="button"
+                    onClick={() => setIsDrawerConfigExpanded(!isDrawerConfigExpanded)}
+                    className="text-slate-400 hover:text-white cursor-pointer"
+                  >
+                    {isDrawerConfigExpanded ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
+                  </button>
+                </div>
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    setActiveTab('CONFIG');
+                    setIsDrawerConfigExpanded(true);
+                  }}
+                  className={`w-full p-3 rounded-2xl text-xs font-bold transition flex items-center justify-between gap-3 cursor-pointer ${
+                    activeTab === 'CONFIG'
+                      ? 'bg-indigo-600 text-white shadow-md'
+                      : 'bg-slate-800/60 hover:bg-slate-800 text-slate-300 hover:text-white'
+                  }`}
+                >
+                  <div className="flex items-center gap-3">
+                    <Settings2 className="w-4 h-4 text-indigo-300" />
+                    <span>Konfigurasi Ujian</span>
+                  </div>
+                  <ChevronRight className={`w-4 h-4 transition-transform ${isDrawerConfigExpanded ? 'rotate-90' : ''}`} />
+                </button>
+
+                {/* SUB-DRAWER FOR CONFIGURATION SECTIONS */}
+                {isDrawerConfigExpanded && (
+                  <div className="pl-3 space-y-1 border-l-2 border-indigo-500/30 ml-3 pt-1">
+                    {[
+                      { id: 'GENERAL', label: '1. Umum & Naskah', icon: BookOpen },
+                      { id: 'SECURITY', label: '2. Keamanan Proktor', icon: ShieldCheck },
+                      { id: 'ALARM', label: '3. Alarm Pelanggaran', icon: Volume2 },
+                      { id: 'TOKENS', label: '4. Token Buka Kunci', icon: Ticket },
+                      { id: 'STUDENT_ACCESS', label: '5. Akses & Akun Siswa', icon: UserCheck },
+                      { id: 'STAFF_PASSWORDS', label: '6. Kata Sandi Petugas', icon: KeyRound },
+                      { id: 'PROCTOR_PERMISSIONS', label: '7. Wewenang Pengawas', icon: SlidersHorizontal },
+                      { id: 'REMEDI_MODE', label: '8. Mode Remidi & Percobaan', icon: RefreshCw },
+                    ].map((subItem) => {
+                      const SubIcon = subItem.icon;
+                      const isSubActive = activeTab === 'CONFIG' && configSectionTab === subItem.id;
+                      return (
+                        <button
+                          key={subItem.id}
+                          type="button"
+                          onClick={() => {
+                            setActiveTab('CONFIG');
+                            setConfigSectionTab(subItem.id as any);
+                            setIsNavDrawerOpen(false);
+                          }}
+                          className={`w-full p-2.5 rounded-xl text-xs font-medium transition flex items-center gap-2.5 cursor-pointer ${
+                            isSubActive
+                              ? 'bg-indigo-600/90 text-white font-bold shadow-xs'
+                              : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/50'
+                          }`}
+                        >
+                          <SubIcon className="w-3.5 h-3.5 shrink-0 text-indigo-300" />
+                          <span className="truncate">{subItem.label}</span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+
+              {/* GROUP 4: TELEMETRY & CLOUD */}
+              <div className="space-y-1.5 pt-2 border-t border-slate-800">
+                <div className="px-3 py-1 text-[10px] font-mono font-bold text-slate-400 uppercase tracking-wider">
+                  Sistem &amp; Server Cloud
+                </div>
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    setActiveTab('TELEMETRY');
+                    setIsNavDrawerOpen(false);
+                  }}
+                  className={`w-full p-3 rounded-2xl text-xs font-bold transition flex items-center justify-between gap-3 cursor-pointer ${
+                    activeTab === 'TELEMETRY'
+                      ? 'bg-indigo-600 text-white shadow-md'
+                      : 'bg-slate-800/60 hover:bg-slate-800 text-slate-300 hover:text-white'
+                  }`}
+                >
+                  <div className="flex items-center gap-3">
+                    <Database className="w-4 h-4 text-emerald-400" />
+                    <span>Monitor Kuota Cloud &amp; Log</span>
+                  </div>
+                  <span className="text-[10px] text-emerald-400 font-mono">Firestore</span>
+                </button>
+              </div>
+
+            </div>
+
+            {/* Drawer Footer Actions */}
+            <div className="p-4 bg-slate-950 border-t border-slate-800 space-y-2">
+              <button
+                type="button"
+                onClick={() => {
+                  setIsNavDrawerOpen(false);
+                  setShowBroadcastModal(true);
+                }}
+                className="w-full py-2.5 px-3 bg-indigo-600 hover:bg-indigo-500 text-white font-extrabold text-xs rounded-xl transition flex items-center justify-center gap-2 cursor-pointer shadow-xs"
+              >
+                <Megaphone className="w-4 h-4" />
+                <span>Kirim Pengumuman Massal</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => {
+                  setIsNavDrawerOpen(false);
+                  onExit();
+                }}
+                className="w-full py-2.5 px-3 bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white font-bold text-xs rounded-xl transition flex items-center justify-center gap-2 cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+                <span>Keluar ke Menu Utama</span>
+              </button>
+            </div>
+
           </div>
         </div>
       )}
