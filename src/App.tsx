@@ -766,7 +766,7 @@ export default function App() {
     <div className="min-h-screen bg-slate-50 text-slate-800">
       {/* Admin Forced Mass Refresh Toast for Students */}
       {studentRefreshNotice?.show && (
-        <div className="fixed top-4 inset-x-4 max-w-md mx-auto z-[99999] bg-slate-900/95 backdrop-blur-md text-white border border-indigo-500/50 shadow-2xl rounded-2xl p-4 flex items-start gap-3.5 animate-fade-in select-none">
+        <div className="fixed top-2.5 sm:top-4 inset-x-2.5 sm:inset-x-4 max-w-md mx-auto z-[999999] bg-slate-900/95 backdrop-blur-md text-white border border-indigo-500/50 shadow-2xl rounded-2xl p-4 flex items-start gap-3.5 animate-fade-in select-none">
           <div className="w-9 h-9 rounded-xl bg-indigo-600 flex items-center justify-center shrink-0 shadow-xs">
             <RefreshCw className={`w-5 h-5 text-white ${studentRefreshNotice.type === 'HARD' ? 'animate-spin' : ''}`} />
           </div>

@@ -820,8 +820,8 @@ export default function StudentRegistration({
 
       {/* Admin / Proctor Passcode Modal */}
       {showAdminModal && (
-        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4 z-50 animate-fade-in">
-          <div className="bg-white rounded-2xl border border-slate-200 shadow-xl max-w-sm w-full p-6 relative">
+        <div className="fixed inset-0 bg-slate-900/70 backdrop-blur-sm flex items-center justify-center p-3 sm:p-4 z-[99999] overflow-y-auto animate-fade-in">
+          <div className="bg-white rounded-2xl border border-slate-200 shadow-xl max-w-sm w-full p-5 sm:p-6 relative max-h-[90vh] overflow-y-auto my-auto">
             
             {/* Modal Role Switcher */}
             <div className="flex rounded-xl bg-slate-100 p-1 mb-4">

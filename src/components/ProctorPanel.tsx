@@ -936,8 +936,8 @@ export default function ProctorPanel({
 
             {/* Modal Ekspor Nilai Siswa (Multi-Sheet & Terpisah per Mapel) */}
       {showExportGradesModal && (
-        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4 z-50 animate-fade-in">
-          <div className="bg-white rounded-3xl border border-slate-200 shadow-2xl max-w-2xl w-full p-6 sm:p-8 space-y-6 max-h-[90vh] overflow-y-auto scrollbar-thin">
+        <div className="fixed inset-0 bg-slate-900/70 backdrop-blur-sm flex items-center justify-center p-3 sm:p-4 z-[99999] overflow-y-auto animate-fade-in">
+          <div className="bg-white rounded-3xl border border-slate-200 shadow-2xl max-w-2xl w-full p-5 sm:p-8 space-y-6 max-h-[92vh] overflow-y-auto my-auto scrollbar-thin">
             <div className="flex items-center justify-between border-b border-slate-100 pb-4">
               <div className="flex items-center gap-3">
                 <div className="w-11 h-11 rounded-2xl bg-emerald-50 text-emerald-600 flex items-center justify-center font-bold shadow-2xs">
@@ -1074,8 +1074,8 @@ export default function ProctorPanel({
 
       {/* Modal Pindahkan / Koreksi Naskah Siswa */}
       {changeSubjectStudent && (
-        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4 z-50">
-          <div className="bg-white rounded-2xl border border-slate-200 shadow-xl max-w-md w-full p-6 animate-fade-in">
+        <div className="fixed inset-0 bg-slate-900/70 backdrop-blur-sm flex items-center justify-center p-3 sm:p-4 z-[99999] overflow-y-auto animate-fade-in">
+          <div className="bg-white rounded-2xl border border-slate-200 shadow-xl max-w-md w-full p-5 sm:p-6 max-h-[92vh] overflow-y-auto my-auto animate-fade-in">
             <div className="flex items-center justify-between border-b border-slate-100 pb-3 mb-4">
               <h3 className="text-base font-extrabold text-slate-800 flex items-center gap-2">
                 <Shuffle className="w-5 h-5 text-indigo-600" />
@@ -1153,8 +1153,8 @@ export default function ProctorPanel({
 
       {/* PROCTOR BROADCAST ANNOUNCEMENT MODAL */}
       {showBroadcastModal && (
-        <div className="fixed inset-0 bg-slate-900/70 backdrop-blur-xs z-50 animate-fade-in overflow-y-auto p-3 sm:p-6 flex justify-center items-start">
-          <div className="bg-white rounded-3xl shadow-2xl border border-slate-200 p-5 sm:p-7 md:p-8 max-w-xl w-full my-4 sm:my-8 space-y-5 relative">
+        <div className="fixed inset-0 bg-slate-900/70 backdrop-blur-sm z-[999999] animate-fade-in overflow-y-auto p-3 sm:p-6 flex justify-center items-start sm:items-center">
+          <div className="bg-white rounded-3xl shadow-2xl border border-slate-200 p-5 sm:p-7 md:p-8 max-w-xl w-full my-auto space-y-5 relative max-h-[92vh] overflow-y-auto">
             <div className="flex items-center justify-between pb-4 border-b border-slate-100">
               <div className="flex items-center gap-3">
                 <div className="w-10 h-10 rounded-2xl bg-indigo-50 text-indigo-600 flex items-center justify-center font-bold shrink-0">

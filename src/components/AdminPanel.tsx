@@ -8007,8 +8007,8 @@ export default function AdminPanel({
 
     {/* Add Single Student Account Modal */}
     {showAddAccountModal && (
-      <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4 z-50 animate-fade-in">
-        <div className="bg-white rounded-2xl border border-slate-200 shadow-2xl max-w-md w-full p-6 space-y-4">
+      <div className="fixed inset-0 bg-slate-900/70 backdrop-blur-sm flex items-center justify-center p-3 sm:p-4 z-[99999] overflow-y-auto animate-fade-in">
+        <div className="bg-white rounded-2xl border border-slate-200 shadow-2xl max-w-md w-full p-5 sm:p-6 space-y-4 max-h-[92vh] overflow-y-auto my-auto">
           <div className="flex items-center justify-between border-b border-slate-100 pb-3">
             <h3 className="text-base font-extrabold text-slate-900 flex items-center gap-2">
               <UserCheck className="w-5 h-5 text-indigo-600" />
@@ -8112,8 +8112,8 @@ export default function AdminPanel({
 
       {/* Editing Student Detail Modal */}
       {editingStudent && (
-        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4 z-50">
-          <div className="bg-white rounded-2xl border border-slate-200 shadow-xl max-w-sm w-full p-6 animate-fade-in">
+        <div className="fixed inset-0 bg-slate-900/70 backdrop-blur-sm flex items-center justify-center p-3 sm:p-4 z-[99999] overflow-y-auto animate-fade-in">
+          <div className="bg-white rounded-2xl border border-slate-200 shadow-xl max-w-sm w-full p-5 sm:p-6 max-h-[92vh] overflow-y-auto my-auto">
             <h3 className="text-lg font-bold text-slate-800 mb-4 flex items-center gap-2 border-b border-slate-100 pb-3">
               <Edit className="w-5 h-5 text-indigo-5000 text-indigo-500" />
               Edit Data Siswa
@@ -8198,8 +8198,8 @@ export default function AdminPanel({
 
       {/* Modal Tambah Slot Mata Pelajaran Baru */}
       {isAddingSubjectModal && (
-        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4 z-50">
-          <div className="bg-white rounded-2xl border border-slate-200 shadow-xl max-w-md w-full p-6 animate-fade-in">
+        <div className="fixed inset-0 bg-slate-900/70 backdrop-blur-sm flex items-center justify-center p-3 sm:p-4 z-[99999] overflow-y-auto animate-fade-in">
+          <div className="bg-white rounded-2xl border border-slate-200 shadow-xl max-w-md w-full p-5 sm:p-6 max-h-[92vh] overflow-y-auto my-auto">
             <div className="flex items-center justify-between border-b border-slate-100 pb-3 mb-4">
               <h3 className="text-base font-extrabold text-slate-800 flex items-center gap-2">
                 <Plus className="w-5 h-5 text-indigo-600" />
@@ -8323,8 +8323,8 @@ export default function AdminPanel({
 
       {/* Modal Edit Informasi Mata Pelajaran & Penjadwalan Waktu Real-Time WIB */}
       {editingSubjectModal && (
-        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4 z-50">
-          <div className="bg-white rounded-3xl border border-slate-200 shadow-2xl max-w-xl w-full p-6 sm:p-7 max-h-[92vh] overflow-y-auto animate-fade-in space-y-4">
+        <div className="fixed inset-0 bg-slate-900/70 backdrop-blur-sm flex items-center justify-center p-3 sm:p-4 z-[99999] overflow-y-auto animate-fade-in">
+          <div className="bg-white rounded-3xl border border-slate-200 shadow-2xl max-w-xl w-full p-5 sm:p-7 max-h-[92vh] overflow-y-auto my-auto space-y-4">
             <div className="flex items-center justify-between border-b border-slate-100 pb-3">
               <h3 className="text-base font-extrabold text-slate-800 flex items-center gap-2">
                 <Edit className="w-5 h-5 text-indigo-600" />
@@ -8648,8 +8648,8 @@ export default function AdminPanel({
 
       {/* Modal Duplikasi Naskah Ujian (Remidi / Susulan) */}
       {duplicateSubjectModal && (
-        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4 z-50 animate-fade-in">
-          <div className="bg-white rounded-3xl border border-slate-200 shadow-2xl max-w-lg w-full p-6 sm:p-7 space-y-4 max-h-[92vh] overflow-y-auto">
+        <div className="fixed inset-0 bg-slate-900/70 backdrop-blur-sm flex items-center justify-center p-3 sm:p-4 z-[99999] overflow-y-auto animate-fade-in">
+          <div className="bg-white rounded-3xl border border-slate-200 shadow-2xl max-w-lg w-full p-5 sm:p-7 space-y-4 max-h-[92vh] overflow-y-auto my-auto">
             <div className="flex items-center justify-between border-b border-slate-100 pb-3">
               <div className="flex items-center gap-2.5">
                 <div className="w-9 h-9 rounded-xl bg-purple-50 border border-purple-200 flex items-center justify-center text-purple-600 shadow-2xs">
@@ -9420,8 +9420,8 @@ export default function AdminPanel({
 
       {/* Modal Tambah Siswa Manual di Monitoring Tab */}
       {showAddStudentMonitorModal && (
-        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4 z-50 animate-fade-in">
-          <div className="bg-white rounded-2xl border border-slate-200 shadow-2xl max-w-md w-full p-6 space-y-4">
+        <div className="fixed inset-0 bg-slate-900/70 backdrop-blur-sm flex items-center justify-center p-3 sm:p-4 z-[99999] overflow-y-auto animate-fade-in">
+          <div className="bg-white rounded-2xl border border-slate-200 shadow-2xl max-w-md w-full p-5 sm:p-6 space-y-4 max-h-[92vh] overflow-y-auto my-auto">
             <div className="flex items-center justify-between border-b border-slate-100 pb-3">
               <h3 className="text-base font-extrabold text-slate-900 flex items-center gap-2">
                 <Plus className="w-5 h-5 text-indigo-600" />
@@ -9518,8 +9518,8 @@ export default function AdminPanel({
 
             {/* Modal Ekspor Nilai Siswa (Multi-Sheet & Terpisah per Mapel) */}
       {showExportGradesModal && (
-        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4 z-50 animate-fade-in">
-          <div className="bg-white rounded-3xl border border-slate-200 shadow-2xl max-w-2xl w-full p-6 sm:p-8 space-y-6 max-h-[90vh] overflow-y-auto scrollbar-thin">
+        <div className="fixed inset-0 bg-slate-900/70 backdrop-blur-sm flex items-center justify-center p-3 sm:p-4 z-[99999] overflow-y-auto animate-fade-in">
+          <div className="bg-white rounded-3xl border border-slate-200 shadow-2xl max-w-2xl w-full p-5 sm:p-8 space-y-6 max-h-[92vh] overflow-y-auto my-auto scrollbar-thin">
             {/* Header Modal */}
             <div className="flex items-center justify-between border-b border-slate-100 pb-4">
               <div className="flex items-center gap-3">
@@ -9667,8 +9667,8 @@ export default function AdminPanel({
 
       {/* BROADCAST ANNOUNCEMENT MODAL */}
       {showBroadcastModal && (
-        <div className="fixed inset-0 bg-slate-900/70 backdrop-blur-xs z-50 animate-fade-in overflow-y-auto p-3 sm:p-6 flex justify-center items-start">
-          <div className="bg-white rounded-3xl shadow-2xl border border-slate-200 p-5 sm:p-7 md:p-8 max-w-2xl w-full my-4 sm:my-8 space-y-5 relative">
+        <div className="fixed inset-0 bg-slate-900/70 backdrop-blur-sm z-[999999] animate-fade-in overflow-y-auto p-3 sm:p-6 flex justify-center items-start sm:items-center">
+          <div className="bg-white rounded-3xl shadow-2xl border border-slate-200 p-5 sm:p-7 md:p-8 max-w-2xl w-full my-auto space-y-5 relative max-h-[92vh] overflow-y-auto">
             {/* Modal Header */}
             <div className="flex items-center justify-between pb-4 border-b border-slate-100">
               <div className="flex items-center gap-3">

@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Play, AlertTriangle, Wifi, WifiOff, CloudOff, ShieldAlert, KeyRound, Clock, ChevronLeft, ChevronRight, CheckSquare, Send, CheckCircle, CheckCircle2, RefreshCw, Check, Radio, Ticket, Lock, Unlock, BellOff, Smartphone, Volume2, Info, BookOpen, Megaphone, X, ChevronDown, ChevronUp, Maximize2, Minimize2 } from 'lucide-react';
+import { Play, AlertTriangle, Wifi, WifiOff, CloudOff, ShieldAlert, KeyRound, Clock, ChevronLeft, ChevronRight, CheckSquare, Send, CheckCircle, CheckCircle2, RefreshCw, Check, Radio, Ticket, Lock, Unlock, BellOff, Smartphone, Volume2, Info, BookOpen, Megaphone, X, ChevronDown, ChevronUp, Maximize2, Minimize2, LayoutGrid } from 'lucide-react';
 import { Student, Question, ExamConfig, BroadcastAnnouncement } from '../types';
 import { getStudentFromServer, getExamSubjects } from '../utils/sync';
 import { RichExamContent } from './RichExamContent';
@@ -84,6 +84,7 @@ export default function StudentExam({
   const [violationToast, setViolationToast] = useState<{ message: string; count: number; max: number } | null>(null);
   const [dndConfirmed, setDndConfirmed] = useState(false);
   const [isTestingAudio, setIsTestingAudio] = useState(false);
+  const [showQuestionGridDrawer, setShowQuestionGridDrawer] = useState(false);
 
   const handleTestAudioInExam = () => {
     if (isTestingAudio) {
@@ -1275,7 +1276,7 @@ export default function StudentExam({
         const isTargetedToMe = displayedAnnouncement.targetStudentId && displayedAnnouncement.targetStudentId === student.id;
 
         return (
-          <div className="fixed top-4 right-4 left-4 sm:left-auto sm:max-w-md z-40 animate-fade-in notranslate select-none" translate="no">
+          <div className="fixed top-2.5 sm:top-4 right-2.5 left-2.5 sm:left-auto sm:right-4 sm:max-w-md z-[999999] animate-fade-in notranslate select-none" translate="no">
             <div className={`backdrop-blur-md text-white rounded-2xl shadow-2xl p-4 sm:p-5 space-y-3 ${
               isTargetedToMe
                 ? 'bg-gradient-to-br from-slate-950 via-slate-900 to-amber-950/90 border-2 border-amber-400 shadow-amber-500/20'
@@ -1454,9 +1455,24 @@ export default function StudentExam({
               </button>
             )}
 
+            {/* Quick Question Jump Grid Button */}
+            <button
+              type="button"
+              id="btn-open-question-grid-drawer"
+              onClick={() => setShowQuestionGridDrawer(true)}
+              className="px-3 py-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded-xl text-xs font-bold transition flex items-center gap-1.5 cursor-pointer shadow-sm border border-indigo-400/40 shrink-0"
+              title="Buka Navigasi Cepat Nomor Soal (Pilih Nomor Soal Langsung)"
+            >
+              <LayoutGrid className="w-4 h-4 text-indigo-200 shrink-0" />
+              <span className="hidden sm:inline">Nomor Soal</span>
+              <span className="px-1.5 py-0.5 bg-indigo-950/80 text-indigo-200 text-[10px] font-mono rounded font-extrabold border border-indigo-500/30">
+                {Object.keys(selectedAnswers).length}/{questions.length}
+              </span>
+            </button>
+
             {/* Timer countdown view */}
-            <div className="flex items-center gap-2 bg-slate-800 border border-slate-700 px-4 py-2 rounded-xl text-yellow-400 font-mono font-bold text-lg min-w-[120px] justify-center shadow-inner">
-              <Clock className="w-5 h-5 shrink-0" />
+            <div className="flex items-center gap-2 bg-slate-800 border border-slate-700 px-3.5 py-2 rounded-xl text-yellow-400 font-mono font-bold text-base sm:text-lg min-w-[110px] sm:min-w-[120px] justify-center shadow-inner">
+              <Clock className="w-4 h-4 sm:w-5 sm:h-5 shrink-0" />
               <span>{formatTime(timeRemaining)}</span>
             </div>
 
@@ -1749,6 +1765,22 @@ export default function StudentExam({
         </div>
       )}
 
+      {/* Floating Quick Access Question Grid Trigger Button (Khusus HP / Mobile) */}
+      {examStatus === 'SEDANG_MENGERJAKAN' && (
+        <button
+          type="button"
+          id="btn-floating-question-grid-trigger"
+          onClick={() => setShowQuestionGridDrawer(true)}
+          className="fixed bottom-6 left-6 z-40 p-3.5 bg-indigo-600 hover:bg-indigo-500 text-white rounded-2xl shadow-2xl border border-indigo-400/50 font-bold text-xs flex items-center gap-2 transition-all duration-200 cursor-pointer active:scale-95 backdrop-blur-md"
+          title="Pilih Nomor Soal Langsung"
+        >
+          <LayoutGrid className="w-5 h-5 text-indigo-100" />
+          <span className="font-mono text-xs font-black">
+            Soal ({Object.keys(selectedAnswers).length}/{questions.length})
+          </span>
+        </button>
+      )}
+
       {/* Floating Quick Access Full Screen Mode Toggle Button */}
       {isFullscreenSupported && examStatus === 'SEDANG_MENGERJAKAN' && (
         <button
@@ -1774,6 +1806,98 @@ export default function StudentExam({
             </>
           )}
         </button>
+      )}
+
+      {/* DEDICATED QUICK QUESTION JUMP DRAWER / MODAL */}
+      {showQuestionGridDrawer && (
+        <div className="fixed inset-0 bg-slate-950/80 backdrop-blur-md z-[999999] flex items-center justify-center p-3 sm:p-4 animate-fade-in notranslate select-none" translate="no">
+          <div className="bg-slate-900 border border-slate-700 text-white rounded-3xl max-w-lg w-full p-4 sm:p-6 shadow-2xl relative max-h-[90vh] flex flex-col">
+            {/* Drawer Header */}
+            <div className="flex items-center justify-between border-b border-slate-800 pb-3 mb-3.5">
+              <div className="flex items-center gap-2.5">
+                <div className="w-9 h-9 rounded-xl bg-indigo-600 text-white flex items-center justify-center font-bold shadow-xs shrink-0">
+                  <LayoutGrid className="w-5 h-5 text-indigo-100" />
+                </div>
+                <div>
+                  <h3 className="font-extrabold text-sm sm:text-base text-white tracking-tight">Navigasi Cepat Nomor Soal</h3>
+                  <p className="text-[11px] text-slate-400 font-mono">
+                    Terjawab: <strong className="text-emerald-400">{Object.keys(selectedAnswers).length}</strong> dari {questions.length} Soal
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                id="btn-close-question-grid-drawer"
+                onClick={() => setShowQuestionGridDrawer(false)}
+                className="p-2 text-slate-400 hover:text-white bg-slate-800 rounded-xl transition cursor-pointer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {/* Grid Legend */}
+            <div className="flex flex-wrap items-center justify-between gap-2 text-[10px] font-mono mb-3.5 bg-slate-850 p-2.5 rounded-xl border border-slate-700/60">
+              <div className="flex items-center gap-1.5">
+                <span className="w-3 h-3 rounded bg-emerald-500 border border-emerald-400"></span>
+                <span className="text-slate-300">Terjawab</span>
+              </div>
+              <div className="flex items-center gap-1.5">
+                <span className="w-3 h-3 rounded bg-indigo-600 border border-indigo-400"></span>
+                <span className="text-slate-300">Posisi Soal</span>
+              </div>
+              <div className="flex items-center gap-1.5">
+                <span className="w-3 h-3 rounded bg-slate-800 border border-slate-700"></span>
+                <span className="text-slate-400">Belum Diisi</span>
+              </div>
+            </div>
+
+            {/* Scrollable Questions Grid */}
+            <div className="flex-1 overflow-y-auto pr-1">
+              <div className="grid grid-cols-5 sm:grid-cols-8 gap-2">
+                {questions.map((q, idx) => {
+                  const qAns = selectedAnswers[q.id];
+                  const isAnswered = qAns !== undefined && qAns !== null && (!Array.isArray(qAns) || qAns.length > 0);
+                  const isCurrent = idx === currentQuestionIndex;
+
+                  return (
+                    <button
+                      key={`modal_q_${q.id}`}
+                      type="button"
+                      id={`btn-grid-jump-${idx}`}
+                      onClick={() => {
+                        setCurrentQuestionIndex(idx);
+                        setShowQuestionGridDrawer(false);
+                      }}
+                      className={`py-3.5 rounded-xl font-mono text-sm font-extrabold border transition-all cursor-pointer flex flex-col items-center justify-center gap-0.5 active:scale-95 ${
+                        isCurrent
+                          ? 'bg-indigo-600 text-white border-indigo-400 ring-2 ring-indigo-400 shadow-md'
+                          : isAnswered
+                          ? 'bg-emerald-600/90 hover:bg-emerald-500 text-white border-emerald-500 shadow-xs'
+                          : 'bg-slate-800/90 hover:bg-slate-700 text-slate-300 border-slate-700'
+                      }`}
+                    >
+                      <span>{(idx + 1).toString().padStart(2, '0')}</span>
+                      {isAnswered && (
+                        <span className="w-1.5 h-1.5 rounded-full bg-white"></span>
+                      )}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
+            {/* Bottom Close Action */}
+            <div className="pt-3 border-t border-slate-800 mt-3">
+              <button
+                type="button"
+                onClick={() => setShowQuestionGridDrawer(false)}
+                className="w-full py-3 bg-slate-800 hover:bg-slate-700 text-white font-bold text-xs rounded-xl transition cursor-pointer"
+              >
+                Tutup & Kembali ke Lembar Soal
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );
