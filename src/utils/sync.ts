@@ -510,28 +510,66 @@ onSnapshot(
     if (!snapshot.empty) {
       recordFirestoreRead(snapshot.size, 'QUESTIONS_SYNC', 'questions', `Mengunduh ${snapshot.size} butir bank soal aktif`);
       const list: Question[] = [];
-      snapshot.forEach((doc) => {
-        const q = doc.data();
-        list.push(sanitizeQuestionItem(q, doc.id));
+      snapshot.forEach((docSnap) => {
+        const q = docSnap.data();
+        list.push(sanitizeQuestionItem(q, docSnap.id));
       });
-      // Sort to preserve original list index / ID structure safely
       list.sort((a, b) => String(a.id || '').localeCompare(String(b.id || '')));
+
+      // Safe cache protection: Check if local storage has MORE questions than Firestore snapshot returned
+      const cached = getStored<Question[]>(QUESTIONS_KEY, []);
+      if (list.length < cached.length && cached.length > 0) {
+        const remoteIds = new Set(list.map(q => q.id));
+        const missingLocal = cached.filter(q => !remoteIds.has(q.id));
+        if (missingLocal.length > 0) {
+          const merged = [...list, ...missingLocal.map((q, idx) => sanitizeQuestionItem(q, `q_cached_${idx}`))];
+          merged.sort((a, b) => String(a.id || '').localeCompare(String(b.id || '')));
+          localQuestions = merged;
+          localStorage.setItem(QUESTIONS_KEY, JSON.stringify(merged));
+          initialSyncCompleted.questions = true;
+          notifySubscribers('SYNC_QUESTIONS');
+          saveQuestions(merged, false).catch(e => console.warn('Silent upload of merged cached questions to cloud:', e));
+          return;
+        }
+      }
 
       localQuestions = list;
       localStorage.setItem(QUESTIONS_KEY, JSON.stringify(list));
       initialSyncCompleted.questions = true;
       notifySubscribers('SYNC_QUESTIONS');
     } else {
-      // Questions bank snapshot is empty. Preserve cached questions if available to prevent accidental drops
+      // Questions bank snapshot is empty from Firestore
       const cached = getStored<Question[]>(QUESTIONS_KEY, []);
       if (cached.length > 0) {
-        localQuestions = cached.map((q, idx) => sanitizeQuestionItem(q, `q_cached_${idx}`));
-      } else {
-        localQuestions = [];
-        localStorage.setItem(QUESTIONS_KEY, JSON.stringify([]));
+        const restored = cached.map((q, idx) => sanitizeQuestionItem(q, `q_cached_${idx}`));
+        localQuestions = restored;
+        localStorage.setItem(QUESTIONS_KEY, JSON.stringify(restored));
+        initialSyncCompleted.questions = true;
+        notifySubscribers('SYNC_QUESTIONS');
+        saveQuestions(restored, false).catch(e => console.warn('Silent upload of cached questions to empty cloud:', e));
+        return;
       }
+
+      // No cached questions. Check seedMeta in Firestore
+      try {
+        const seedSnap = await getDoc(doc(db, 'config', 'seedMeta'));
+        if (seedSnap.exists() && seedSnap.data()?.questionsInitialized === true) {
+          // Admin explicitly cleared all questions
+          localQuestions = [];
+          localStorage.setItem(QUESTIONS_KEY, JSON.stringify([]));
+          initialSyncCompleted.questions = true;
+          notifySubscribers('SYNC_QUESTIONS');
+          return;
+        }
+      } catch (e) {}
+
+      // Initial installation seeding fallback
+      const initialList = INITIAL_QUESTIONS.map((q, idx) => sanitizeQuestionItem(q, `q_init_${idx}`));
+      localQuestions = initialList;
+      localStorage.setItem(QUESTIONS_KEY, JSON.stringify(initialList));
       initialSyncCompleted.questions = true;
       notifySubscribers('SYNC_QUESTIONS');
+      saveQuestions(initialList, false).catch(e => console.warn('Silent seeding of initial questions:', e));
     }
   },
   (error) => {
@@ -866,42 +904,200 @@ export async function saveExamConfig(config: ExamConfig, broadcast = true): Prom
 
 // Reset/Update entire bank of questions
 export async function saveQuestions(questions: Question[], broadcast = true): Promise<void> {
-  localQuestions = questions;
-  localStorage.setItem(QUESTIONS_KEY, JSON.stringify(questions));
+  const sanitized = questions.map((q, idx) => sanitizeQuestionItem(q, `q_${Date.now()}_${idx}`));
+  localQuestions = sanitized;
+  try {
+    localStorage.setItem(QUESTIONS_KEY, JSON.stringify(sanitized));
+  } catch (e) {
+    console.warn('Failed to save questions to localStorage:', e);
+  }
   if (broadcast) notifySubscribers('SYNC_QUESTIONS');
 
   try {
     const existingSnap = await getDocs(collection(db, 'questions'));
     const existingIds = new Set<string>();
-    existingSnap.forEach((doc) => existingIds.add(doc.id));
+    existingSnap.forEach((docSnap) => existingIds.add(docSnap.id));
 
-    const batch = writeBatch(db);
-    
-    // Save/update questions
-    questions.forEach((q) => {
-      const ref = doc(db, 'questions', q.id);
-      batch.set(ref, sanitizeForFirestore(q));
-      existingIds.delete(q.id);
-    });
+    const CHUNK_SIZE = 200;
+    const idsToKeep = new Set(sanitized.map((q) => q.id));
+    const idsToDelete = Array.from(existingIds).filter((id) => !idsToKeep.has(id));
 
-    // Clean up deleted ones
-    existingIds.forEach((id) => {
-      const ref = doc(db, 'questions', id);
-      batch.delete(ref);
-    });
+    // Save/update questions in batches of 200
+    for (let i = 0; i < sanitized.length; i += CHUNK_SIZE) {
+      const chunk = sanitized.slice(i, i + CHUNK_SIZE);
+      const batch = writeBatch(db);
+      chunk.forEach((q) => {
+        const ref = doc(db, 'questions', q.id);
+        batch.set(ref, sanitizeForFirestore(q));
+      });
+      await batch.commit();
+    }
 
-    // Mark seedMeta so empty questions are NEVER re-seeded
-    batch.set(doc(db, 'config', 'seedMeta'), {
+    // Clean up deleted ones in batches of 200
+    for (let i = 0; i < idsToDelete.length; i += CHUNK_SIZE) {
+      const chunk = idsToDelete.slice(i, i + CHUNK_SIZE);
+      const batch = writeBatch(db);
+      chunk.forEach((id) => {
+        batch.delete(doc(db, 'questions', id));
+      });
+      await batch.commit();
+    }
+
+    // Mark seedMeta so empty questions are tracked correctly
+    await setDoc(doc(db, 'config', 'seedMeta'), {
       questionsInitialized: true,
       lastUpdated: new Date().toISOString(),
-      count: questions.length
+      count: sanitized.length
     });
 
-    await batch.commit();
-    recordFirestoreWrite(questions.length, 'SAVE_QUESTIONS', 'questions', `Menyimpan ${questions.length} butir bank soal ke cloud`);
+    recordFirestoreWrite(sanitized.length, 'SAVE_QUESTIONS', 'questions', `Menyimpan ${sanitized.length} butir bank soal ke cloud`);
+    
+    // Automatically trigger non-blocking Checkpoint & Write-Back to Cloud
+    saveQuestionCheckpoint(sanitized, 'AUTO_WRITEBACK').catch((e) => console.warn('Silent checkpoint save warning:', e));
   } catch (err) {
     handleFirestoreError(err, OperationType.WRITE, 'questions');
   }
+}
+
+// -------------------------------------------------------------
+// QUESTION BANK CHECKPOINT & WRITE-BACK DRAFT SYSTEM
+// -------------------------------------------------------------
+const CHECKPOINT_KEY = 'proktor_questions_checkpoint';
+const CHECKPOINT_META_KEY = 'proktor_questions_checkpoint_meta';
+
+export interface QuestionCheckpointMeta {
+  count: number;
+  timestamp: string;
+  formattedTime: string;
+  source: 'MANUAL' | 'AUTO_WRITEBACK' | 'IMPORT';
+}
+
+let memoryCheckpointMeta: QuestionCheckpointMeta | null = getStored<QuestionCheckpointMeta | null>(CHECKPOINT_META_KEY, null);
+
+export function getQuestionCheckpointMeta(): QuestionCheckpointMeta | null {
+  return memoryCheckpointMeta;
+}
+
+// 1. Instant local checkpoint save + background cloud write-back
+export async function saveQuestionCheckpoint(
+  questions: Question[],
+  source: 'MANUAL' | 'AUTO_WRITEBACK' | 'IMPORT' = 'AUTO_WRITEBACK'
+): Promise<void> {
+  if (!questions) return;
+  const sanitized = questions.map((q, idx) => sanitizeQuestionItem(q, `q_cp_${idx}`));
+  const now = new Date();
+  const meta: QuestionCheckpointMeta = {
+    count: sanitized.length,
+    timestamp: now.toISOString(),
+    formattedTime: now.toLocaleTimeString('id-ID', { hour12: false }) + ' WIB',
+    source
+  };
+
+  memoryCheckpointMeta = meta;
+
+  // Instant local checkpoint write (0ms latency, 100% offline-safe)
+  try {
+    localStorage.setItem(CHECKPOINT_KEY, JSON.stringify(sanitized));
+    localStorage.setItem(CHECKPOINT_META_KEY, JSON.stringify(meta));
+  } catch (e) {
+    console.warn('LocalStorage error saving question checkpoint:', e);
+  }
+
+  notifySubscribers('SYNC_CHECKPOINT');
+
+  // Background Cloud Write-Back to Firestore
+  try {
+    const safeData = sanitizeForFirestore({
+      questions: sanitized,
+      meta,
+      updatedAt: now.toISOString()
+    });
+
+    await setDoc(doc(db, 'config', 'questionCheckpoint'), safeData);
+    recordFirestoreWrite(1, 'SAVE_QUESTION_CHECKPOINT', 'config/questionCheckpoint', `Checkpoint write-back (${sanitized.length} soal)`);
+  } catch (err) {
+    console.warn('Cloud write-back of question checkpoint failed:', err);
+  }
+}
+
+// Debounced Write-Back timer
+let writeBackTimer: any = null;
+
+export function debounceWriteBackQuestionCheckpoint(
+  questions: Question[],
+  delayMs = 1500,
+  source: 'MANUAL' | 'AUTO_WRITEBACK' | 'IMPORT' = 'AUTO_WRITEBACK'
+): void {
+  if (!questions) return;
+  const sanitized = questions.map((q, idx) => sanitizeQuestionItem(q, `q_cp_${idx}`));
+  
+  // 1. Save locally in 0ms
+  try {
+    localStorage.setItem(CHECKPOINT_KEY, JSON.stringify(sanitized));
+    const now = new Date();
+    const meta: QuestionCheckpointMeta = {
+      count: sanitized.length,
+      timestamp: now.toISOString(),
+      formattedTime: now.toLocaleTimeString('id-ID', { hour12: false }) + ' WIB',
+      source
+    };
+    memoryCheckpointMeta = meta;
+    localStorage.setItem(CHECKPOINT_META_KEY, JSON.stringify(meta));
+  } catch (e) {}
+
+  notifySubscribers('SYNC_CHECKPOINT');
+
+  // 2. Debounce cloud write-back
+  if (writeBackTimer) clearTimeout(writeBackTimer);
+  writeBackTimer = setTimeout(() => {
+    saveQuestionCheckpoint(sanitized, source).catch(e => console.warn('Debounced write-back error:', e));
+  }, delayMs);
+}
+
+// 2. Restore questions from Checkpoint (Tries Local first, falls back to Cloud)
+export async function restoreQuestionsFromCheckpoint(): Promise<{ success: boolean; count: number; message: string; source: 'LOCAL' | 'CLOUD' }> {
+  // A. Check local checkpoint first
+  try {
+    const localCp = getStored<Question[]>(CHECKPOINT_KEY, []);
+    if (localCp.length > 0) {
+      const restored = localCp.map((q, idx) => sanitizeQuestionItem(q, `q_restored_${idx}`));
+      await saveQuestions(restored, true);
+      return {
+        success: true,
+        count: restored.length,
+        message: `Berhasil memulihkan ${restored.length} butir soal dari Checkpoint Lokal!`,
+        source: 'LOCAL'
+      };
+    }
+  } catch (e) {}
+
+  // B. Fallback to Cloud Checkpoint
+  try {
+    const snap = await getDoc(doc(db, 'config', 'questionCheckpoint'));
+    if (snap.exists()) {
+      recordFirestoreRead(1, 'FETCH_CHECKPOINT', 'config/questionCheckpoint', 'Mengunduh checkpoint naskah soal dari cloud');
+      const data = snap.data();
+      if (Array.isArray(data?.questions) && data.questions.length > 0) {
+        const restored = (data.questions as Question[]).map((q, idx) => sanitizeQuestionItem(q, `q_cloud_cp_${idx}`));
+        await saveQuestions(restored, true);
+        return {
+          success: true,
+          count: restored.length,
+          message: `Berhasil memulihkan ${restored.length} butir soal dari Checkpoint Cloud Firestore!`,
+          source: 'CLOUD'
+        };
+      }
+    }
+  } catch (err) {
+    console.warn('Error fetching checkpoint from cloud:', err);
+  }
+
+  return {
+    success: false,
+    count: 0,
+    message: 'Tidak ditemukan berkas checkpoint di lokal maupun cloud.',
+    source: 'CLOUD'
+  };
 }
 
 // Save/Synchronize student user database in chunks of 200 users (handles 1,200+ accounts in ~6 fast doc writes)

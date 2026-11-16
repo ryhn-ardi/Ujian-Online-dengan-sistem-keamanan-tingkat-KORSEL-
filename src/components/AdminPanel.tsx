@@ -1,5 +1,5 @@
 import React, { useState, useRef } from 'react';
-import { Users, FileSpreadsheet, RefreshCw, KeyRound, Edit, Trash2, Plus, Save, BookOpen, Clock, X, ChevronRight, Check, AlertTriangle, ShieldCheck, Search, Eye, EyeOff, Layers, Settings2, Sparkles, Ticket, Download, Upload, Shuffle, UserCheck, Lock, CheckCircle2, ChevronLeft, Image as ImageIcon, AlignLeft, HelpCircle, FileText, Calendar, Timer, CheckSquare, Radio, BarChart3, Volume2, VolumeX, Music, FileAudio, AlertCircle, Copy, SlidersHorizontal, Megaphone, Bell, Activity, Database, Server, Terminal, FileCode, Menu, ChevronDown, ChevronUp } from 'lucide-react';
+import { Users, FileSpreadsheet, RefreshCw, KeyRound, Edit, Trash2, Plus, Save, BookOpen, Clock, X, ChevronRight, Check, AlertTriangle, ShieldCheck, Search, Eye, EyeOff, Layers, Settings2, Sparkles, Ticket, Download, Upload, Shuffle, UserCheck, Lock, CheckCircle2, ChevronLeft, Image as ImageIcon, AlignLeft, HelpCircle, FileText, Calendar, Timer, CheckSquare, Radio, BarChart3, Volume2, VolumeX, Music, FileAudio, AlertCircle, Copy, SlidersHorizontal, Megaphone, Bell, Activity, Database, Server, Terminal, FileCode, Menu, ChevronDown, ChevronUp, RotateCcw } from 'lucide-react';
 import * as XLSX from 'xlsx';
 import { Student, Question, ExamConfig, ExamSubject, StudentUser, ProctorPermissions, BroadcastAnnouncement } from '../types';
 import { DEFAULT_PROCTOR_PERMISSIONS } from '../data';
@@ -20,7 +20,11 @@ import {
   SPARK_DAILY_WRITE_LIMIT,
   FirestoreStats,
   FirestoreLogEntry,
-  subscribeToSync
+  subscribeToSync,
+  saveQuestionCheckpoint,
+  restoreQuestionsFromCheckpoint,
+  getQuestionCheckpointMeta,
+  QuestionCheckpointMeta
 } from '../utils/sync';
 import { RichExamContent } from './RichExamContent';
 import { compressImageFile } from '../utils/imageCompressor';
@@ -128,16 +132,58 @@ export default function AdminPanel({
   const [logFilter, setLogFilter] = useState<'ALL' | 'ERROR' | 'WRITE' | 'READ' | 'ECO'>('ALL');
   const [logSearch, setLogSearch] = useState<string>('');
 
-  // Subscribe to real-time telemetry changes
+  // Subscribe to real-time telemetry and checkpoint changes
   React.useEffect(() => {
     const unsub = subscribeToSync((type) => {
-      if (type === 'SYNC_TELEMETRY' || type === 'SYNC_STUDENTS' || type === 'SYNC_CONFIG') {
+      if (type === 'SYNC_TELEMETRY' || type === 'SYNC_STUDENTS' || type === 'SYNC_CONFIG' || type === 'SYNC_CHECKPOINT') {
         setTelemetryStats(getFirestoreStats());
         setTelemetryLogs(getFirestoreLogs());
+        setCheckpointMeta(getQuestionCheckpointMeta());
       }
     });
     return () => unsub();
   }, []);
+
+  // Checkpoint & Write-back state
+  const [checkpointMeta, setCheckpointMeta] = useState<QuestionCheckpointMeta | null>(() => getQuestionCheckpointMeta());
+  const [isCreatingCheckpoint, setIsCreatingCheckpoint] = useState(false);
+  const [isRestoringCheckpoint, setIsRestoringCheckpoint] = useState(false);
+  const [checkpointNotice, setCheckpointNotice] = useState<string>('');
+
+  const handleManualCreateCheckpoint = async () => {
+    setIsCreatingCheckpoint(true);
+    try {
+      await saveQuestionCheckpoint(questions, 'MANUAL');
+      const updatedMeta = getQuestionCheckpointMeta();
+      setCheckpointMeta(updatedMeta);
+      setCheckpointNotice(`✨ Checkpoint cloud baru berhasil dibuat (${questions.length} butir soal, ${updatedMeta?.formattedTime || 'WIB'})!`);
+      setTimeout(() => setCheckpointNotice(''), 4000);
+    } catch (err: any) {
+      alert(`Gagal membuat checkpoint: ${err.message || err}`);
+    } finally {
+      setIsCreatingCheckpoint(false);
+    }
+  };
+
+  const handleRestoreFromCheckpoint = async () => {
+    if (!confirm('Apakah Anda yakin ingin memulihkan bank soal dari Checkpoint / Draft Cloud terbaru? Naskah soal saat ini akan disinkronkan kembali dari checkpoint.')) {
+      return;
+    }
+    setIsRestoringCheckpoint(true);
+    try {
+      const res = await restoreQuestionsFromCheckpoint();
+      if (res.success) {
+        setCheckpointNotice(`✅ ${res.message}`);
+        setTimeout(() => setCheckpointNotice(''), 5000);
+      } else {
+        alert(`⚠️ ${res.message}`);
+      }
+    } catch (err: any) {
+      alert(`Gagal memulihkan checkpoint: ${err.message || err}`);
+    } finally {
+      setIsRestoringCheckpoint(false);
+    }
+  };
 
   // Search filter query
   const [studentSearch, setStudentSearch] = useState('');
@@ -4071,6 +4117,65 @@ export default function AdminPanel({
         {/* TAB 2: BANK SOAL */}
         {activeTab === 'QUESTIONS' && (
           <div className="space-y-6">
+            {/* CLOUD WRITE-BACK & DRAFT CHECKPOINT BAR */}
+            <div className="bg-gradient-to-r from-slate-900 via-indigo-950 to-slate-900 text-white p-5 rounded-2xl border border-indigo-500/30 shadow-lg flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
+              <div className="flex items-center gap-3.5">
+                <div className="w-11 h-11 rounded-2xl bg-indigo-600/30 border border-indigo-400/30 text-indigo-300 flex items-center justify-center shrink-0 shadow-inner">
+                  <RotateCcw className="w-5 h-5 text-indigo-300 animate-pulse" />
+                </div>
+                <div>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <h4 className="font-extrabold text-sm sm:text-base text-white tracking-tight">Cloud Write-Back & Checkpointing System</h4>
+                    <span className="px-2.5 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 text-[10px] font-mono font-bold flex items-center gap-1.5">
+                      <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-ping"></span>
+                      Aktif & Auto-Save
+                    </span>
+                  </div>
+                  <p className="text-xs text-slate-300 mt-1 font-mono">
+                    {checkpointMeta ? (
+                      <>
+                        Checkpoint Terakhir: <strong className="text-amber-300 font-bold">{checkpointMeta.count} Soal</strong> ({checkpointMeta.formattedTime}) &bull; Tersimpan Otomatis di Firestore
+                      </>
+                    ) : (
+                      'Setiap perubahan soal akan otomatis disinkronkan secara real-time ke Checkpoint Draft Firestore.'
+                    )}
+                  </p>
+                </div>
+              </div>
+
+              <div className="flex flex-wrap items-center gap-2.5 self-end md:self-auto shrink-0">
+                <button
+                  type="button"
+                  id="btn-manual-checkpoint"
+                  onClick={handleManualCreateCheckpoint}
+                  disabled={isCreatingCheckpoint}
+                  className="px-3.5 py-2.5 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white font-extrabold text-xs rounded-xl transition flex items-center gap-1.5 shadow-sm cursor-pointer"
+                  title="Buat checkpoint naskah soal saat ini secara instan ke Cloud Firestore"
+                >
+                  <Save className="w-4 h-4" />
+                  {isCreatingCheckpoint ? 'Menyimpan...' : 'Buat Checkpoint Now'}
+                </button>
+                <button
+                  type="button"
+                  id="btn-restore-checkpoint"
+                  onClick={handleRestoreFromCheckpoint}
+                  disabled={isRestoringCheckpoint}
+                  className="px-3.5 py-2.5 bg-amber-500 hover:bg-amber-400 disabled:opacity-50 text-slate-950 font-black text-xs rounded-xl transition flex items-center gap-1.5 shadow-sm cursor-pointer"
+                  title="Tarik kembali data soal dari Checkpoint Cloud/Lokal jika data ter-reset"
+                >
+                  <RotateCcw className="w-4 h-4" />
+                  {isRestoringCheckpoint ? 'Memulihkan...' : 'Pulihkan Checkpoint'}
+                </button>
+              </div>
+            </div>
+
+            {checkpointNotice && (
+              <div className="p-3.5 bg-emerald-950/80 border border-emerald-500/50 text-emerald-200 text-xs font-bold rounded-2xl flex items-center gap-2.5 animate-fade-in shadow-md">
+                <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
+                <span>{checkpointNotice}</span>
+              </div>
+            )}
+
             {/* Header Bank Soal */}
             <div className="flex flex-col md:flex-row items-start md:items-center justify-between gap-4 bg-white p-6 rounded-2xl border border-slate-200">
               <div>
