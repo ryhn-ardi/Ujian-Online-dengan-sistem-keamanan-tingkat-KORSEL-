@@ -21,8 +21,9 @@ import {
   refreshQuestionsFromServer,
   getStudentFromServer
 } from './utils/sync';
-import { Student, Question, ExamConfig, StudentStatus, StudentUser, BroadcastAnnouncement, ExamSubject } from './types';
+import { Student, Question, ExamConfig, StudentStatus, StudentUser, BroadcastAnnouncement, ExamSubject, ViolationCategory } from './types';
 import { isSubjectMatchingStudentClass, doesQuestionBelongToSubject, isSameStudentAccount } from './utils/gradeHelper';
+import { createViolationLogEntry, formatViolationTime, getViolationCategoryMeta } from './utils/violationHelper';
 import StudentRegistration from './components/StudentRegistration';
 import StudentExam from './components/StudentExam';
 import AdminPanel from './components/AdminPanel';
@@ -456,6 +457,7 @@ export default function App() {
             isRemedial: true,
             status: 'BELUM_MULAI',
             violationCount: 0,
+            violationLogs: [],
             lockedReason: undefined,
             answers: {},
             score: undefined,
@@ -576,25 +578,36 @@ export default function App() {
     }
   };
 
-  // 4. STUDENT FLOW: Violation detection (Strict lock trigger)
-  const handleStudentViolation = (reason: string) => {
+  // 4. STUDENT FLOW: Violation detection (Strict lock OR Passive detailed logging without lock)
+  const handleStudentViolation = (reason: string, category: ViolationCategory = 'OTHER') => {
     const freshStudents = getStudents(); // pull fresh to preserve parallel answers
     const active = freshStudents.find((s) => s.id === currentStudentId);
-    if (active) {
-      if (reason === 'unlocked_locally') {
-        const updatedActive: Student = {
-          ...active,
-          status: 'SEDANG_MENGERJAKAN',
-          violationCount: 0,
-          lockedReason: undefined
-        };
-        saveSingleStudent(updatedActive);
-        return;
-      }
+    if (!active) return;
 
+    if (reason === 'unlocked_locally') {
+      const updatedActive: Student = {
+        ...active,
+        status: 'SEDANG_MENGERJAKAN',
+        violationCount: 0,
+        violationLogs: [],
+        lockedReason: undefined
+      };
+      saveSingleStudent(updatedActive);
+      setStudents(prev => prev.map(s => s.id === updatedActive.id ? updatedActive : s));
+      return;
+    }
+
+    const isStrict = config.strictSecurityEnabled !== false;
+    const isPassiveLogging = !isStrict && config.passiveViolationLoggingEnabled !== false;
+    if (!isStrict && !isPassiveLogging) return;
+
+    const newLog = createViolationLogEntry(reason, category, isStrict ? 'STRICT' : 'PASSIVE');
+    const updatedLogs = [...(active.violationLogs || []), newLog].slice(-100);
+    const nextViolationCount = (active.violationCount || 0) + 1;
+
+    if (isStrict) {
       const tolerance = config.maxAllowedViolations !== undefined ? config.maxAllowedViolations : 3;
       const maxAllowed = (active.tokenUnlockCount && active.tokenUnlockCount > 0) ? 1 : tolerance;
-      const nextViolationCount = (active.violationCount || 0) + 1;
 
       if (nextViolationCount >= maxAllowed) {
         // Lock exam immediately
@@ -603,19 +616,36 @@ export default function App() {
           status: 'TERKUNCI',
           lockedReason: reason,
           violationCount: nextViolationCount,
+          violationLogs: updatedLogs,
           answers: config.clearAnswersOnViolation ? {} : active.answers, // Wipe answers if option is active
           lastActive: new Date().toISOString()
         };
         saveSingleStudent(updatedActive);
+        setStudents(prev => prev.map(s => s.id === updatedActive.id ? updatedActive : s));
       } else {
-        // Just increment violation count and save, letting him continue with warning
+        // Just increment violation count and save detailed log, letting student continue with warning
         const updatedActive: Student = {
           ...active,
           violationCount: nextViolationCount,
+          violationLogs: updatedLogs,
+          lockedReason: reason,
           lastActive: new Date().toISOString()
         };
         saveSingleStudent(updatedActive);
+        setStudents(prev => prev.map(s => s.id === updatedActive.id ? updatedActive : s));
       }
+    } else {
+      // Passive mode: Record detailed violation log WITHOUT locking screen or wiping answers
+      const updatedActive: Student = {
+        ...active,
+        status: active.status === 'TERKUNCI' ? 'SEDANG_MENGERJAKAN' : active.status,
+        violationCount: nextViolationCount,
+        violationLogs: updatedLogs,
+        lockedReason: reason,
+        lastActive: new Date().toISOString()
+      };
+      saveSingleStudent(updatedActive);
+      setStudents(prev => prev.map(s => s.id === updatedActive.id ? updatedActive : s));
     }
   };
 
@@ -897,8 +927,54 @@ export default function App() {
                         : 'UJIAN UTAMA (Percobaan 1)'}
                     </span>
                   </div>
-                  <div className="flex justify-between"><span className="text-slate-400 font-medium">Status Pengawasan:</span> <span className="text-green-600 font-bold flex items-center gap-1">Lulus Verifikasi ({activeStudent.violationCount} Pelanggaran)</span></div>
+                  <div className="flex justify-between">
+                    <span className="text-slate-400 font-medium">Status Pengawasan:</span>
+                    <span className={`font-bold flex items-center gap-1 ${(activeStudent.violationCount || 0) > 0 ? 'text-amber-600' : 'text-green-600'}`}>
+                      {(activeStudent.violationCount || 0) > 0
+                        ? `Selesai (${activeStudent.violationCount} Pelanggaran Tercatat)`
+                        : 'Bersih (0 Pelanggaran)'}
+                    </span>
+                  </div>
                 </div>
+
+                {/* Detailed Violation Log Summary if any */}
+                {((activeStudent.violationLogs && activeStudent.violationLogs.length > 0) || (activeStudent.violationCount || 0) > 0) && (
+                  <div className="mb-6 text-left bg-amber-50/70 p-4 rounded-2xl border border-amber-200">
+                    <h3 className="text-xs font-bold text-amber-900 font-mono uppercase tracking-wider mb-2.5 flex items-center justify-between">
+                      <span className="flex items-center gap-1.5">
+                        <AlertTriangle className="w-3.5 h-3.5 text-amber-600" />
+                        Catatan Pelanggaran Tercatat
+                      </span>
+                      <span className="px-2 py-0.5 bg-amber-200/80 text-amber-950 rounded text-[10px] font-black">
+                        Total: {activeStudent.violationCount || activeStudent.violationLogs?.length || 0}x
+                      </span>
+                    </h3>
+                    {activeStudent.violationLogs && activeStudent.violationLogs.length > 0 ? (
+                      <div className="space-y-1.5 max-h-48 overflow-y-auto pr-1">
+                        {[...activeStudent.violationLogs].reverse().map((vlog, idx) => {
+                          const meta = getViolationCategoryMeta(vlog.category);
+                          return (
+                            <div key={vlog.id || idx} className="p-2.5 bg-white rounded-xl border border-amber-200/80 text-xs flex flex-col gap-1">
+                              <div className="flex items-center justify-between gap-2 flex-wrap">
+                                <span className={`px-2 py-0.5 rounded-md border text-[10px] font-bold font-mono ${meta.badgeClass}`}>
+                                  {meta.label}
+                                </span>
+                                <span className="text-[10px] text-slate-400 font-mono">
+                                  {formatViolationTime(vlog.timestamp)}
+                                </span>
+                              </div>
+                              <p className="text-slate-700 font-medium text-[11px] leading-snug">{vlog.reason}</p>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    ) : (
+                      <p className="text-xs text-amber-800 font-medium">
+                        Terakhir tercatat: {activeStudent.lockedReason || 'Aktivitas keluar fokus layar ujian'}
+                      </p>
+                    )}
+                  </div>
+                )}
 
                 {/* Real-time score display */}
                 <div className="p-6 bg-slate-900 rounded-2xl text-white">
@@ -1044,6 +1120,7 @@ export default function App() {
                   correctAnswersCount: undefined,
                   totalQuestions: undefined,
                   violationCount: 0,
+                  violationLogs: [],
                   lockedReason: undefined,
                   startTime: undefined,
                   endTime: undefined,
@@ -1064,6 +1141,7 @@ export default function App() {
                   ...s,
                   status: s.status === 'TERKUNCI' ? 'SEDANG_MENGERJAKAN' : s.status,
                   violationCount: 0,
+                  violationLogs: [],
                   lockedReason: undefined,
                   lastActive: new Date().toISOString()
                 };

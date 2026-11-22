@@ -25,12 +25,14 @@ import {
   Send,
   Shuffle,
   Megaphone,
-  Volume2
+  Volume2,
+  History
 } from 'lucide-react';
 import { Student, Question, ExamConfig, ExamSubject, ProctorPermissions, BroadcastAnnouncement } from '../types';
 import { DEFAULT_PROCTOR_PERMISSIONS } from '../data';
 import { getExamSubjects } from '../utils/sync';
 import { playAnnouncementSound } from '../utils/alarmAudio';
+import { getViolationCategoryMeta, formatViolationTime, formatViolationLogsForExport } from '../utils/violationHelper';
 import AnalyticsCharts from './AnalyticsCharts';
 import ItemAnalysisTab from './ItemAnalysisTab';
 
@@ -65,6 +67,7 @@ export default function ProctorPanel({
 }: ProctorPanelProps) {
   const permissions: ProctorPermissions = config.proctorPermissions || DEFAULT_PROCTOR_PERMISSIONS;
   const [changeSubjectStudent, setChangeSubjectStudent] = useState<Student | null>(null);
+  const [inspectViolationStudent, setInspectViolationStudent] = useState<Student | null>(null);
   const [targetNewSubjectId, setTargetNewSubjectId] = useState<string>('');
   // Navigation tabs for proctor: MONITOR (default), CHARTS, ITEM_ANALYSIS
   const [activeTab, setActiveTab] = useState<'MONITOR' | 'CHARTS' | 'ITEM_ANALYSIS'>('MONITOR');
@@ -145,7 +148,8 @@ export default function ProctorPanel({
       'Kelas',
       'Naskah / Mata Pelajaran',
       'Status Ujian',
-      'Pelanggaran (Lock Count)',
+      'Pelanggaran (Jumlah)',
+      'Detail Pelanggaran',
       'Total Benar',
       'Jumlah Soal',
       'Nilai Akhir (%)',
@@ -180,6 +184,7 @@ export default function ProctorPanel({
         subjectName,
         s.status === 'TERKUNCI' ? 'TERKOMPROMISI / TERKUNCI' : s.status,
         s.violationCount || 0,
+        formatViolationLogsForExport(s),
         correctCount,
         totalCount,
         finalScore,
@@ -200,6 +205,7 @@ export default function ProctorPanel({
       { wch: 26 }, // Naskah Soal
       { wch: 24 }, // Status Ujian
       { wch: 16 }, // Pelanggaran
+      { wch: 44 }, // Detail Pelanggaran
       { wch: 12 }, // Total Benar
       { wch: 12 }, // Jumlah Soal
       { wch: 15 }, // Nilai Akhir
@@ -765,13 +771,26 @@ export default function ProctorPanel({
 
                             {/* Violations */}
                             <td className="py-4 px-3 text-center font-mono">
-                              <span
-                                className={`font-black ${
-                                  (s.violationCount || 0) > 0 ? 'text-rose-600' : 'text-slate-400'
-                                }`}
-                              >
-                                {s.violationCount || 0}x
-                              </span>
+                              <div className="flex flex-col items-center gap-1">
+                                <span
+                                  className={`font-black ${
+                                    (s.violationCount || 0) > 0 ? 'text-rose-600' : 'text-slate-400'
+                                  }`}
+                                >
+                                  {s.violationCount || 0}x
+                                </span>
+                                {((s.violationLogs && s.violationLogs.length > 0) || (s.violationCount || 0) > 0) && (
+                                  <button
+                                    type="button"
+                                    onClick={() => setInspectViolationStudent(s)}
+                                    className="px-2 py-0.5 bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 rounded text-[10px] font-bold font-sans flex items-center gap-1 cursor-pointer transition"
+                                    title="Lihat detail bentuk pelanggaran siswa ini"
+                                  >
+                                    <History className="w-3 h-3" />
+                                    <span>Detail ({s.violationLogs?.length || s.violationCount})</span>
+                                  </button>
+                                )}
+                              </div>
                             </td>
 
                             {/* Answers Filled */}
@@ -1280,6 +1299,84 @@ export default function ProctorPanel({
               >
                 <Megaphone className="w-3.5 h-3.5" />
                 <span>Kirim Pengumuman</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* PROCTOR STUDENT VIOLATION DETAIL MODAL */}
+      {inspectViolationStudent && (
+        <div className="fixed inset-0 bg-slate-900/70 backdrop-blur-sm z-[999999] flex items-center justify-center p-3 sm:p-6 animate-fade-in">
+          <div className="bg-white rounded-3xl shadow-2xl border border-slate-200 p-5 sm:p-7 max-w-xl w-full max-h-[88vh] flex flex-col space-y-4">
+            <div className="flex items-start justify-between gap-3 border-b border-slate-100 pb-4">
+              <div className="flex items-center gap-3 min-w-0">
+                <div className="w-10 h-10 rounded-2xl bg-rose-50 text-rose-600 flex items-center justify-center shrink-0">
+                  <History className="w-5 h-5" />
+                </div>
+                <div className="min-w-0">
+                  <h3 className="font-extrabold text-slate-900 text-base truncate">
+                    Riwayat Detil Pelanggaran: {inspectViolationStudent.name}
+                  </h3>
+                  <p className="text-xs text-slate-500 font-mono">
+                    Kelas {inspectViolationStudent.studentClass} • Absen {inspectViolationStudent.absentNumber} • Total {inspectViolationStudent.violationCount || 0}x Pelanggaran
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setInspectViolationStudent(null)}
+                className="p-1.5 text-slate-400 hover:bg-slate-100 rounded-full transition cursor-pointer shrink-0"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="flex-1 overflow-y-auto space-y-2.5 pr-1">
+              {inspectViolationStudent.violationLogs && inspectViolationStudent.violationLogs.length > 0 ? (
+                [...inspectViolationStudent.violationLogs].reverse().map((vlog, idx, arr) => {
+                  const meta = getViolationCategoryMeta(vlog.category);
+                  const no = arr.length - idx;
+                  return (
+                    <div key={vlog.id || idx} className="p-3 bg-slate-50 rounded-2xl border border-slate-200 space-y-1.5">
+                      <div className="flex items-center justify-between gap-2 flex-wrap">
+                        <div className="flex items-center gap-1.5 flex-wrap">
+                          <span className="font-mono font-black text-xs text-slate-500">#{no}</span>
+                          <span className={`px-2 py-0.5 rounded border text-[10px] font-bold font-mono ${meta.badgeClass}`}>
+                            {meta.label}
+                          </span>
+                          <span className={`px-1.5 py-0.5 rounded text-[10px] font-mono font-bold ${
+                            vlog.mode === 'PASSIVE' ? 'bg-amber-100 text-amber-900' : 'bg-rose-100 text-rose-900'
+                          }`}>
+                            {vlog.mode === 'PASSIVE' ? 'Tanpa Kunci' : 'Proktor Ketat'}
+                          </span>
+                        </div>
+                        <span className="text-[11px] font-mono text-slate-500">
+                          {formatViolationTime(vlog.timestamp)}
+                        </span>
+                      </div>
+                      <p className="text-xs font-medium text-slate-800 leading-snug">
+                        {vlog.reason}
+                      </p>
+                    </div>
+                  );
+                })
+              ) : (
+                <div className="p-4 bg-slate-50 rounded-2xl border border-slate-200 text-xs text-slate-600 text-center">
+                  {inspectViolationStudent.lockedReason
+                    ? `Alasan terakhir: ${inspectViolationStudent.lockedReason}`
+                    : 'Belum ada rincian pelanggaran terekam.'}
+                </div>
+              )}
+            </div>
+
+            <div className="pt-3 border-t border-slate-100 flex justify-end">
+              <button
+                type="button"
+                onClick={() => setInspectViolationStudent(null)}
+                className="px-5 py-2 bg-slate-900 hover:bg-slate-800 text-white font-bold text-xs rounded-xl cursor-pointer transition"
+              >
+                Tutup
               </button>
             </div>
           </div>

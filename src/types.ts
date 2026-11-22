@@ -24,6 +24,26 @@ export interface StudentUser {
 
 export type StudentStatus = 'BELUM_MULAI' | 'SEDANG_MENGERJAKAN' | 'TERKUNCI' | 'SELESAI';
 
+export type ViolationCategory =
+  | 'QUICK_CHAT'
+  | 'FLOATING_WINDOW'
+  | 'SPLIT_SCREEN'
+  | 'GOOGLE_LENS'
+  | 'GOOGLE_ASSISTANT'
+  | 'QUICK_SETTINGS'
+  | 'TAB_SWITCH'
+  | 'FULLSCREEN_EXIT'
+  | 'SHORTCUT'
+  | 'OTHER';
+
+export interface ViolationLogEntry {
+  id: string;
+  timestamp: string;
+  reason: string;
+  category: ViolationCategory;
+  mode: 'STRICT' | 'PASSIVE';
+}
+
 export interface StudentAttemptHistory {
   attemptNumber: number;
   attemptType: 'UTAMA' | 'REMIDI';
@@ -42,6 +62,7 @@ export interface Student {
   studentClass: string;
   status: StudentStatus;
   violationCount: number;
+  violationLogs?: ViolationLogEntry[]; // Riwayat detil tiap pelanggaran (Floating Window, Quick Chat, Split Screen, Google Lens, Google Assistant, dll)
   lockedReason?: string;
   score?: number;
   correctAnswersCount?: number;
@@ -108,7 +129,8 @@ export interface ExamConfig {
   subject1Name?: string; // Display name for Subject 1 (legacy compatibility)
   subject2Name?: string; // Display name for Subject 2 (legacy compatibility)
   subjects?: ExamSubject[]; // Dynamic list of up to 20 subject slots
-  strictSecurityEnabled?: boolean; // Whether the strict full-screen validation is active
+  strictSecurityEnabled?: boolean; // Whether the strict full-screen validation & auto-lock is active
+  passiveViolationLoggingEnabled?: boolean; // Keep recording detailed violations WITHOUT locking screen when strictSecurityEnabled is false
   maxAllowedViolations?: number; // How many violations are allowed before locking
   clearAnswersOnViolation?: boolean; // Whether to completely clear student answers on violation
   sirenAlarmEnabled?: boolean; // Whether to play a loud siren alarm on violation

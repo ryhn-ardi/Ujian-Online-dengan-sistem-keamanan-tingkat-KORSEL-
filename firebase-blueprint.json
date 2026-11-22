@@ -11,6 +11,7 @@
         "studentClass": { "type": "string" },
         "status": { "type": "string", "enum": ["BELUM_MULAI", "SEDANG_MENGERJAKAN", "TERKUNCI", "SELESAI"] },
         "violationCount": { "type": "integer" },
+        "violationLogs": { "type": "array" },
         "lockedReason": { "type": "string" },
         "score": { "type": "number" },
         "correctAnswersCount": { "type": "integer" },
@@ -46,6 +47,8 @@
       "properties": {
         "durationMinutes": { "type": "integer" },
         "examTitle": { "type": "string" },
+        "strictSecurityEnabled": { "type": "boolean" },
+        "passiveViolationLoggingEnabled": { "type": "boolean" },
         "activeAnnouncement": { "type": "object" },
         "announcementSoundType": { "type": "string" },
         "customAnnouncementAudioUrl": { "type": "string" }

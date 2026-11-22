@@ -1,5 +1,5 @@
 import React, { useState, useRef } from 'react';
-import { Users, FileSpreadsheet, RefreshCw, KeyRound, Edit, Trash2, Plus, Save, BookOpen, Clock, X, ChevronRight, Check, AlertTriangle, ShieldCheck, Search, Eye, EyeOff, Layers, Settings2, Sparkles, Ticket, Download, Upload, Shuffle, UserCheck, Lock, CheckCircle2, ChevronLeft, Image as ImageIcon, AlignLeft, HelpCircle, FileText, Calendar, Timer, CheckSquare, Radio, BarChart3, Volume2, VolumeX, Music, FileAudio, AlertCircle, Copy, SlidersHorizontal, Megaphone, Bell, Activity, Database, Server, Terminal, FileCode, Menu, ChevronDown, ChevronUp, RotateCcw } from 'lucide-react';
+import { Users, FileSpreadsheet, RefreshCw, KeyRound, Edit, Trash2, Plus, Save, BookOpen, Clock, X, ChevronRight, Check, AlertTriangle, ShieldCheck, Search, Eye, EyeOff, Layers, Settings2, Sparkles, Ticket, Download, Upload, Shuffle, UserCheck, Lock, CheckCircle2, ChevronLeft, Image as ImageIcon, AlignLeft, HelpCircle, FileText, Calendar, Timer, CheckSquare, Radio, BarChart3, Volume2, VolumeX, Music, FileAudio, AlertCircle, Copy, SlidersHorizontal, Megaphone, Bell, Activity, Database, Server, Terminal, FileCode, Menu, ChevronDown, ChevronUp, RotateCcw, History } from 'lucide-react';
 import * as XLSX from 'xlsx';
 import { Student, Question, ExamConfig, ExamSubject, StudentUser, ProctorPermissions, BroadcastAnnouncement } from '../types';
 import { DEFAULT_PROCTOR_PERMISSIONS } from '../data';
@@ -35,6 +35,7 @@ import ItemAnalysisTab from './ItemAnalysisTab';
 import { playAlarmSound, stopAllAlarmSounds, playAnnouncementSound, setCustomAlarmAudioData, getCustomAlarmAudioData } from '../utils/alarmAudio';
 import { verifyUltimateCode, ULTIMATE_AUTHORIZATION_CODE } from '../utils/securityAuth';
 import { GRADE_PRESETS, getGradeBadge } from '../utils/gradeHelper';
+import { getViolationCategoryMeta, formatViolationTime, formatViolationLogsForExport } from '../utils/violationHelper';
 
 // Helper to calculate actual subject metrics for a student
 export function getStudentMetrics(s: Student, questionsList: Question[]) {
@@ -185,8 +186,9 @@ export default function AdminPanel({
     }
   };
 
-  // Search filter query
+  // Search filter query & violation inspection modal
   const [studentSearch, setStudentSearch] = useState('');
+  const [inspectViolationStudent, setInspectViolationStudent] = useState<Student | null>(null);
   const [selectedClassFilter, setSelectedClassFilter] = useState('all');
   const [selectedSubjectFilter, setSelectedSubjectFilter] = useState('all');
   const [selectedStatusFilter, setSelectedStatusFilter] = useState('all');
@@ -1972,6 +1974,7 @@ export default function AdminPanel({
         status: 'BELUM_MULAI' as const,
         answers: {},
         violationCount: 0,
+        violationLogs: [],
         lockedReason: undefined,
         score: undefined,
         correctAnswersCount: undefined,
@@ -1989,6 +1992,7 @@ export default function AdminPanel({
           status: 'BELUM_MULAI' as const,
           answers: {},
           violationCount: 0,
+          violationLogs: [],
           lockedReason: undefined,
           score: undefined,
           correctAnswersCount: undefined,
@@ -2011,6 +2015,7 @@ export default function AdminPanel({
       const resetStd: Student = {
         ...student,
         violationCount: 0,
+        violationLogs: [],
         lockedReason: undefined,
         status: student.status === 'TERKUNCI' ? ('SEDANG_MENGERJAKAN' as const) : student.status,
         lastActive: new Date().toISOString()
@@ -2023,6 +2028,7 @@ export default function AdminPanel({
         return {
           ...s,
           violationCount: 0,
+          violationLogs: [],
           lockedReason: undefined,
           status: s.status === 'TERKUNCI' ? ('SEDANG_MENGERJAKAN' as const) : s.status
         };
@@ -2178,6 +2184,7 @@ export default function AdminPanel({
         const resetStd: Student = {
           ...s,
           violationCount: 0,
+          violationLogs: [],
           lockedReason: undefined,
           status: s.status === 'TERKUNCI' ? ('SEDANG_MENGERJAKAN' as const) : s.status,
           lastActive: new Date().toISOString()
@@ -2283,6 +2290,7 @@ export default function AdminPanel({
           status: 'BELUM_MULAI' as const,
           answers: {},
           violationCount: 0,
+          violationLogs: [],
           lockedReason: undefined,
           score: undefined,
           correctAnswersCount: undefined,
@@ -2340,7 +2348,8 @@ export default function AdminPanel({
       'Kelas',
       'Naskah / Mata Pelajaran',
       'Status Ujian',
-      'Pelanggaran (Lock Count)',
+      'Pelanggaran (Jumlah)',
+      'Detail Pelanggaran',
       'Total Benar',
       'Jumlah Soal',
       'Nilai Akhir (%)',
@@ -2375,6 +2384,7 @@ export default function AdminPanel({
         subjectName,
         s.status === 'TERKUNCI' ? 'TERKOMPROMISI / TERKUNCI' : s.status,
         s.violationCount || 0,
+        formatViolationLogsForExport(s),
         correctCount,
         totalCount,
         finalScore,
@@ -2395,6 +2405,7 @@ export default function AdminPanel({
       { wch: 26 }, // Naskah Soal
       { wch: 24 }, // Status Ujian
       { wch: 16 }, // Pelanggaran
+      { wch: 44 }, // Detail Pelanggaran
       { wch: 12 }, // Total Benar
       { wch: 12 }, // Jumlah Soal
       { wch: 15 }, // Nilai Akhir
@@ -3955,10 +3966,21 @@ export default function AdminPanel({
                               </div>
                             </td>
                             <td className="px-6 py-4 text-center font-mono font-semibold">
-                              <div className="flex flex-col items-center gap-1">
+                              <div className="flex flex-col items-center gap-1.5">
                                 <span className={s.violationCount > 0 ? 'text-red-600 font-bold' : 'text-slate-400'}>
                                   {s.violationCount}x
                                 </span>
+                                {((s.violationLogs && s.violationLogs.length > 0) || (s.violationCount || 0) > 0) && (
+                                  <button
+                                    type="button"
+                                    onClick={() => setInspectViolationStudent(s)}
+                                    className="px-2 py-0.5 bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 rounded text-[10px] font-bold font-sans flex items-center gap-1 cursor-pointer transition"
+                                    title="Lihat detail bentuk pelanggaran siswa ini"
+                                  >
+                                    <History className="w-3 h-3" />
+                                    <span>Detail ({s.violationLogs?.length || s.violationCount})</span>
+                                  </button>
+                                )}
                                 <span
                                   className={`text-[9px] font-mono px-1.5 py-0.5 rounded font-bold border ${
                                     (s.usedTokens || []).length >= (config.unlockTokens || ['TOKEN-1', 'TOKEN-2']).length
@@ -5611,24 +5633,67 @@ export default function AdminPanel({
                 {/* 1. Toggle Sistem Keamanan Ketat */}
                 <div className="flex items-center justify-between p-4 bg-slate-50 rounded-2xl border border-slate-200">
                   <div className="space-y-1 pr-4">
-                    <span className="text-xs font-bold text-slate-800 font-sans block">Sistem Keamanan Ketat (Anti-Cheat Fullscreen)</span>
+                    <span className="text-xs font-bold text-slate-800 font-sans block">Sistem Keamanan Ketat (Anti-Cheat Fullscreen & Kunci Layar)</span>
                     <span className="text-[11px] text-slate-500 leading-tight block">
-                      Memantau dan membekukan lembar ujian secara otomatis jika siswa meminimalkan window, berpindah tab, atau keluar dari fullscreen.
+                      Memantau dan membekukan (mengunci) lembar ujian secara otomatis jika siswa meminimalkan window, berpindah tab, atau keluar dari fullscreen.
                     </span>
                   </div>
                   <button
                     type="button"
+                    id="btn-toggle-strict-security"
                     onClick={() => onUpdateConfig({
                       ...config,
                       strictSecurityEnabled: config.strictSecurityEnabled !== false ? false : true
                     })}
                     className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none ${
-                      config.strictSecurityEnabled !== false ? 'bg-indigo-600' : 'bg-slate-200'
+                      config.strictSecurityEnabled !== false ? 'bg-indigo-600' : 'bg-slate-300'
                     }`}
                   >
                     <span
                       className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow-sm ring-0 transition duration-200 ease-in-out ${
                         config.strictSecurityEnabled !== false ? 'translate-x-5' : 'translate-x-0'
+                      }`}
+                    />
+                  </button>
+                </div>
+
+                {/* 1b. Toggle Catat Detil Pelanggaran Tanpa Kunci Layar (Passive Logging saat Proktor Ketat Nonaktif) */}
+                <div className={`flex items-center justify-between p-4 rounded-2xl border transition ${
+                  config.passiveViolationLoggingEnabled !== false
+                    ? 'bg-amber-50/70 border-amber-200'
+                    : 'bg-slate-50 border-slate-200'
+                }`}>
+                  <div className="space-y-1 pr-4">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <span className="text-xs font-bold text-slate-800 font-sans">
+                        Catat Pelanggaran Tanpa Mengunci Layar (Saat Proktor Nonaktif)
+                      </span>
+                      <span className={`text-[10px] font-mono font-bold px-1.5 py-0.5 rounded ${
+                        config.passiveViolationLoggingEnabled !== false
+                          ? 'bg-amber-200 text-amber-900'
+                          : 'bg-slate-200 text-slate-600'
+                      }`}>
+                        {config.passiveViolationLoggingEnabled !== false ? 'AKTIF (LOG DETIL)' : 'NONAKTIF'}
+                      </span>
+                    </div>
+                    <span className="text-[11px] text-slate-600 leading-relaxed block">
+                      Saat Proktor Ketat dimatikan, sistem tetap menghitung pelanggaran dan menampilkan detil bentuk pelanggaran langsung di layar siswa &amp; pengawas (seperti <strong>Quick Chatting, Floating Windows, Split Screen, Google Lens, Google Assistant, Quick Settings, &amp; Pindah Tab</strong>) <strong>TANPA</strong> mengunci layar ujian.
+                    </span>
+                  </div>
+                  <button
+                    type="button"
+                    id="btn-toggle-passive-violation-logging"
+                    onClick={() => onUpdateConfig({
+                      ...config,
+                      passiveViolationLoggingEnabled: config.passiveViolationLoggingEnabled !== false ? false : true
+                    })}
+                    className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none ${
+                      config.passiveViolationLoggingEnabled !== false ? 'bg-amber-500' : 'bg-slate-300'
+                    }`}
+                  >
+                    <span
+                      className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow-sm ring-0 transition duration-200 ease-in-out ${
+                        config.passiveViolationLoggingEnabled !== false ? 'translate-x-5' : 'translate-x-0'
                       }`}
                     />
                   </button>
@@ -10547,6 +10612,84 @@ export default function AdminPanel({
               </button>
             </div>
 
+          </div>
+        </div>
+      )}
+
+      {/* STUDENT VIOLATION DETAIL INSPECTION MODAL */}
+      {inspectViolationStudent && (
+        <div className="fixed inset-0 bg-slate-900/70 backdrop-blur-sm z-[999999] flex items-center justify-center p-3 sm:p-6 animate-fade-in">
+          <div className="bg-white rounded-3xl shadow-2xl border border-slate-200 p-5 sm:p-7 max-w-xl w-full max-h-[88vh] flex flex-col space-y-4">
+            <div className="flex items-start justify-between gap-3 border-b border-slate-100 pb-4">
+              <div className="flex items-center gap-3 min-w-0">
+                <div className="w-10 h-10 rounded-2xl bg-rose-50 text-rose-600 flex items-center justify-center shrink-0">
+                  <History className="w-5 h-5" />
+                </div>
+                <div className="min-w-0">
+                  <h3 className="font-extrabold text-slate-900 text-base truncate">
+                    Riwayat Detil Pelanggaran: {inspectViolationStudent.name}
+                  </h3>
+                  <p className="text-xs text-slate-500 font-mono">
+                    Kelas {inspectViolationStudent.studentClass} • Absen {inspectViolationStudent.absentNumber} • Total {inspectViolationStudent.violationCount || 0}x Pelanggaran
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setInspectViolationStudent(null)}
+                className="p-1.5 text-slate-400 hover:bg-slate-100 rounded-full transition cursor-pointer shrink-0"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="flex-1 overflow-y-auto space-y-2.5 pr-1">
+              {inspectViolationStudent.violationLogs && inspectViolationStudent.violationLogs.length > 0 ? (
+                [...inspectViolationStudent.violationLogs].reverse().map((vlog, idx, arr) => {
+                  const meta = getViolationCategoryMeta(vlog.category);
+                  const no = arr.length - idx;
+                  return (
+                    <div key={vlog.id || idx} className="p-3 bg-slate-50 rounded-2xl border border-slate-200 space-y-1.5">
+                      <div className="flex items-center justify-between gap-2 flex-wrap">
+                        <div className="flex items-center gap-1.5 flex-wrap">
+                          <span className="font-mono font-black text-xs text-slate-500">#{no}</span>
+                          <span className={`px-2 py-0.5 rounded border text-[10px] font-bold font-mono ${meta.badgeClass}`}>
+                            {meta.label}
+                          </span>
+                          <span className={`px-1.5 py-0.5 rounded text-[10px] font-mono font-bold ${
+                            vlog.mode === 'PASSIVE' ? 'bg-amber-100 text-amber-900' : 'bg-rose-100 text-rose-900'
+                          }`}>
+                            {vlog.mode === 'PASSIVE' ? 'Tanpa Kunci' : 'Proktor Ketat'}
+                          </span>
+                        </div>
+                        <span className="text-[11px] font-mono text-slate-500">
+                          {formatViolationTime(vlog.timestamp)}
+                        </span>
+                      </div>
+                      <p className="text-xs font-medium text-slate-800 leading-snug">
+                        {vlog.reason}
+                      </p>
+                    </div>
+                  );
+                })
+              ) : (
+                <div className="p-4 bg-slate-50 rounded-2xl border border-slate-200 text-xs text-slate-600 text-center">
+                  {inspectViolationStudent.lockedReason
+                    ? `Alasan terakhir: ${inspectViolationStudent.lockedReason}`
+                    : 'Belum ada rincian pelanggaran terekam.'}
+                </div>
+              )}
+            </div>
+
+            <div className="pt-3 border-t border-slate-100 flex justify-end">
+              <button
+                type="button"
+                onClick={() => setInspectViolationStudent(null)}
+                className="px-5 py-2 bg-slate-900 hover:bg-slate-800 text-white font-bold text-xs rounded-xl cursor-pointer transition"
+              >
+                Tutup
+              </button>
+            </div>
           </div>
         </div>
       )}

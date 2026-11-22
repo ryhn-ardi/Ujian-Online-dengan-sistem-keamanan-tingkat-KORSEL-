@@ -1,10 +1,11 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Play, AlertTriangle, Wifi, WifiOff, CloudOff, ShieldAlert, KeyRound, Clock, ChevronLeft, ChevronRight, CheckSquare, Send, CheckCircle, CheckCircle2, RefreshCw, Check, Radio, Ticket, Lock, Unlock, BellOff, Smartphone, Volume2, Info, BookOpen, Megaphone, X, ChevronDown, ChevronUp, Maximize2, Minimize2, LayoutGrid } from 'lucide-react';
-import { Student, Question, ExamConfig, BroadcastAnnouncement } from '../types';
+import { Play, AlertTriangle, Wifi, WifiOff, CloudOff, ShieldAlert, KeyRound, Clock, ChevronLeft, ChevronRight, CheckSquare, Send, CheckCircle, CheckCircle2, RefreshCw, Check, Radio, Ticket, Lock, Unlock, BellOff, Smartphone, Volume2, Info, BookOpen, Megaphone, X, ChevronDown, ChevronUp, Maximize2, Minimize2, LayoutGrid, History } from 'lucide-react';
+import { Student, Question, ExamConfig, BroadcastAnnouncement, ViolationCategory, ViolationLogEntry } from '../types';
 import { getStudentFromServer, getExamSubjects } from '../utils/sync';
 import { RichExamContent } from './RichExamContent';
 import { useRealtimeWIB } from '../utils/timeWib';
 import { playAlarmSound, playAnnouncementSound, warmUpAlarmAudioContext, stopAllAlarmSounds } from '../utils/alarmAudio';
+import { createViolationLogEntry, formatViolationTime, getViolationCategoryMeta } from '../utils/violationHelper';
 
 export function warmUpAudioContext(): AudioContext | null {
   return warmUpAlarmAudioContext();
@@ -13,7 +14,7 @@ export function warmUpAudioContext(): AudioContext | null {
 interface StudentExamProps {
   student: Student;
   questions: Question[];
-  onViolation: (reason: string) => void;
+  onViolation: (reason: string, category?: ViolationCategory) => void;
   onSubmitAnswers: (answers: Record<string, number | number[]>) => void;
   onAnswersUpdate?: (answers: Record<string, number | number[]>) => void;
   onTokenUnlock?: (tokenCode: string) => Promise<{ success: boolean; message: string }>;
@@ -82,9 +83,24 @@ export default function StudentExam({
   const [examStatus, setExamStatus] = useState(student.status);
   const [isGraceActive, setIsGraceActive] = useState(false);
   const [violationToast, setViolationToast] = useState<{ message: string; count: number; max: number } | null>(null);
+  const [passiveToast, setPassiveToast] = useState<{ reason: string; category: ViolationCategory; count: number } | null>(null);
+  const [localViolationCount, setLocalViolationCount] = useState<number>(student.violationCount || 0);
+  const [localViolationLogs, setLocalViolationLogs] = useState<ViolationLogEntry[]>(student.violationLogs || []);
+  const [showViolationDetailsPanel, setShowViolationDetailsPanel] = useState(false);
   const [dndConfirmed, setDndConfirmed] = useState(false);
   const [isTestingAudio, setIsTestingAudio] = useState(false);
   const [showQuestionGridDrawer, setShowQuestionGridDrawer] = useState(false);
+
+  const isStrictMode = config.strictSecurityEnabled !== false;
+  const isPassiveLoggingMode = !isStrictMode && config.passiveViolationLoggingEnabled !== false;
+  const isMonitoringActive = isStrictMode || isPassiveLoggingMode;
+
+  useEffect(() => {
+    setLocalViolationCount(student.violationCount || 0);
+    if (Array.isArray(student.violationLogs)) {
+      setLocalViolationLogs(student.violationLogs);
+    }
+  }, [student.violationCount, student.violationLogs]);
 
   const handleTestAudioInExam = () => {
     if (isTestingAudio) {
@@ -363,48 +379,77 @@ export default function StudentExam({
     }
   };
 
-  const triggerViolation = (reason: string) => {
+  const passiveToastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const localViolationCountRef = useRef(localViolationCount);
+  localViolationCountRef.current = localViolationCount;
+
+  const triggerViolation = (reason: string, category: ViolationCategory = 'OTHER') => {
     if (isSubmittingRef.current) return; // Do not trigger violation during exam submission
-    if (config.strictSecurityEnabled === false) return; // Ignore if security is off
+    const strictActive = config.strictSecurityEnabled !== false;
+    const passiveActive = !strictActive && config.passiveViolationLoggingEnabled !== false;
+    if (!strictActive && !passiveActive) return; // Ignore completely if both strict & passive logging are off
     if (isGraceActive) return; // Skip if in brief grace period
 
     const now = Date.now();
     if (now - lastViolationTime.current < 1500) return; // Prevent double trigger
     lastViolationTime.current = now;
 
-    // Alarm sound if enabled in config
-    if (config.sirenAlarmEnabled !== false) {
-      playAlarmSound(config);
+    const nextCount = Math.max(student.violationCount || 0, localViolationCountRef.current) + 1;
+    const logEntry = createViolationLogEntry(reason, category, strictActive ? 'STRICT' : 'PASSIVE');
+
+    setLocalViolationCount(nextCount);
+    setLocalViolationLogs(prev => [...prev, logEntry].slice(-100));
+
+    if (strictActive) {
+      // Alarm sound if enabled in config
+      if (config.sirenAlarmEnabled !== false) {
+        playAlarmSound(config);
+      }
+
+      const tolerance = config.maxAllowedViolations !== undefined ? config.maxAllowedViolations : 3;
+      const maxAllowed = (student.tokenUnlockCount && student.tokenUnlockCount > 0) ? 1 : tolerance;
+
+      setViolationToast({
+        message: reason,
+        count: nextCount,
+        max: maxAllowed
+      });
+
+      if (nextCount >= maxAllowed) {
+        setExamStatus('TERKUNCI');
+      }
+    } else {
+      // Passive mode: Record & inform student via non-blocking toast WITHOUT locking screen
+      setPassiveToast({
+        reason,
+        category,
+        count: nextCount
+      });
+      if (passiveToastTimerRef.current) clearTimeout(passiveToastTimerRef.current);
+      passiveToastTimerRef.current = setTimeout(() => {
+        setPassiveToast(null);
+      }, 4500);
     }
 
-    const tolerance = config.maxAllowedViolations !== undefined ? config.maxAllowedViolations : 3;
-    const maxAllowed = (student.tokenUnlockCount && student.tokenUnlockCount > 0) ? 1 : tolerance;
-    const nextCount = (student.violationCount || 0) + 1;
-
-    setViolationToast({
-      message: reason,
-      count: nextCount,
-      max: maxAllowed
-    });
-
-    if (nextCount >= maxAllowed) {
-      setExamStatus('TERKUNCI');
-    }
-
-    onViolation(reason);
+    onViolation(reason, category);
   };
 
-  // Monitor Fullscreen Exit and Focus shifts (THE PROCTOR SENTINELS)
+  // Monitor Fullscreen Exit, Overlays, Split Screen, Quick Chat, Google Lens/Assistant & Focus shifts
   useEffect(() => {
     if (examStatus !== 'SEDANG_MENGERJAKAN') return;
-    if (config.strictSecurityEnabled === false) return; // Ignore if security is off
+    const strictActive = config.strictSecurityEnabled !== false;
+    const passiveActive = !strictActive && config.passiveViolationLoggingEnabled !== false;
+    if (!strictActive && !passiveActive) return;
 
-    let blurTimeout: NodeJS.Timeout | null = null;
+    let blurTimeout: ReturnType<typeof setTimeout> | null = null;
     let touchStartY = 0;
     let touchStartX = 0;
     let touchStartTime = 0;
+    let touchOnImage = false;
     let lastRightClickTime = 0;
     let focusLostSince: number | null = null;
+    let preBlurViewportHeight = window.visualViewport ? window.visualViewport.height : window.innerHeight;
+    let preBlurViewportWidth = window.visualViewport ? window.visualViewport.width : window.innerWidth;
 
     const checkIsFs = () => {
       return !!(
@@ -415,17 +460,76 @@ export default function StudentExam({
       );
     };
 
+    const classifyVisibleOverlayViolation = (): { reason: string; category: ViolationCategory } => {
+      const vw = window.visualViewport ? window.visualViewport.width : window.innerWidth;
+      const vh = window.visualViewport ? window.visualViewport.height : window.innerHeight;
+      const screenW = window.screen?.width || preBlurViewportWidth || window.innerWidth;
+      const screenH = window.screen?.height || preBlurViewportHeight || window.innerHeight;
+      const recentTouchAge = Date.now() - touchStartTime;
+      const heightDrop = preBlurViewportHeight - vh;
+
+      // 1. Top edge pull-down -> Quick Settings / Notifikasi
+      if (touchStartY > 0 && touchStartY <= 60 && recentTouchAge < 2500) {
+        return {
+          reason: 'Menarik bilah Quick Settings / panel notifikasi HP',
+          category: 'QUICK_SETTINGS'
+        };
+      }
+
+      // 2. Bottom corner swipe -> Google Assistant
+      if (
+        touchStartY >= window.innerHeight - 75 &&
+        (touchStartX <= 75 || touchStartX >= window.innerWidth - 75) &&
+        recentTouchAge < 2500
+      ) {
+        return {
+          reason: 'Membuka Google Assistant melalui gestur sudut layar',
+          category: 'GOOGLE_ASSISTANT'
+        };
+      }
+
+      // 3. Bottom navigation bar hold or image inspection -> Google Lens / Circle to Search
+      if ((touchStartY >= window.innerHeight - 48 || touchOnImage) && recentTouchAge < 2500) {
+        return {
+          reason: 'Membuka Google Lens / Circle to Search di layar ujian',
+          category: 'GOOGLE_LENS'
+        };
+      }
+
+      // 4. Split screen / multi-window width or large height shrink
+      if ((screenW > 0 && vw < screenW * 0.78) || (screenH > 0 && vh < screenH * 0.58 && heightDrop > 80)) {
+        return {
+          reason: 'Melakukan Split Screen (membagi layar dengan aplikasi lain)',
+          category: 'SPLIT_SCREEN'
+        };
+      }
+
+      // 5. Quick Chatting (floating chat bubble / inline notification reply opening keyboard while blurred)
+      if (heightDrop >= 120 && heightDrop < screenH * 0.48) {
+        return {
+          reason: 'Membuka Quick Chatting / membalas pesan mengambang (pop-up reply)',
+          category: 'QUICK_CHAT'
+        };
+      }
+
+      // 6. Default visible focus loss -> Floating Window / Bubble / Pop-up overlay
+      return {
+        reason: 'Membuka Floating Windows / jendela aplikasi mengambang di atas ujian',
+        category: 'FLOATING_WINDOW'
+      };
+    };
+
     const handleFullscreenChange = () => {
       const isFs = checkIsFs();
       setIsCurrentlyFullscreen(isFs);
-      if (isFullscreenSupported && !isFs && !isGraceActive && examStartedRef.current) {
-        triggerViolation('Keluar dari Mode Layar Penuh (Fullscreen)');
+      if (strictActive && isFullscreenSupported && !isFs && !isGraceActive && examStartedRef.current) {
+        triggerViolation('Keluar dari Mode Layar Penuh (Fullscreen)', 'FULLSCREEN_EXIT');
       }
     };
 
     const handleVisibilityChange = () => {
       if ((document.hidden || document.visibilityState === 'hidden') && !isGraceActive && examStartedRef.current) {
-        triggerViolation('Bilah Notifikasi / Jendela Terbuka (Layar Ujian Tersembunyi)');
+        triggerViolation('Beralih ke aplikasi lain / meminimalkan tab ujian', 'TAB_SWITCH');
       }
     };
 
@@ -435,16 +539,27 @@ export default function StudentExam({
       if (blurTimeout) clearTimeout(blurTimeout);
       if (!focusLostSince) focusLostSince = Date.now();
 
-      // Grace window of 350ms for internal DOM focus transitions; Quick Settings / app switch stays unfocused
       blurTimeout = setTimeout(() => {
-        if (!isGraceActive && examStartedRef.current && (document.hidden || document.visibilityState === 'hidden' || !document.hasFocus())) {
-          triggerViolation('Keluar Fokus Layar / Membuka Bilah Notifikasi atau Aplikasi Lain');
+        if (!isGraceActive && examStartedRef.current) {
+          if (document.hidden || document.visibilityState === 'hidden') {
+            triggerViolation('Beralih ke aplikasi lain / meninggalkan jendela ujian', 'TAB_SWITCH');
+          } else if (!document.hasFocus()) {
+            const detected = classifyVisibleOverlayViolation();
+            triggerViolation(detected.reason, detected.category);
+          }
         }
       }, 350);
     };
 
     const handleWindowFocus = () => {
       focusLostSince = null;
+      if (window.visualViewport) {
+        preBlurViewportHeight = window.visualViewport.height;
+        preBlurViewportWidth = window.visualViewport.width;
+      } else {
+        preBlurViewportHeight = window.innerHeight;
+        preBlurViewportWidth = window.innerWidth;
+      }
       if (blurTimeout) {
         clearTimeout(blurTimeout);
         blurTimeout = null;
@@ -454,10 +569,16 @@ export default function StudentExam({
     const handleTouchStart = (e: TouchEvent) => {
       warmUpAudioContext();
       focusLostSince = null;
+      if (document.hasFocus()) {
+        preBlurViewportHeight = window.visualViewport ? window.visualViewport.height : window.innerHeight;
+        preBlurViewportWidth = window.visualViewport ? window.visualViewport.width : window.innerWidth;
+      }
       if (e.touches && e.touches.length > 0) {
         touchStartY = e.touches[0].clientY;
         touchStartX = e.touches[0].clientX;
         touchStartTime = Date.now();
+        const targetEl = e.target as HTMLElement | null;
+        touchOnImage = Boolean(targetEl && (targetEl.tagName === 'IMG' || targetEl.closest('img')));
       }
     };
 
@@ -468,57 +589,122 @@ export default function StudentExam({
         const currentX = e.touches[0].clientX;
         const dy = currentY - touchStartY;
         const dx = Math.abs(currentX - touchStartX);
-        // Trigger if touch started near top status bar / notch edge (<= 60px) and dragged downward vertically > 35px
+
+        // 1. Top status bar swipe -> Quick Settings
         if (touchStartY <= 60 && dy > 35 && dy > dx * 1.3) {
-          triggerViolation('Mencoba Menarik Bilah Quick Settings / Notifikasi HP');
+          triggerViolation('Menarik bilah Quick Settings / panel notifikasi HP', 'QUICK_SETTINGS');
+          return;
+        }
+
+        // 2. Bottom corner diagonal swipe -> Google Assistant
+        const nearBottomCorner =
+          touchStartY >= window.innerHeight - 75 &&
+          (touchStartX <= 75 || touchStartX >= window.innerWidth - 75);
+        if (nearBottomCorner && (touchStartY - currentY) > 45) {
+          triggerViolation('Membuka Google Assistant melalui gestur sudut bawah', 'GOOGLE_ASSISTANT');
         }
       }
     };
 
     const handleTouchCancel = () => {
       if (isGraceActive || !examStartedRef.current) return;
-      // On Android & iOS, pulling down OS Quick Settings steals touch and emits touchcancel right after top-edge touchstart
-      if (touchStartY <= 60 && (Date.now() - touchStartTime) < 1200) {
-        triggerViolation('Menarik Bilah Quick Settings / Notifikasi HP (Terdeteksi Sistem)');
+      const elapsed = Date.now() - touchStartTime;
+      if (elapsed > 1500) return;
+
+      if (touchStartY <= 60) {
+        triggerViolation('Menarik bilah Quick Settings / notifikasi HP (Terdeteksi Sistem)', 'QUICK_SETTINGS');
+      } else if (
+        touchStartY >= window.innerHeight - 75 &&
+        (touchStartX <= 75 || touchStartX >= window.innerWidth - 75)
+      ) {
+        triggerViolation('Membuka Google Assistant (Terdeteksi Interupsi Sistem)', 'GOOGLE_ASSISTANT');
+      } else if (touchStartY >= window.innerHeight - 48 || touchOnImage) {
+        triggerViolation('Membuka Google Lens / Circle to Search di layar ujian', 'GOOGLE_LENS');
       }
     };
 
     const handlePageHide = () => {
       if (!isGraceActive && examStartedRef.current) {
-        triggerViolation('Aplikasi Berpindah ke Latar Belakang (Page Hide)');
+        triggerViolation('Aplikasi ujian berpindah ke latar belakang (Page Hide)', 'TAB_SWITCH');
       }
     };
 
     const handleResize = () => {
       if (isGraceActive || !examStartedRef.current) return;
-      // Detect real split screen / multi-window overlay
-      if (window.visualViewport && window.screen) {
-        const activeTag = document.activeElement?.tagName?.toLowerCase();
-        const isInputActive = activeTag === 'input' || activeTag === 'textarea';
-        if (!isInputActive && window.visualViewport.height < window.screen.height * 0.55) {
-          triggerViolation('Mendeteksi Perubahan Jendela (Split Screen / Floating Apps)');
+      const vw = window.visualViewport ? window.visualViewport.width : window.innerWidth;
+      const vh = window.visualViewport ? window.visualViewport.height : window.innerHeight;
+      const screenW = window.screen?.width || window.innerWidth;
+      const screenH = window.screen?.height || window.innerHeight;
+      const activeTag = document.activeElement?.tagName?.toLowerCase();
+      const isInputActive = activeTag === 'input' || activeTag === 'textarea';
+
+      if (!isInputActive) {
+        if (screenW > 0 && vw < screenW * 0.78) {
+          triggerViolation('Melakukan Split Screen (membagi lebar layar dengan aplikasi lain)', 'SPLIT_SCREEN');
+          return;
+        }
+        if (screenH > 0 && vh < screenH * 0.58) {
+          if (!document.hasFocus() && (preBlurViewportHeight - vh) >= 120 && (preBlurViewportHeight - vh) < screenH * 0.48) {
+            triggerViolation('Membuka Quick Chatting / membalas pesan mengambang (pop-up reply)', 'QUICK_CHAT');
+          } else {
+            triggerViolation('Melakukan Split Screen / mengecilkan jendela aplikasi ujian', 'SPLIT_SCREEN');
+          }
+          return;
+        }
+        // Keyboard / overlay appeared while exam window is unfocused -> Quick Chatting
+        if (!document.hasFocus() && (preBlurViewportHeight - vh) >= 120) {
+          triggerViolation('Membuka Quick Chatting / membalas pesan mengambang saat ujian berlangsung', 'QUICK_CHAT');
         }
       }
     };
 
     const handleKeyDown = (e: KeyboardEvent) => {
       if (isGraceActive || !examStartedRef.current) return;
+      const keyLower = e.key.toLowerCase();
+
+      // Screenshot / Lens capture shortcuts
       if (
-        e.key === 'Escape' ||
-        e.key === 'F11' ||
-        e.key === 'F12' ||
-        (e.altKey && e.key === 'Tab') ||
-        (e.ctrlKey && ['c', 'v', 'u', 'p', 's', 'a'].includes(e.key.toLowerCase())) ||
-        (e.metaKey && ['c', 'v', 'u', 'p', 's', 'a'].includes(e.key.toLowerCase()))
+        e.key === 'PrintScreen' ||
+        (e.metaKey && e.shiftKey && ['3', '4', '5', 's'].includes(keyLower)) ||
+        (e.ctrlKey && e.shiftKey && keyLower === 's')
       ) {
         e.preventDefault();
-        triggerViolation(`Menekan Tombol Terlarang (${e.key})`);
+        triggerViolation('Mengambil tangkapan layar / mencoba memindai soal via Google Lens', 'GOOGLE_LENS');
+        return;
+      }
+
+      // Google Assistant / Spotlight / Voice Search keys
+      if (
+        e.key === 'Assistant' ||
+        e.key === 'LaunchAssistant' ||
+        (e.metaKey && e.key === ' ') ||
+        (e.altKey && e.key === ' ')
+      ) {
+        e.preventDefault();
+        triggerViolation('Membuka Google Assistant / pencarian cepat sistem', 'GOOGLE_ASSISTANT');
+        return;
+      }
+
+      if (
+        (strictActive && (e.key === 'Escape' || e.key === 'F11')) ||
+        e.key === 'F12' ||
+        (e.altKey && e.key === 'Tab') ||
+        (e.ctrlKey && ['c', 'v', 'u', 'p', 's', 'a'].includes(keyLower)) ||
+        (e.metaKey && ['c', 'v', 'u', 'p', 's', 'a'].includes(keyLower))
+      ) {
+        e.preventDefault();
+        triggerViolation(`Menekan tombol / pintasan terlarang (${e.key})`, 'SHORTCUT');
       }
     };
 
     const handleContextMenu = (e: MouseEvent) => {
       e.preventDefault();
       e.stopPropagation();
+      const targetEl = e.target as HTMLElement | null;
+      if (targetEl && (targetEl.tagName === 'IMG' || targetEl.closest('img'))) {
+        triggerViolation('Mencoba memindai / mencari gambar soal (Google Lens)', 'GOOGLE_LENS');
+        return false;
+      }
       lastRightClickTime = Date.now();
       return false;
     };
@@ -531,38 +717,36 @@ export default function StudentExam({
       }
     };
 
-    // Continuous Active Sentinel Heartbeat Monitor (Checks visibility, sustained focus loss for Quick Settings, & fullscreen every 300ms)
+    // Continuous Active Sentinel Heartbeat Monitor
     const heartbeatInterval = setInterval(() => {
       if (!examStartedRef.current || isGraceActive || isSubmittingRef.current) return;
       if (Date.now() - lastRightClickTime < 1500) return;
 
-      // Check visibility state
       if (document.hidden || document.visibilityState === 'hidden') {
-        triggerViolation('Layar Ujian Tertutup / Beralih Aplikasi');
+        triggerViolation('Beralih ke aplikasi lain / menutup layar ujian', 'TAB_SWITCH');
         return;
       }
 
-      // Check sustained focus loss (>= 650ms) to catch OS Quick Settings / Notification Drawer even when document.hidden remains false
       if (!document.hasFocus()) {
         if (!focusLostSince) {
           focusLostSince = Date.now();
         } else if (Date.now() - focusLostSince >= 650) {
           focusLostSince = Date.now();
-          triggerViolation('Bilah Quick Settings / Notifikasi atau Aplikasi Lain Terbuka');
+          const detected = classifyVisibleOverlayViolation();
+          triggerViolation(detected.reason, detected.category);
           return;
         }
       } else {
         focusLostSince = null;
       }
 
-      // Check fullscreen element presence (only on browsers supporting Fullscreen API)
-      if (isFullscreenSupported && !checkIsFs()) {
-        triggerViolation('Keluar dari Mode Layar Penuh');
+      // Check fullscreen element presence ONLY when Strict Security is enabled
+      if (strictActive && isFullscreenSupported && !checkIsFs()) {
+        triggerViolation('Keluar dari Mode Layar Penuh (Fullscreen)', 'FULLSCREEN_EXIT');
         return;
       }
     }, 300);
 
-    // Arm listeners cleanly without focusout/pointercancel false positive triggers
     const setupTimer = setTimeout(() => {
       document.addEventListener('fullscreenchange', handleFullscreenChange);
       document.addEventListener('webkitfullscreenchange', handleFullscreenChange);
@@ -576,6 +760,7 @@ export default function StudentExam({
       window.addEventListener('pagehide', handlePageHide);
       (window as any).addEventListener?.('freeze', handlePageHide);
       window.addEventListener('resize', handleResize);
+      window.visualViewport?.addEventListener('resize', handleResize);
       window.addEventListener('keydown', handleKeyDown);
       document.addEventListener('touchstart', handleTouchStart, { passive: true });
       document.addEventListener('touchmove', handleTouchMove, { passive: true });
@@ -587,6 +772,7 @@ export default function StudentExam({
       clearTimeout(setupTimer);
       clearInterval(heartbeatInterval);
       if (blurTimeout) clearTimeout(blurTimeout);
+      if (passiveToastTimerRef.current) clearTimeout(passiveToastTimerRef.current);
       document.removeEventListener('fullscreenchange', handleFullscreenChange);
       document.removeEventListener('webkitfullscreenchange', handleFullscreenChange);
       document.removeEventListener('mozfullscreenchange', handleFullscreenChange);
@@ -599,12 +785,13 @@ export default function StudentExam({
       window.removeEventListener('pagehide', handlePageHide);
       (window as any).removeEventListener?.('freeze', handlePageHide);
       window.removeEventListener('resize', handleResize);
+      window.visualViewport?.removeEventListener('resize', handleResize);
       window.removeEventListener('keydown', handleKeyDown);
       document.removeEventListener('touchstart', handleTouchStart);
       document.removeEventListener('touchmove', handleTouchMove);
       document.removeEventListener('touchcancel', handleTouchCancel);
     };
-  }, [examStatus, config.strictSecurityEnabled, isGraceActive]);
+  }, [examStatus, config.strictSecurityEnabled, config.passiveViolationLoggingEnabled, isGraceActive]);
 
   const handleSelectOption = (questionId: string, optionIndex: number) => {
     warmUpAudioContext();
@@ -1041,7 +1228,9 @@ export default function StudentExam({
         return;
       }
       warmUpAudioContext();
-      await requestFullscreen();
+      if (isStrictMode) {
+        await requestFullscreen();
+      }
       onStartExam();
     };
 
@@ -1080,7 +1269,7 @@ export default function StudentExam({
           </div>
 
           {/* Full Screen Mode Toggle Card */}
-          {isFullscreenSupported && (
+          {isStrictMode && isFullscreenSupported && (
             <div className="p-3.5 bg-slate-950/80 border border-indigo-500/40 rounded-2xl mb-4 flex items-center justify-between gap-3 text-left">
               <div className="flex items-center gap-2.5 min-w-0">
                 <div className={`w-9 h-9 rounded-xl flex items-center justify-center shrink-0 ${
@@ -1171,14 +1360,32 @@ export default function StudentExam({
               <div className="p-3 bg-rose-950/30 border border-rose-500/30 rounded-xl space-y-1 text-rose-200 text-[11px]">
                 <div className="font-extrabold text-rose-400 flex items-center gap-1.5">
                   <AlertTriangle className="w-3.5 h-3.5" />
-                  <span>Peringatan Keras Pelanggaran Proktor:</span>
+                  <span>
+                    {isStrictMode
+                      ? 'Peringatan Keras Pelanggaran Proktor (Mode Kunci Aktif):'
+                      : isPassiveLoggingMode
+                      ? 'Catatan Pengawasan Tanpa Kunci Layar Aktif:'
+                      : 'Informasi Pengawasan Ujian:'}
+                  </span>
                 </div>
-                <p>
-                  Sistem website tidak dapat mematikan notifikasi HP secara sepihak karena batasan keamanan sistem Android/iOS.
-                </p>
-                <p className="font-semibold text-rose-300">
-                  ⚠️ Menarik bilah notifikasi / Quick Settings, mengetuk notifikasi pesan masuk, atau keluar dari fullscreen akan <strong>LANGSUNG MEMBUNYIKAN ALARM SIRINE KERAS</strong> dan dicatat sebagai pelanggaran ujian!
-                </p>
+                {isStrictMode ? (
+                  <>
+                    <p>
+                      Sistem website tidak dapat mematikan notifikasi HP secara sepihak karena batasan keamanan sistem Android/iOS.
+                    </p>
+                    <p className="font-semibold text-rose-300">
+                      ⚠️ Menarik bilah notifikasi / Quick Settings, membuka quick chat / floating window, split screen, Google Lens/Assistant, atau keluar dari fullscreen akan <strong>LANGSUNG MEMBUNYIKAN ALARM SIRINE KERAS</strong> dan mengunci ujian!
+                    </p>
+                  </>
+                ) : isPassiveLoggingMode ? (
+                  <p className="font-semibold text-amber-200">
+                    ℹ️ Proktor ketat sedang dinonaktifkan (layar tidak dikunci), namun sistem <strong>TETAP MENCATAT DETIL PELANGGARAN</strong> secara otomatis (Quick Chatting, Floating Windows, Split Screen, Google Lens, Google Assistant, dll) ke layar Anda & dasbor Pengawas.
+                  </p>
+                ) : (
+                  <p className="text-slate-300">
+                    Harap kerjakan ujian dengan jujur dan tetap menjaga fokus pada lembar soal Anda.
+                  </p>
+                )}
               </div>
             </div>
 
@@ -1191,12 +1398,15 @@ export default function StudentExam({
                 className="mt-0.5 w-4 h-4 rounded text-teal-500 focus:ring-teal-400 border-slate-600 bg-slate-800 cursor-pointer shrink-0"
               />
               <span className="text-xs text-slate-200 leading-snug">
-                Saya telah mengaktifkan <strong>Mode Jangan Ganggu (DND)</strong> di HP saya dan paham bahwa membuka notifikasi atau keluar fullscreen akan membunyikan alarm sirine.
+                {isStrictMode
+                  ? <>Saya telah mengaktifkan <strong>Mode Jangan Ganggu (DND)</strong> di HP saya dan paham bahwa membuka notifikasi atau keluar fullscreen akan membunyikan alarm sirine.</>
+                  : <>Saya memahami tata tertib ujian dan siap mengerjakan dengan jujur tanpa membuka aplikasi curang.</>
+                }
               </span>
             </label>
           </div>
 
-          {fullscreenFailed && (
+          {fullscreenFailed && isStrictMode && (
             <div className="mb-4 p-3 bg-amber-500/10 border border-amber-500/20 rounded-xl text-amber-300 text-xs text-left">
               Browser Anda memerlukan izin manual untuk Layar Penuh. Silakan klik tombol di bawah untuk mengizinkan.
             </div>
@@ -1213,7 +1423,7 @@ export default function StudentExam({
               }`}
             >
               <Play className="w-4 h-4 shrink-0" />
-              Masukkan Layar Penuh & Mulai Ujian
+              {isStrictMode ? 'Masukkan Layar Penuh & Mulai Ujian' : 'Mulai Kerjakan Ujian Sekarang'}
             </button>
             <button
               id="btn-abort-exam"
@@ -1233,6 +1443,38 @@ export default function StudentExam({
 
   return (
     <div className="min-h-screen bg-slate-50 flex flex-col justify-between font-sans relative select-none">
+      {/* Real-time Non-Blocking Passive Violation Toast (Strict Proctor OFF) */}
+      {passiveToast && !violationToast && (
+        <div className="fixed top-4 inset-x-3 max-w-md mx-auto z-[999998] bg-slate-900/95 backdrop-blur-md text-white border-2 border-amber-400/70 shadow-2xl rounded-2xl p-3.5 sm:p-4 flex items-start gap-3 animate-fade-in notranslate select-none" translate="no">
+          <div className="w-9 h-9 rounded-xl bg-amber-500/20 border border-amber-400/40 text-amber-300 flex items-center justify-center shrink-0">
+            <AlertTriangle className="w-5 h-5" />
+          </div>
+          <div className="flex-1 min-w-0">
+            <div className="flex items-center justify-between gap-2">
+              <span className="text-[10px] font-mono font-black uppercase tracking-wider text-amber-300">
+                Pelanggaran #{passiveToast.count} Tercatat (Tanpa Kunci)
+              </span>
+              <button
+                type="button"
+                onClick={() => setPassiveToast(null)}
+                className="text-slate-400 hover:text-white p-0.5 cursor-pointer"
+                title="Tutup"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+            <div className="mt-1 flex items-center gap-1.5 flex-wrap">
+              <span className={`px-2 py-0.5 rounded border text-[10px] font-bold font-mono ${getViolationCategoryMeta(passiveToast.category).darkBadgeClass}`}>
+                {getViolationCategoryMeta(passiveToast.category).label}
+              </span>
+            </div>
+            <p className="text-xs text-slate-200 mt-1 leading-snug">
+              {passiveToast.reason}
+            </p>
+          </div>
+        </div>
+      )}
+
       {/* Real-time Violation Alert Dialog with Large Touch-Friendly OK Button */}
       {violationToast && (
         <div className="fixed inset-0 bg-slate-950/75 backdrop-blur-xs flex items-center justify-center p-4 z-50 animate-fade-in">
@@ -1438,9 +1680,35 @@ export default function StudentExam({
         <div className="max-w-5xl mx-auto flex flex-col sm:flex-row sm:items-center justify-between gap-4">
           <div>
             <div className="flex items-center gap-2 flex-wrap">
-              <span className="px-2 py-0.5 bg-red-600 text-white font-mono text-[10px] font-bold tracking-widest rounded uppercase">
-                PROCTOR ACTIVE
-              </span>
+              {isStrictMode ? (
+                <span className="px-2 py-0.5 bg-red-600 text-white font-mono text-[10px] font-bold tracking-widest rounded uppercase">
+                  PROCTOR ACTIVE
+                </span>
+              ) : isPassiveLoggingMode ? (
+                <span className="px-2 py-0.5 bg-amber-500 text-slate-950 font-mono text-[10px] font-black tracking-wider rounded uppercase">
+                  CATAT PELANGGARAN AKTIF
+                </span>
+              ) : (
+                <span className="px-2 py-0.5 bg-slate-700 text-slate-300 font-mono text-[10px] font-bold tracking-wider rounded uppercase">
+                  PROCTOR NONAKTIF
+                </span>
+              )}
+              {isMonitoringActive && (
+                <button
+                  type="button"
+                  id="btn-header-violation-counter"
+                  onClick={() => setShowViolationDetailsPanel(prev => !prev)}
+                  className={`px-2 py-0.5 rounded font-mono text-[10px] font-bold flex items-center gap-1 transition cursor-pointer border ${
+                    localViolationCount > 0
+                      ? 'bg-rose-600/90 hover:bg-rose-500 text-white border-rose-400/50'
+                      : 'bg-slate-800 hover:bg-slate-700 text-emerald-300 border-slate-700'
+                  }`}
+                  title="Klik untuk melihat riwayat detail pelanggaran"
+                >
+                  <History className="w-3 h-3" />
+                  <span>Pelanggaran: {localViolationCount}x</span>
+                </button>
+              )}
               <span className="text-slate-400 text-xs font-mono">
                 KELAS {student.studentClass} • ABSEN {student.absentNumber}
               </span>
@@ -1528,8 +1796,107 @@ export default function StudentExam({
       </header>
 
       {/* Main Layout Area */}
-      <main className="max-w-5xl mx-auto w-full flex-1 px-4 py-8 grid grid-cols-1 lg:grid-cols-3 gap-8">
+      <main className="max-w-5xl mx-auto w-full flex-1 px-4 py-6 sm:py-8 grid grid-cols-1 lg:grid-cols-3 gap-6 sm:gap-8">
         
+        {/* Live Student Screen Violation Counter & Detailed Activity Log Panel */}
+        {isMonitoringActive && (
+          <div className="lg:col-span-3">
+            <div className={`rounded-2xl border p-3.5 sm:p-4 shadow-2xs transition-all ${
+              localViolationCount > 0
+                ? 'bg-rose-50/90 border-rose-200'
+                : isPassiveLoggingMode
+                ? 'bg-amber-50/70 border-amber-200/80'
+                : 'bg-white border-slate-200'
+            }`}>
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">
+                <div className="flex items-start sm:items-center gap-3 min-w-0">
+                  <div className={`w-9 h-9 rounded-xl flex items-center justify-center shrink-0 ${
+                    localViolationCount > 0
+                      ? 'bg-rose-600 text-white'
+                      : isPassiveLoggingMode
+                      ? 'bg-amber-500 text-slate-950'
+                      : 'bg-slate-900 text-emerald-400'
+                  }`}>
+                    <ShieldAlert className="w-4 h-4" />
+                  </div>
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <span className="text-xs font-extrabold text-slate-900">
+                        Pelanggaran Tercatat: <span className={localViolationCount > 0 ? 'text-rose-600' : 'text-emerald-700'}>{localViolationCount} Kali</span>
+                      </span>
+                      <span className={`px-2 py-0.5 rounded text-[10px] font-mono font-bold ${
+                        isStrictMode
+                          ? 'bg-indigo-100 text-indigo-800'
+                          : 'bg-amber-200/80 text-amber-950'
+                      }`}>
+                        {isStrictMode ? 'Mode Kunci Proktor' : 'Mode Catat Tanpa Kunci Layar'}
+                      </span>
+                    </div>
+                    <p className="text-[11px] text-slate-600 mt-0.5 truncate">
+                      {localViolationLogs.length > 0
+                        ? `Terakhir: ${getViolationCategoryMeta(localViolationLogs[localViolationLogs.length - 1].category).label} — ${localViolationLogs[localViolationLogs.length - 1].reason}`
+                        : isPassiveLoggingMode
+                        ? 'Sistem aktif mencatat detil aktivitas (Quick Chat, Floating Window, Split Screen, Google Lens, Google Assistant) tanpa mengunci layar.'
+                        : 'Tetap fokus pada lembar ujian. Belum ada pelanggaran tercatat.'}
+                    </p>
+                  </div>
+                </div>
+
+                {(localViolationLogs.length > 0 || localViolationCount > 0) && (
+                  <button
+                    type="button"
+                    id="btn-toggle-violation-details"
+                    onClick={() => setShowViolationDetailsPanel(prev => !prev)}
+                    className="px-3 py-1.5 bg-white hover:bg-rose-100/70 text-rose-700 border border-rose-300 rounded-xl text-xs font-bold flex items-center justify-center gap-1.5 shrink-0 cursor-pointer shadow-2xs transition"
+                  >
+                    <History className="w-3.5 h-3.5" />
+                    <span>{showViolationDetailsPanel ? 'Tutup Detail' : `Lihat Detail (${localViolationLogs.length || localViolationCount})`}</span>
+                    {showViolationDetailsPanel ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
+                  </button>
+                )}
+              </div>
+
+              {showViolationDetailsPanel && (
+                <div className="mt-3 pt-3 border-t border-rose-200/80 space-y-2 max-h-56 overflow-y-auto pr-1">
+                  {localViolationLogs.length > 0 ? (
+                    [...localViolationLogs].reverse().map((entry, idx) => {
+                      const meta = getViolationCategoryMeta(entry.category);
+                      const entryNo = localViolationLogs.length - idx;
+                      return (
+                        <div key={entry.id || idx} className="p-2.5 bg-white rounded-xl border border-rose-200/70 text-xs flex flex-col gap-1 shadow-2xs">
+                          <div className="flex items-center justify-between gap-2 flex-wrap">
+                            <div className="flex items-center gap-1.5 flex-wrap">
+                              <span className="font-mono font-black text-[10px] text-slate-500">#{entryNo}</span>
+                              <span className={`px-2 py-0.5 rounded border text-[10px] font-bold font-mono ${meta.badgeClass}`}>
+                                {meta.label}
+                              </span>
+                              <span className={`px-1.5 py-0.5 rounded text-[9px] font-mono font-bold ${
+                                entry.mode === 'PASSIVE' ? 'bg-amber-100 text-amber-800' : 'bg-rose-100 text-rose-800'
+                              }`}>
+                                {entry.mode === 'PASSIVE' ? 'Tercatat (Tanpa Kunci)' : 'Proktor Ketat'}
+                              </span>
+                            </div>
+                            <span className="text-[10px] font-mono text-slate-400">
+                              {formatViolationTime(entry.timestamp)}
+                            </span>
+                          </div>
+                          <p className="text-[11px] font-medium text-slate-700 leading-snug">
+                            {entry.reason}
+                          </p>
+                        </div>
+                      );
+                    })
+                  ) : (
+                    <div className="p-2.5 bg-white rounded-xl border border-rose-200/70 text-xs text-slate-600">
+                      Tercatat {localViolationCount} kali pelanggaran ({student.lockedReason || 'Keluar fokus layar'}).
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
         {/* Left Hand: Question Box */}
         <section className="lg:col-span-2 space-y-6">
           {isGraceActive && (
@@ -1821,7 +2188,7 @@ export default function StudentExam({
       )}
 
       {/* Floating Quick Access Full Screen Mode Toggle Button */}
-      {isFullscreenSupported && examStatus === 'SEDANG_MENGERJAKAN' && (
+      {isStrictMode && isFullscreenSupported && examStatus === 'SEDANG_MENGERJAKAN' && (
         <button
           type="button"
           id="btn-floating-fullscreen-toggle"

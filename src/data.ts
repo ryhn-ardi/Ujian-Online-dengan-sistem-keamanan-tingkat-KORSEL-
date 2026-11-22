@@ -145,6 +145,7 @@ export const INITIAL_CONFIG: ExamConfig = {
   subject2Name: 'Bahasa Indonesia TKA',
   subjects: DEFAULT_SUBJECTS,
   strictSecurityEnabled: true,
+  passiveViolationLoggingEnabled: true,
   maxAllowedViolations: 3,
   clearAnswersOnViolation: false,
   sirenAlarmEnabled: true,

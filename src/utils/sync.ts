@@ -110,6 +110,18 @@ export function cleanStudent(s: Student): Student {
   if (Array.isArray(s.assignedQuestionIds) && s.assignedQuestionIds.length > 0) {
     cleaned.assignedQuestionIds = s.assignedQuestionIds;
   }
+  if (Array.isArray(s.violationLogs)) {
+    cleaned.violationLogs = s.violationLogs
+      .filter((v) => v && typeof v.reason === 'string')
+      .slice(-100)
+      .map((v, idx) => ({
+        id: String(v.id || `vlog_${idx}_${Date.now()}`),
+        timestamp: String(v.timestamp || new Date().toISOString()),
+        reason: String(v.reason).slice(0, 240),
+        category: v.category || 'OTHER',
+        mode: v.mode === 'PASSIVE' ? 'PASSIVE' : 'STRICT'
+      }));
+  }
   return cleaned;
 }
 
