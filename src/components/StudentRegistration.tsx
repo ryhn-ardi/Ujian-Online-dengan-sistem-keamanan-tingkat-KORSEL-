@@ -3,7 +3,7 @@ import { ShieldCheck, UserCheck, Settings, AlertTriangle, AlertCircle, Info, Ref
 import { Student, Question, ExamConfig, ExamSubject, StudentUser } from '../types';
 import { getExamSubjects, getStudentFromServer, syncStudentSessionsForUser, purgeStudentLocally } from '../utils/sync';
 import { useRealtimeWIB, evaluateSubjectSchedule, formatDurationCountdown, formatWIBShort, formatWIBDateTime } from '../utils/timeWib';
-import { isSubjectMatchingStudentClass, getGradeBadge } from '../utils/gradeHelper';
+import { isSubjectMatchingStudentClass, getGradeBadge, doesQuestionBelongToSubject, isSameStudentAccount } from '../utils/gradeHelper';
 
 interface StudentRegistrationProps {
   students: Student[];
@@ -73,29 +73,35 @@ export default function StudentRegistration({
 
   // Automatically adjust subjectId if current selection is not in visibleSubjects list or auto-select in-progress subject
   useEffect(() => {
-    if (visibleSubjects.length > 0) {
-      if (authenticatedUser) {
-        const inProgressSub = visibleSubjects.find(sub => {
-          const session = getStudentSessionForSubject(sub.id);
-          return session && (session.status === 'SEDANG_MENGERJAKAN' || session.status === 'TERKUNCI');
-        });
-        if (inProgressSub && inProgressSub.id !== subjectId) {
-          setSubjectId(inProgressSub.id);
-          return;
-        }
+    if (visibleSubjects.length === 0) {
+      if (subjectId !== '') {
+        setSubjectId('');
       }
-      if (!visibleSubjects.some(s => s.id === subjectId)) {
-        setSubjectId(visibleSubjects[0].id);
+      return;
+    }
+
+    if (authenticatedUser) {
+      const inProgressSub = visibleSubjects.find(sub => {
+        const session = getStudentSessionForSubject(sub.id);
+        return session && (session.status === 'SEDANG_MENGERJAKAN' || session.status === 'TERKUNCI');
+      });
+      if (inProgressSub && inProgressSub.id !== subjectId) {
+        setSubjectId(inProgressSub.id);
+        return;
       }
+    }
+
+    if (!visibleSubjects.some(s => s.id === subjectId)) {
+      setSubjectId(visibleSubjects[0].id);
     }
   }, [authenticatedUser, visibleSubjects, students, subjectId]);
 
   // Determine effective subject ID strictly from active visible subjects
   const effectiveSubjectId = visibleSubjects.find(s => s.id === subjectId)?.id || visibleSubjects[0]?.id || '';
 
-  // Calculate question count for a specific subject
+  // Calculate question count for a specific subject consistently with StudentExam
   const getSubjectQuestionCount = (subId: string) => {
-    return questions.filter(q => q.subjectId === subId || (!q.subjectId && subId === (allSubjects[0]?.id || 'sub1'))).length;
+    return questions.filter(q => doesQuestionBelongToSubject(q, subId, allSubjects)).length;
   };
 
   const selectedSubject = visibleSubjects.find(s => s.id === effectiveSubjectId);
@@ -103,19 +109,18 @@ export default function StudentRegistration({
 
   // Check if current student has a session (completed or in progress) for a specific subject
   const getStudentSessionForSubject = (subId: string) => {
-    const currentUsername = authenticatedUser ? authenticatedUser.username.toLowerCase() : usernameInput.trim().toLowerCase();
-    const currentName = authenticatedUser ? authenticatedUser.name.trim().toLowerCase().replace(/\s+/g, '') : name.trim().toLowerCase().replace(/\s+/g, '');
+    const currentUsername = authenticatedUser ? authenticatedUser.username.trim() : usernameInput.trim();
+    const currentName = authenticatedUser ? authenticatedUser.name.trim() : name.trim();
     if (!currentUsername && !currentName) return null;
 
     return students.find((s) => {
       const sSub = s.subjectId || allSubjects[0]?.id || 'sub1';
       if (sSub !== subId) return false;
-      if (currentUsername && s.username && s.username.toLowerCase() === currentUsername) return true;
-      if (currentName) {
-        const sNorm = s.name.trim().toLowerCase().replace(/\s+/g, '');
-        return sNorm === currentName;
-      }
-      return false;
+      return isSameStudentAccount(s, {
+        username: currentUsername,
+        name: currentName,
+        studentClass: currentStudentClass
+      });
     });
   };
 
@@ -151,12 +156,11 @@ export default function StudentRegistration({
       setStudentClass(matchedUser.studentClass);
       setAbsentNumber(matchedUser.absentNumber || '');
       setLoginError('');
+      setError('');
 
       // SINKRONISASI SERVER OTOMATIS:
       // Verifikasi seluruh riwayat/sesi ujian siswa ini langsung dari server Firestore.
-      // Jika admin master telah menghapus riwayat nilai siswa ini di cloud, cache lokal langsung dibersihkan
-      // sehingga siswa tidak terblokir dengan status SELESAI / nilai lama!
-      syncStudentSessionsForUser(matchedUser.username, matchedUser.name);
+      syncStudentSessionsForUser(matchedUser.username, matchedUser.name, matchedUser.studentClass);
     } else {
       setLoginError('Username atau Password siswa salah / belum terdaftar! Pastikan data akun siswa sudah ditambahkan di menu Admin (ikon gembok di kanan atas > Data Akun Siswa).');
     }
@@ -174,24 +178,27 @@ export default function StudentRegistration({
     if (!finalName) return setError('Nama lengkap siswa belum terisi');
     if (!finalAbsent) return setError('Nomor absen belum terisi');
     if (!finalClass) return setError('Kelas belum terisi');
-    if (visibleSubjects.length === 0) return setError('Belum ada naskah ujian yang aktif atau dijadwalkan saat ini.');
+    if (visibleSubjects.length === 0 || !selectedSubject) {
+      return setError(`Tidak ada naskah ujian yang aktif atau sesuai untuk kelas "${finalClass}" saat ini.`);
+    }
+    if (!isSubjectMatchingStudentClass(selectedSubject, finalClass, false)) {
+      return setError(`Naskah "${selectedSubject.name}" tidak diperuntukkan bagi kelas "${finalClass}". Silakan pilih naskah lain yang sesuai kelas Anda.`);
+    }
     if (selectedSubjectSchedule && !selectedSubjectSchedule.canStartExam) {
       return setError(selectedSubjectSchedule.detailMessage);
     }
     if (!agreed) return setError('Anda harus menyetujui seluruh pakta integritas ujian');
 
-    // Per-subject validation: Student can take Subject B (Naskah B) even if they completed Subject A (Naskah A)
-    const normalizedNewName = finalName.trim().toLowerCase().replace(/\s+/g, '');
-    const targetSubjectId = effectiveSubjectId || 'sub1';
+    // Per-subject validation: Student can take Subject B even if they completed Subject A, without cross-class name collision
+    const targetSubjectId = selectedSubject.id;
     let existingSubjectSession = students.find((s) => {
-      const sSubId = s.subjectId || 'sub1';
+      const sSubId = s.subjectId || allSubjects[0]?.id || 'sub1';
       if (sSubId !== targetSubjectId) return false;
-
-      if (finalUsername && s.username && s.username.toLowerCase() === finalUsername.toLowerCase()) {
-        return true;
-      }
-      const normalizedExisting = s.name.trim().toLowerCase().replace(/\s+/g, '');
-      return normalizedExisting === normalizedNewName;
+      return isSameStudentAccount(s, {
+        username: finalUsername,
+        name: finalName,
+        studentClass: finalClass
+      });
     });
 
     // VERIFIKASI LANGSUNG DENGAN SERVER FIRESTORE:
@@ -463,7 +470,8 @@ export default function StudentRegistration({
                                 setIsVerifyingWithServer(true);
                                 const u = authenticatedUser ? authenticatedUser.username : usernameInput;
                                 const n = authenticatedUser ? authenticatedUser.name : name;
-                                await syncStudentSessionsForUser(u, n);
+                                const c = authenticatedUser ? authenticatedUser.studentClass : studentClass;
+                                await syncStudentSessionsForUser(u, n, c);
                                 setError('');
                                 setIsVerifyingWithServer(false);
                               }}
@@ -501,6 +509,9 @@ export default function StudentRegistration({
                         setAuthenticatedUser(null);
                         setUsernameInput('');
                         setPasswordInput('');
+                        setStudentClass('');
+                        setSubjectId('');
+                        setError('');
                       }}
                       className="text-xs font-bold text-slate-500 hover:text-indigo-600 cursor-pointer"
                     >

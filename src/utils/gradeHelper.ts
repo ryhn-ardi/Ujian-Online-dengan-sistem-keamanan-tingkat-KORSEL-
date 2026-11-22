@@ -1,4 +1,4 @@
-import { ExamSubject } from '../types';
+import { ExamSubject, Question } from '../types';
 
 export const GRADE_PRESETS = [
   { id: 'ALL', label: 'Semua Tingkatan (Umum)', shortLabel: 'Semua Kelas', description: 'Dapat diakses oleh seluruh siswa dari semua kelas', badgeBg: 'bg-emerald-50 text-emerald-700 border-emerald-200' },
@@ -10,54 +10,10 @@ export const GRADE_PRESETS = [
   { id: '12', label: 'Khusus Kelas 12 (XII)', shortLabel: 'Kelas 12', description: 'Hanya ditampilkan untuk siswa Kelas 12 / XII', badgeBg: 'bg-rose-50 text-rose-700 border-rose-200' }
 ];
 
-/**
- * Normalizes Roman and Arabic grade levels from student class string.
- * Examples:
- * - "8A", "8-B", "8.1", "KELAS 8", "8" -> "8"
- * - "VIII A", "VIII-1", "KELAS VIII" -> "8"
- * - "7B", "VII A", "VII" -> "7"
- * - "9C", "IX B", "IX" -> "9"
- * - "10 IPA 1", "X MIPA", "X" -> "10"
- * - "11 IPS 2", "XI IPA", "XI" -> "11"
- * - "12 TKJ 1", "XII RPL", "XII" -> "12"
- */
-export function extractGradeFromClass(studentClass?: string): string | null {
-  if (!studentClass || !studentClass.trim()) return null;
-  const normalized = studentClass.trim().toUpperCase();
-
-  // 1. Check for "KELAS X", "KELAS 8", etc.
-  const kelasMatch = normalized.match(/KELAS\s*(XII|XI|X|IX|VIII|VII|VI|V|IV|III|II|I|\d+)/i);
-  if (kelasMatch && kelasMatch[1]) {
-    const raw = kelasMatch[1].toUpperCase();
-    const romanConverted = romanToNumber(raw);
-    if (romanConverted) return romanConverted;
-    if (/^\d+$/.test(raw)) return raw;
-  }
-
-  // 2. Check Roman numerals at start or standalone (XII, XI, X, IX, VIII, VII, etc.)
-  const romanMatch = normalized.match(/^(XII|XI|X|IX|VIII|VII|VI|V|IV|III|II|I)(?:\b|[-_.\s]|$)/i);
-  if (romanMatch && romanMatch[1]) {
-    const romanConverted = romanToNumber(romanMatch[1].toUpperCase());
-    if (romanConverted) return romanConverted;
-  }
-
-  // 3. Check leading digits (e.g., 10, 11, 12, 7, 8, 9)
-  const numMatch = normalized.match(/^(\d+)/);
-  if (numMatch && numMatch[1]) {
-    return numMatch[1];
-  }
-
-  // 4. Check any isolated number token (e.g., "SMP 8 A", "TINGKAT 9")
-  const tokenMatch = normalized.match(/\b(1[0-2]|[1-9])\b/);
-  if (tokenMatch && tokenMatch[1]) {
-    return tokenMatch[1];
-  }
-
-  return null;
-}
+const ROMAN_NUMERALS_PATTERN = '(XII|XI|IX|VIII|VII|VI|IV|III|II|X|V|I)';
 
 function romanToNumber(roman: string): string | null {
-  switch (roman) {
+  switch (roman.toUpperCase()) {
     case 'XII': return '12';
     case 'XI': return '11';
     case 'X': return '10';
@@ -75,50 +31,200 @@ function romanToNumber(roman: string): string | null {
 }
 
 /**
- * Checks whether an exam subject is accessible / intended for a student given their class.
+ * Strips common Indonesian class prefixes ("KELAS", "KLS", "TINGKAT", "GRADE", "LEVEL")
  */
-export function isSubjectMatchingStudentClass(subject: ExamSubject, studentClass?: string): boolean {
+function stripGradePrefixes(raw: string): string {
+  return raw
+    .trim()
+    .toUpperCase()
+    .replace(/^(?:KELAS|KLS|TINGKAT|GRADE|LEVEL)\s*[-.:]?\s*/i, '')
+    .trim();
+}
+
+/**
+ * Canonicalizes a class identifier so variations like "VIII-A", "8 A", "Kelas 8A"
+ * all resolve cleanly to "8A", and "X IPA 1" resolves to "10IPA1".
+ */
+export function normalizeClassCanonical(studentClass?: string): string {
+  if (!studentClass || !studentClass.trim()) return '';
+  let clean = stripGradePrefixes(studentClass);
+
+  // Convert leading Roman numeral grade (e.g. "VIII A", "VIII-B", "VIIIA", "X IPA 1", "IXA")
+  const romanPrefixMatch = clean.match(new RegExp(`^${ROMAN_NUMERALS_PATTERN}(?=$|[\\s\\-_.A-Z0-9])`, 'i'));
+  if (romanPrefixMatch && romanPrefixMatch[1]) {
+    const romanToken = romanPrefixMatch[1].toUpperCase();
+    const rest = clean.slice(romanToken.length);
+    // Avoid misreading words starting with "I" like "IPA 1" or "IPS 2" as Grade 1 ("I")
+    const isRomanIWord = romanToken === 'I' && /^[A-Z]/.test(rest);
+    const validBoundary = rest === '' || /^[\s\-_.]/.test(rest) || (romanToken.length >= 2 && /^[A-Z0-9]/.test(rest)) || (romanToken === 'X' && /^[A-Z0-9]/.test(rest));
+    if (validBoundary && !isRomanIWord) {
+      const converted = romanToNumber(romanToken);
+      if (converted) {
+        clean = converted + rest;
+      }
+    }
+  }
+
+  return clean.replace(/[\s\-_.]+/g, '').toUpperCase();
+}
+
+/**
+ * Normalizes Roman and Arabic grade levels from student class string.
+ * Examples:
+ * - "8A", "8-B", "8.1", "KELAS 8", "8" -> "8"
+ * - "VIII A", "VIII-1", "KELAS VIII" -> "8"
+ * - "7B", "VII A", "VII" -> "7"
+ * - "9C", "IX B", "IX" -> "9"
+ * - "10 IPA 1", "X MIPA", "X" -> "10"
+ * - "11 IPS 2", "XI IPA", "XI" -> "11"
+ * - "12 TKJ 1", "XII RPL", "XII" -> "12"
+ */
+export function extractGradeFromClass(studentClass?: string): string | null {
+  if (!studentClass || !studentClass.trim()) return null;
+  const normalized = studentClass.trim().toUpperCase();
+
+  // 1. Explicit "KELAS X", "KELAS 8", "TINGKAT 9", etc.
+  const kelasMatch = normalized.match(/(?:KELAS|KLS|TINGKAT|GRADE|LEVEL)\s*[-.:]?\s*(XII|XI|X|IX|VIII|VII|VI|V|IV|III|II|I|\d+)/i);
+  if (kelasMatch && kelasMatch[1]) {
+    const raw = kelasMatch[1].toUpperCase();
+    const romanConverted = romanToNumber(raw);
+    if (romanConverted) return romanConverted;
+    if (/^\d+$/.test(raw)) return String(parseInt(raw, 10));
+  }
+
+  // 2. Leading Roman numerals at start (XII, XI, X, IX, VIII, VII, etc.) with clear boundary
+  const stripped = stripGradePrefixes(normalized);
+  const romanMatch = stripped.match(new RegExp(`^${ROMAN_NUMERALS_PATTERN}(?=$|[\\s\\-_.]|(?:[A-Z0-9]))`, 'i'));
+  if (romanMatch && romanMatch[1]) {
+    const token = romanMatch[1].toUpperCase();
+    const rest = stripped.slice(token.length);
+    // Avoid misreading words like "IPA 1" or "IPS 2" as Roman "I"
+    const isRomanIWord = token === 'I' && /^[A-Z]/.test(rest);
+    const hasWordBoundary = rest === '' || /^[\s\-_.]/.test(rest) || (token.length >= 2 && /^[A-Z0-9]/.test(rest));
+    if (!isRomanIWord && hasWordBoundary) {
+      const romanConverted = romanToNumber(token);
+      if (romanConverted) return romanConverted;
+    }
+  }
+
+  // 3. Leading digits (e.g., 10, 11, 12, 7, 8, 9)
+  const numMatch = stripped.match(/^(\d{1,2})(?=$|[^0-9])/);
+  if (numMatch && numMatch[1]) {
+    return String(parseInt(numMatch[1], 10));
+  }
+
+  return null;
+}
+
+/**
+ * Returns true if a target token represents an entire grade level (e.g. "8", "VIII", "KELAS 8")
+ * rather than a specific class section (e.g. "8A", "VIII-B", "10 IPA 1").
+ */
+function isWholeGradeToken(targetToken: string): boolean {
+  const stripped = stripGradePrefixes(targetToken);
+  if (/^\d{1,2}$/.test(stripped)) return true;
+  if (romanToNumber(stripped) !== null) return true;
+  return false;
+}
+
+/**
+ * Checks whether an exam subject is accessible / intended for a student given their class.
+ * @param allowEmptyClass When true (default, for UI preview before typing), empty class returns true.
+ *                        Pass false when enforcing class access at exam start/restore.
+ */
+export function isSubjectMatchingStudentClass(
+  subject: ExamSubject,
+  studentClass?: string,
+  allowEmptyClass = true
+): boolean {
   // If no targetGrade specified, or set to ALL or empty -> accessible to everyone
   const target = (subject.targetGrade || 'ALL').trim().toUpperCase();
   if (target === 'ALL' || target === 'SEMUA' || target === '') {
     return true;
   }
 
-  // If student class is not specified yet (e.g. before login/typing in manual mode),
-  // default to allowing so options are visible or prompt student
+  // Handle missing/empty student class
   if (!studentClass || !studentClass.trim()) {
-    return true;
+    return allowEmptyClass;
   }
 
   const cleanStudentClass = studentClass.trim().toUpperCase();
+  const canonicalStudent = normalizeClassCanonical(cleanStudentClass);
   const studentGrade = extractGradeFromClass(cleanStudentClass);
 
-  // Split targetGrade by comma in case of multiple grades/classes (e.g., "7, 8" or "8A, 8B")
-  const targets = target.split(',').map(t => t.trim().toUpperCase()).filter(Boolean);
+  // Split targetGrade by comma/semicolon in case of multiple grades/classes (e.g., "7, 8" or "8A, 8B")
+  const targets = target.split(/[,;]+/).map(t => t.trim().toUpperCase()).filter(Boolean);
 
   for (const t of targets) {
-    // 1. Direct class exact match (e.g. target "8A" === student "8A")
-    if (t === cleanStudentClass) return true;
+    if (t === 'ALL' || t === 'SEMUA') return true;
 
-    // 2. Direct grade match (e.g. target "8" === studentGrade "8")
-    if (studentGrade && (t === studentGrade || t === `KELAS ${studentGrade}` || t === `KELAS ${studentGrade}`.toUpperCase())) {
+    // 1. Direct canonical class exact match (e.g. "8A" matches "8A", "8 A", "8-A", "VIII A", "Kelas 8A")
+    const canonicalTarget = normalizeClassCanonical(t);
+    if (canonicalTarget && canonicalStudent && canonicalTarget === canonicalStudent) {
       return true;
     }
 
-    // 3. Roman equivalent match (e.g. target "VIII" -> "8" matches studentGrade "8")
-    const tRomanNum = romanToNumber(t);
-    if (tRomanNum && studentGrade && tRomanNum === studentGrade) {
-      return true;
-    }
-
-    // 4. Target extraction match
-    const targetExtracted = extractGradeFromClass(t);
-    if (targetExtracted && studentGrade && targetExtracted === studentGrade) {
-      return true;
+    // 2. Whole-grade target match ONLY if target token specifies a whole grade (e.g. "8", "VIII", "KELAS 8")
+    //    NEVER treat a specific section target like "8A" as matching all of Grade 8 ("8B", "8C", etc.)!
+    if (isWholeGradeToken(t)) {
+      const targetGrade = extractGradeFromClass(t);
+      if (targetGrade && studentGrade && targetGrade === studentGrade) {
+        return true;
+      }
     }
   }
 
   return false;
+}
+
+/**
+ * Consistent check whether a Question belongs to a target subjectId across Admin, Registration, and Exam views.
+ */
+export function doesQuestionBelongToSubject(
+  q: Question,
+  targetSubId: string | undefined,
+  subjects?: ExamSubject[]
+): boolean {
+  const firstSubId = subjects && subjects.length > 0 ? subjects[0].id : 'sub1';
+  const normalizedTarget = targetSubId || firstSubId;
+  if (q.subjectId) {
+    return q.subjectId === normalizedTarget;
+  }
+  // Legacy unassigned questions without subjectId belong to the primary/first slot or 'sub1'
+  return normalizedTarget === firstSubId || normalizedTarget === 'sub1';
+}
+
+/**
+ * Matches a Student exam session against login credentials without falsely colliding
+ * students who share the same display name in different accounts or classes.
+ */
+export function isSameStudentAccount(
+  session: { username?: string; name?: string; studentClass?: string },
+  target: { username?: string; name?: string; studentClass?: string }
+): boolean {
+  const sUser = (session.username || '').trim().toLowerCase();
+  const tUser = (target.username || '').trim().toLowerCase();
+
+  // If both have usernames, they MUST match cleanly by username — never fall back to name
+  if (sUser && tUser) {
+    return sUser === tUser;
+  }
+
+  // Fallback to normalized name when username is missing on either side
+  const sName = (session.name || '').trim().toLowerCase().replace(/\s+/g, '');
+  const tName = (target.name || '').trim().toLowerCase().replace(/\s+/g, '');
+  if (!sName || !tName || sName !== tName) {
+    return false;
+  }
+
+  // When falling back to name matching, if both have class info, also require same canonical class
+  const sClass = normalizeClassCanonical(session.studentClass);
+  const tClass = normalizeClassCanonical(target.studentClass);
+  if (sClass && tClass && sClass !== 'UMUM' && tClass !== 'UMUM') {
+    return sClass === tClass;
+  }
+
+  return true;
 }
 
 /**

@@ -21,6 +21,7 @@ import {
   setCustomAnnouncementAudioData,
   getCustomAnnouncementAudioData
 } from './alarmAudio';
+import { isSameStudentAccount } from './gradeHelper';
 
 const STUDENTS_KEY = 'proktor_students';
 const QUESTIONS_KEY = 'proktor_questions';
@@ -38,6 +39,7 @@ export const DEFAULT_STUDENT_USERS: StudentUser[] = [
 // Helpers to safely load and cache data across page reloads
 function getStored<T>(key: string, fallback: T): T {
   try {
+    if (typeof localStorage === 'undefined') return fallback;
     const item = localStorage.getItem(key);
     if (!item) return fallback;
     return JSON.parse(item) as T;
@@ -45,6 +47,24 @@ function getStored<T>(key: string, fallback: T): T {
     return fallback;
   }
 }
+
+function setStored(key: string, value: unknown): void {
+  try {
+    if (typeof localStorage === 'undefined') return;
+    localStorage.setItem(key, JSON.stringify(value));
+  } catch (e) {
+    console.warn(`LocalStorage write skipped for "${key}":`, e);
+  }
+}
+
+function removeStored(key: string): void {
+  try {
+    if (typeof localStorage === 'undefined') return;
+    localStorage.removeItem(key);
+  } catch (e) {}
+}
+
+const QUESTIONS_PENDING_SYNC_KEY = 'proktor_questions_pending_sync';
 
 // Clean and sanitize data before saving to Firestore (removes undefined values and ensures valid structures)
 export function sanitizeForFirestore<T>(data: T): any {
@@ -516,16 +536,17 @@ onSnapshot(
       });
       list.sort((a, b) => String(a.id || '').localeCompare(String(b.id || '')));
 
-      // Safe cache protection: Check if local storage has MORE questions than Firestore snapshot returned
+      // Safe cache protection: Only merge local cached questions if THIS device has pending unsynced edits
+      const hasPendingLocalSync = getStored<boolean>(QUESTIONS_PENDING_SYNC_KEY, false);
       const cached = getStored<Question[]>(QUESTIONS_KEY, []);
-      if (list.length < cached.length && cached.length > 0) {
+      if (hasPendingLocalSync && list.length < cached.length && cached.length > 0) {
         const remoteIds = new Set(list.map(q => q.id));
         const missingLocal = cached.filter(q => !remoteIds.has(q.id));
         if (missingLocal.length > 0) {
           const merged = [...list, ...missingLocal.map((q, idx) => sanitizeQuestionItem(q, `q_cached_${idx}`))];
           merged.sort((a, b) => String(a.id || '').localeCompare(String(b.id || '')));
           localQuestions = merged;
-          localStorage.setItem(QUESTIONS_KEY, JSON.stringify(merged));
+          setStored(QUESTIONS_KEY, merged);
           initialSyncCompleted.questions = true;
           notifySubscribers('SYNC_QUESTIONS');
           saveQuestions(merged, false).catch(e => console.warn('Silent upload of merged cached questions to cloud:', e));
@@ -534,39 +555,47 @@ onSnapshot(
       }
 
       localQuestions = list;
-      localStorage.setItem(QUESTIONS_KEY, JSON.stringify(list));
+      setStored(QUESTIONS_KEY, list);
       initialSyncCompleted.questions = true;
       notifySubscribers('SYNC_QUESTIONS');
     } else {
       // Questions bank snapshot is empty from Firestore
+      const hasPendingLocalSync = getStored<boolean>(QUESTIONS_PENDING_SYNC_KEY, false);
       const cached = getStored<Question[]>(QUESTIONS_KEY, []);
-      if (cached.length > 0) {
+
+      // Check seedMeta in Firestore first to respect intentional admin clear
+      let intentionallyCleared = false;
+      try {
+        const seedSnap = await getDoc(doc(db, 'config', 'seedMeta'));
+        if (seedSnap.exists() && seedSnap.data()?.questionsInitialized === true && (seedSnap.data()?.count ?? 0) === 0) {
+          intentionallyCleared = true;
+        }
+      } catch (e) {}
+
+      if (cached.length > 0 && (hasPendingLocalSync || !intentionallyCleared)) {
         const restored = cached.map((q, idx) => sanitizeQuestionItem(q, `q_cached_${idx}`));
         localQuestions = restored;
-        localStorage.setItem(QUESTIONS_KEY, JSON.stringify(restored));
+        setStored(QUESTIONS_KEY, restored);
         initialSyncCompleted.questions = true;
         notifySubscribers('SYNC_QUESTIONS');
-        saveQuestions(restored, false).catch(e => console.warn('Silent upload of cached questions to empty cloud:', e));
+        if (hasPendingLocalSync) {
+          saveQuestions(restored, false).catch(e => console.warn('Silent upload of cached questions to empty cloud:', e));
+        }
         return;
       }
 
-      // No cached questions. Check seedMeta in Firestore
-      try {
-        const seedSnap = await getDoc(doc(db, 'config', 'seedMeta'));
-        if (seedSnap.exists() && seedSnap.data()?.questionsInitialized === true) {
-          // Admin explicitly cleared all questions
-          localQuestions = [];
-          localStorage.setItem(QUESTIONS_KEY, JSON.stringify([]));
-          initialSyncCompleted.questions = true;
-          notifySubscribers('SYNC_QUESTIONS');
-          return;
-        }
-      } catch (e) {}
+      if (intentionallyCleared) {
+        localQuestions = [];
+        setStored(QUESTIONS_KEY, []);
+        initialSyncCompleted.questions = true;
+        notifySubscribers('SYNC_QUESTIONS');
+        return;
+      }
 
       // Initial installation seeding fallback
       const initialList = INITIAL_QUESTIONS.map((q, idx) => sanitizeQuestionItem(q, `q_init_${idx}`));
       localQuestions = initialList;
-      localStorage.setItem(QUESTIONS_KEY, JSON.stringify(initialList));
+      setStored(QUESTIONS_KEY, initialList);
       initialSyncCompleted.questions = true;
       notifySubscribers('SYNC_QUESTIONS');
       saveQuestions(initialList, false).catch(e => console.warn('Silent seeding of initial questions:', e));
@@ -597,12 +626,12 @@ export function enableAllStudentsSync(): void {
         list.sort((a, b) => a.name.localeCompare(b.name));
 
         localStudents = list;
-        localStorage.setItem(STUDENTS_KEY, JSON.stringify(list));
+        setStored(STUDENTS_KEY, list);
         initialSyncCompleted.students = true;
         notifySubscribers('SYNC_STUDENTS');
       } else {
         localStudents = [];
-        localStorage.setItem(STUDENTS_KEY, JSON.stringify([]));
+        setStored(STUDENTS_KEY, []);
         initialSyncCompleted.students = true;
         notifySubscribers('SYNC_STUDENTS');
       }
@@ -650,7 +679,7 @@ export function subscribeToMyStudentSession(studentId: string): () => void {
           changed = true;
         }
         if (changed) {
-          localStorage.setItem(STUDENTS_KEY, JSON.stringify(localStudents));
+          setStored(STUDENTS_KEY, localStudents);
           notifySubscribers('SYNC_STUDENTS');
         }
       } else {
@@ -658,9 +687,9 @@ export function subscribeToMyStudentSession(studentId: string): () => void {
         const existed = localStudents.some((s) => s.id === studentId);
         if (existed) {
           localStudents = localStudents.filter((s) => s.id !== studentId);
-          localStorage.setItem(STUDENTS_KEY, JSON.stringify(localStudents));
+          setStored(STUDENTS_KEY, localStudents);
           try {
-            if (localStorage.getItem('active_student_id') === studentId) {
+            if (typeof localStorage !== 'undefined' && localStorage.getItem('active_student_id') === studentId) {
               localStorage.removeItem('active_student_id');
             }
           } catch (e) {}
@@ -696,7 +725,7 @@ onSnapshot(
       // Sort users by class then name
       allUsers.sort((a, b) => (a.studentClass || '').localeCompare(b.studentClass || '') || (a.name || '').localeCompare(b.name || ''));
       localStudentUsers = allUsers;
-      localStorage.setItem(STUDENT_USERS_KEY, JSON.stringify(allUsers));
+      setStored(STUDENT_USERS_KEY, allUsers);
       initialSyncCompleted.studentUsers = true;
       notifySubscribers('SYNC_STUDENT_USERS');
     } else {
@@ -719,7 +748,7 @@ onSnapshot(
         if (userMetaSnap.exists()) {
           // Admin intentionally emptied users
           localStudentUsers = [];
-          localStorage.setItem(STUDENT_USERS_KEY, JSON.stringify([]));
+          setStored(STUDENT_USERS_KEY, []);
           initialSyncCompleted.studentUsers = true;
           notifySubscribers('SYNC_STUDENT_USERS');
           return;
@@ -783,7 +812,8 @@ export async function fetchCustomAnnouncementAudioFromCloud(): Promise<string | 
 // Clear local questions cache
 export function clearLocalQuestionsCache(): void {
   try {
-    localStorage.removeItem(QUESTIONS_KEY);
+    removeStored(QUESTIONS_KEY);
+    removeStored(QUESTIONS_PENDING_SYNC_KEY);
     localQuestions = [];
     notifySubscribers('SYNC_QUESTIONS');
   } catch (e) {
@@ -794,7 +824,7 @@ export function clearLocalQuestionsCache(): void {
 // Force download fresh questions directly from Firestore server
 export async function refreshQuestionsFromServer(): Promise<Question[]> {
   try {
-    localStorage.removeItem(QUESTIONS_KEY);
+    removeStored(QUESTIONS_KEY);
     const snap = await getDocs(collection(db, 'questions'));
     recordFirestoreRead(snap.size, 'REFRESH_QUESTIONS', 'questions', `Mengunduh ulang ${snap.size} butir bank soal aktif dari server`);
 
@@ -806,9 +836,8 @@ export async function refreshQuestionsFromServer(): Promise<Question[]> {
     list.sort((a, b) => String(a.id || '').localeCompare(String(b.id || '')));
 
     localQuestions = list;
-    try {
-      localStorage.setItem(QUESTIONS_KEY, JSON.stringify(list));
-    } catch (e) {}
+    setStored(QUESTIONS_KEY, list);
+    removeStored(QUESTIONS_PENDING_SYNC_KEY);
 
     initialSyncCompleted.questions = true;
     notifySubscribers('SYNC_QUESTIONS');
@@ -906,11 +935,8 @@ export async function saveExamConfig(config: ExamConfig, broadcast = true): Prom
 export async function saveQuestions(questions: Question[], broadcast = true): Promise<void> {
   const sanitized = questions.map((q, idx) => sanitizeQuestionItem(q, `q_${Date.now()}_${idx}`));
   localQuestions = sanitized;
-  try {
-    localStorage.setItem(QUESTIONS_KEY, JSON.stringify(sanitized));
-  } catch (e) {
-    console.warn('Failed to save questions to localStorage:', e);
-  }
+  setStored(QUESTIONS_PENDING_SYNC_KEY, true);
+  setStored(QUESTIONS_KEY, sanitized);
   if (broadcast) notifySubscribers('SYNC_QUESTIONS');
 
   try {
@@ -950,6 +976,7 @@ export async function saveQuestions(questions: Question[], broadcast = true): Pr
       count: sanitized.length
     });
 
+    removeStored(QUESTIONS_PENDING_SYNC_KEY);
     recordFirestoreWrite(sanitized.length, 'SAVE_QUESTIONS', 'questions', `Menyimpan ${sanitized.length} butir bank soal ke cloud`);
     
     // Automatically trigger non-blocking Checkpoint & Write-Back to Cloud
@@ -1104,7 +1131,7 @@ export async function restoreQuestionsFromCheckpoint(): Promise<{ success: boole
 export async function saveStudentUsers(users: StudentUser[], broadcast = true): Promise<void> {
   const sanitizedUsers = users.map((u, i) => cleanStudentUser(u, i));
   localStudentUsers = sanitizedUsers;
-  localStorage.setItem(STUDENT_USERS_KEY, JSON.stringify(sanitizedUsers));
+  setStored(STUDENT_USERS_KEY, sanitizedUsers);
   if (broadcast) notifySubscribers('SYNC_STUDENT_USERS');
 
   try {
@@ -1150,7 +1177,7 @@ export async function saveStudentUsers(users: StudentUser[], broadcast = true): 
 export function saveStudentsLocally(students: Student[], broadcast = true): void {
   const cleanedList = students.map(s => cleanStudent(s));
   localStudents = cleanedList;
-  localStorage.setItem(STUDENTS_KEY, JSON.stringify(cleanedList));
+  setStored(STUDENTS_KEY, cleanedList);
   if (broadcast) notifySubscribers('SYNC_STUDENTS');
 }
 
@@ -1168,7 +1195,7 @@ export async function saveMultipleStudents(students: Student[], broadcast = true
       localStudents.push(s);
     }
   });
-  localStorage.setItem(STUDENTS_KEY, JSON.stringify(localStudents));
+  setStored(STUDENTS_KEY, localStudents);
   if (broadcast) notifySubscribers('SYNC_STUDENTS');
 
   try {
@@ -1193,7 +1220,7 @@ export async function deleteMultipleStudents(studentIds: string[], broadcast = t
   if (!studentIds || studentIds.length === 0) return;
   const idSet = new Set(studentIds);
   localStudents = localStudents.filter(s => !idSet.has(s.id));
-  localStorage.setItem(STUDENTS_KEY, JSON.stringify(localStudents));
+  setStored(STUDENTS_KEY, localStudents);
   if (broadcast) notifySubscribers('SYNC_STUDENTS');
 
   try {
@@ -1215,7 +1242,7 @@ export async function deleteMultipleStudents(studentIds: string[], broadcast = t
 export async function saveStudents(students: Student[], broadcast = true): Promise<void> {
   const cleanedList = students.map(s => cleanStudent(s));
   localStudents = cleanedList;
-  localStorage.setItem(STUDENTS_KEY, JSON.stringify(cleanedList));
+  setStored(STUDENTS_KEY, cleanedList);
   if (broadcast) notifySubscribers('SYNC_STUDENTS');
 
   try {
@@ -1250,7 +1277,7 @@ export function debounceSaveSingleStudent(student: Student, delayMs = 3000, broa
   } else {
     localStudents.push(cleaned);
   }
-  localStorage.setItem(STUDENTS_KEY, JSON.stringify(localStudents));
+  setStored(STUDENTS_KEY, localStudents);
   if (broadcast) notifySubscribers('SYNC_STUDENTS');
 
   // 2. Clear existing debounced timer for this student
@@ -1281,7 +1308,7 @@ export function saveSingleStudentLocallyOnly(student: Student, broadcast = true)
   } else {
     localStudents.push(cleaned);
   }
-  localStorage.setItem(STUDENTS_KEY, JSON.stringify(localStudents));
+  setStored(STUDENTS_KEY, localStudents);
   recordEcoSave('ECO_ANSWER_SAVE', `students/${cleaned.id}`, `Jawaban siswa '${cleaned.name}' disimpan di memori lokal (Menghemat 1 Write Cloud)`);
   if (broadcast) notifySubscribers('SYNC_STUDENTS');
 }
@@ -1300,7 +1327,7 @@ export async function saveSingleStudent(student: Student, broadcast = true): Pro
   } else {
     localStudents.push(cleaned);
   }
-  localStorage.setItem(STUDENTS_KEY, JSON.stringify(localStudents));
+  setStored(STUDENTS_KEY, localStudents);
   if (broadcast) notifySubscribers('SYNC_STUDENTS');
 
   try {
@@ -1314,9 +1341,9 @@ export async function saveSingleStudent(student: Student, broadcast = true): Pro
 // Delete a single student session document from Firestore
 export async function deleteSingleStudent(studentId: string, broadcast = true): Promise<void> {
   localStudents = localStudents.filter((s) => s.id !== studentId);
-  localStorage.setItem(STUDENTS_KEY, JSON.stringify(localStudents));
+  setStored(STUDENTS_KEY, localStudents);
   try {
-    if (localStorage.getItem('active_student_id') === studentId) {
+    if (typeof localStorage !== 'undefined' && localStorage.getItem('active_student_id') === studentId) {
       localStorage.removeItem('active_student_id');
     }
   } catch (e) {}
@@ -1332,9 +1359,11 @@ export async function deleteSingleStudent(studentId: string, broadcast = true): 
 // Clear all students permanently from both memory, local cache, and cloud Firestore
 export async function clearAllStudents(broadcast = true): Promise<void> {
   localStudents = [];
-  localStorage.setItem(STUDENTS_KEY, JSON.stringify([]));
+  setStored(STUDENTS_KEY, []);
   try {
-    localStorage.removeItem('active_student_id');
+    if (typeof localStorage !== 'undefined') {
+      localStorage.removeItem('active_student_id');
+    }
   } catch (e) {}
   if (broadcast) notifySubscribers('SYNC_STUDENTS');
 
@@ -1393,7 +1422,7 @@ export async function getStudentFromServer(studentId: string): Promise<Student |
         changed = true;
       }
       if (changed) {
-        localStorage.setItem(STUDENTS_KEY, JSON.stringify(localStudents));
+        setStored(STUDENTS_KEY, localStudents);
         notifySubscribers('SYNC_STUDENTS');
       }
       return student;
@@ -1402,9 +1431,9 @@ export async function getStudentFromServer(studentId: string): Promise<Student |
       const existed = localStudents.some((s) => s.id === studentId);
       if (existed) {
         localStudents = localStudents.filter((s) => s.id !== studentId);
-        localStorage.setItem(STUDENTS_KEY, JSON.stringify(localStudents));
+        setStored(STUDENTS_KEY, localStudents);
         try {
-          if (localStorage.getItem('active_student_id') === studentId) {
+          if (typeof localStorage !== 'undefined' && localStorage.getItem('active_student_id') === studentId) {
             localStorage.removeItem('active_student_id');
           }
         } catch (e) {}
@@ -1420,48 +1449,55 @@ export async function getStudentFromServer(studentId: string): Promise<Student |
 
 // Synchronize and verify student sessions directly with Firestore server for a specific student/username
 // Cleans up any zombie/stale deleted sessions from local cache if admin master deleted them from cloud
-export async function syncStudentSessionsForUser(username?: string, name?: string): Promise<Student[]> {
+export async function syncStudentSessionsForUser(username?: string, name?: string, studentClass?: string): Promise<Student[]> {
   try {
-    const cleanUser = username ? username.trim().toLowerCase() : '';
+    const rawUser = username ? username.trim() : '';
+    const cleanUser = rawUser.toLowerCase();
     const cleanName = name ? name.trim().toLowerCase().replace(/\s+/g, '') : '';
 
     if (!cleanUser && !cleanName) return [];
 
     // Query Firestore server directly for all active sessions of this username or name
-    const serverSessions: Student[] = [];
+    const serverSessionMap = new Map<string, Student>();
     if (cleanUser) {
-      try {
-        const q = query(collection(db, 'students'), where('username', '==', cleanUser));
-        const snap = await getDocs(q);
-        snap.forEach(d => {
-          serverSessions.push(d.data() as Student);
-        });
-      } catch (e) {
-        console.warn('Query students by username warning:', e);
+      const candidateUsers = Array.from(new Set([cleanUser, rawUser].filter(Boolean)));
+      for (const cand of candidateUsers) {
+        try {
+          const q = query(collection(db, 'students'), where('username', '==', cand));
+          const snap = await getDocs(q);
+          snap.forEach(d => {
+            serverSessionMap.set(d.id, d.data() as Student);
+          });
+        } catch (e) {
+          console.warn('Query students by username warning:', e);
+        }
       }
     } else if (cleanName) {
       try {
         const q = query(collection(db, 'students'), where('name', '==', name?.trim() || ''));
         const snap = await getDocs(q);
         snap.forEach(d => {
-          serverSessions.push(d.data() as Student);
+          const data = d.data() as Student;
+          if (isSameStudentAccount(data, { username: rawUser, name, studentClass })) {
+            serverSessionMap.set(d.id, data);
+          }
         });
       } catch (e) {
         console.warn('Query students by name warning:', e);
       }
     }
 
+    const serverSessions = Array.from(serverSessionMap.values());
     const serverSessionIds = new Set(serverSessions.map(s => s.id));
     let hasChanges = false;
 
-    // Purge any local student matching this user/name that is NOT present in serverSessions (meaning deleted by admin)
+    // Purge only local student sessions belonging to THIS specific account that are missing on server
     const prevCount = localStudents.length;
     localStudents = localStudents.filter(s => {
-      const matchesUser = cleanUser && s.username && s.username.toLowerCase() === cleanUser;
-      const matchesName = cleanName && s.name && s.name.trim().toLowerCase().replace(/\s+/g, '') === cleanName;
-      if ((matchesUser || matchesName) && !serverSessionIds.has(s.id)) {
+      const isThisAccount = isSameStudentAccount(s, { username: rawUser, name, studentClass });
+      if (isThisAccount && !serverSessionIds.has(s.id)) {
         try {
-          if (localStorage.getItem('active_student_id') === s.id) {
+          if (typeof localStorage !== 'undefined' && localStorage.getItem('active_student_id') === s.id) {
             localStorage.removeItem('active_student_id');
           }
         } catch (e) {}
@@ -1489,7 +1525,7 @@ export async function syncStudentSessionsForUser(username?: string, name?: strin
     });
 
     if (hasChanges) {
-      localStorage.setItem(STUDENTS_KEY, JSON.stringify(localStudents));
+      setStored(STUDENTS_KEY, localStudents);
       notifySubscribers('SYNC_STUDENTS');
     }
 

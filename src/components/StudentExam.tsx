@@ -182,7 +182,7 @@ export default function StudentExam({
   }, [config.forcedRefreshTimestamp, config.forcedRefreshReason, config.forcedRefreshType]);
 
   const allSubjects = getExamSubjects(config);
-  const activeSubject = allSubjects.find(s => s.id === (student.subjectId || 'sub1')) || allSubjects[0];
+  const activeSubject = allSubjects.find(s => s.id === (student.subjectId || allSubjects[0]?.id || 'sub1')) || allSubjects[0];
   const activeSubjectName = activeSubject ? activeSubject.name : (student.subjectId || 'Ujian Digital');
 
   const isFullscreenSupported = typeof document !== 'undefined' && !!(
@@ -402,7 +402,9 @@ export default function StudentExam({
     let blurTimeout: NodeJS.Timeout | null = null;
     let touchStartY = 0;
     let touchStartX = 0;
+    let touchStartTime = 0;
     let lastRightClickTime = 0;
+    let focusLostSince: number | null = null;
 
     const checkIsFs = () => {
       return !!(
@@ -416,7 +418,7 @@ export default function StudentExam({
     const handleFullscreenChange = () => {
       const isFs = checkIsFs();
       setIsCurrentlyFullscreen(isFs);
-      if (!isFs && !isGraceActive && examStartedRef.current) {
+      if (isFullscreenSupported && !isFs && !isGraceActive && examStartedRef.current) {
         triggerViolation('Keluar dari Mode Layar Penuh (Fullscreen)');
       }
     };
@@ -431,16 +433,18 @@ export default function StudentExam({
       if (isGraceActive || !examStartedRef.current) return;
       if (Date.now() - lastRightClickTime < 1500) return;
       if (blurTimeout) clearTimeout(blurTimeout);
+      if (!focusLostSince) focusLostSince = Date.now();
 
-      // Grace window of 400ms for internal DOM focus transitions
+      // Grace window of 350ms for internal DOM focus transitions; Quick Settings / app switch stays unfocused
       blurTimeout = setTimeout(() => {
         if (!isGraceActive && examStartedRef.current && (document.hidden || document.visibilityState === 'hidden' || !document.hasFocus())) {
-          triggerViolation('Keluar Fokus Layar / Membuka Aplikasi Lain');
+          triggerViolation('Keluar Fokus Layar / Membuka Bilah Notifikasi atau Aplikasi Lain');
         }
-      }, 400);
+      }, 350);
     };
 
     const handleWindowFocus = () => {
+      focusLostSince = null;
       if (blurTimeout) {
         clearTimeout(blurTimeout);
         blurTimeout = null;
@@ -448,9 +452,12 @@ export default function StudentExam({
     };
 
     const handleTouchStart = (e: TouchEvent) => {
+      warmUpAudioContext();
+      focusLostSince = null;
       if (e.touches && e.touches.length > 0) {
         touchStartY = e.touches[0].clientY;
         touchStartX = e.touches[0].clientX;
+        touchStartTime = Date.now();
       }
     };
 
@@ -458,10 +465,21 @@ export default function StudentExam({
       if (isGraceActive || !examStartedRef.current) return;
       if (e.touches && e.touches.length > 0) {
         const currentY = e.touches[0].clientY;
-        // Only trigger if touch started at the extreme top status bar edge (<= 25px) and dragged down > 40px
-        if (touchStartY <= 25 && (currentY - touchStartY) > 40) {
+        const currentX = e.touches[0].clientX;
+        const dy = currentY - touchStartY;
+        const dx = Math.abs(currentX - touchStartX);
+        // Trigger if touch started near top status bar / notch edge (<= 60px) and dragged downward vertically > 35px
+        if (touchStartY <= 60 && dy > 35 && dy > dx * 1.3) {
           triggerViolation('Mencoba Menarik Bilah Quick Settings / Notifikasi HP');
         }
+      }
+    };
+
+    const handleTouchCancel = () => {
+      if (isGraceActive || !examStartedRef.current) return;
+      // On Android & iOS, pulling down OS Quick Settings steals touch and emits touchcancel right after top-edge touchstart
+      if (touchStartY <= 60 && (Date.now() - touchStartTime) < 1200) {
+        triggerViolation('Menarik Bilah Quick Settings / Notifikasi HP (Terdeteksi Sistem)');
       }
     };
 
@@ -506,12 +524,14 @@ export default function StudentExam({
     };
 
     const handleMouseDown = (e: MouseEvent) => {
+      focusLostSince = null;
+      warmUpAudioContext();
       if (e.button === 2) {
         lastRightClickTime = Date.now();
       }
     };
 
-    // Continuous Active Sentinel Heartbeat Monitor (Checks fullscreen & visibility every 300ms)
+    // Continuous Active Sentinel Heartbeat Monitor (Checks visibility, sustained focus loss for Quick Settings, & fullscreen every 300ms)
     const heartbeatInterval = setInterval(() => {
       if (!examStartedRef.current || isGraceActive || isSubmittingRef.current) return;
       if (Date.now() - lastRightClickTime < 1500) return;
@@ -522,8 +542,21 @@ export default function StudentExam({
         return;
       }
 
-      // Check fullscreen element presence
-      if (!checkIsFs()) {
+      // Check sustained focus loss (>= 650ms) to catch OS Quick Settings / Notification Drawer even when document.hidden remains false
+      if (!document.hasFocus()) {
+        if (!focusLostSince) {
+          focusLostSince = Date.now();
+        } else if (Date.now() - focusLostSince >= 650) {
+          focusLostSince = Date.now();
+          triggerViolation('Bilah Quick Settings / Notifikasi atau Aplikasi Lain Terbuka');
+          return;
+        }
+      } else {
+        focusLostSince = null;
+      }
+
+      // Check fullscreen element presence (only on browsers supporting Fullscreen API)
+      if (isFullscreenSupported && !checkIsFs()) {
         triggerViolation('Keluar dari Mode Layar Penuh');
         return;
       }
@@ -546,6 +579,7 @@ export default function StudentExam({
       window.addEventListener('keydown', handleKeyDown);
       document.addEventListener('touchstart', handleTouchStart, { passive: true });
       document.addEventListener('touchmove', handleTouchMove, { passive: true });
+      document.addEventListener('touchcancel', handleTouchCancel, { passive: true });
       examStartedRef.current = true;
     }, 300);
 
@@ -568,6 +602,7 @@ export default function StudentExam({
       window.removeEventListener('keydown', handleKeyDown);
       document.removeEventListener('touchstart', handleTouchStart);
       document.removeEventListener('touchmove', handleTouchMove);
+      document.removeEventListener('touchcancel', handleTouchCancel);
     };
   }, [examStatus, config.strictSecurityEnabled, isGraceActive]);
 
@@ -1225,7 +1260,11 @@ export default function StudentExam({
             <button
               id="btn-dismiss-violation-toast"
               type="button"
-              onClick={() => setViolationToast(null)}
+              onClick={() => {
+                stopAllAlarmSounds();
+                warmUpAudioContext();
+                setViolationToast(null);
+              }}
               className="w-full py-4 px-8 bg-white hover:bg-slate-100 active:scale-95 text-red-700 text-base sm:text-lg font-black rounded-2xl shadow-2xl ring-4 ring-white/60 transition-all flex items-center justify-center gap-3 cursor-pointer min-h-[54px]"
             >
               <Check className="w-6 h-6 text-red-700 stroke-[3]" />

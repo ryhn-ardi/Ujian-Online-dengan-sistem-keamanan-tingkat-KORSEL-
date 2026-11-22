@@ -21,7 +21,8 @@ import {
   refreshQuestionsFromServer,
   getStudentFromServer
 } from './utils/sync';
-import { Student, Question, ExamConfig, StudentStatus, StudentUser, BroadcastAnnouncement } from './types';
+import { Student, Question, ExamConfig, StudentStatus, StudentUser, BroadcastAnnouncement, ExamSubject } from './types';
+import { isSubjectMatchingStudentClass, doesQuestionBelongToSubject, isSameStudentAccount } from './utils/gradeHelper';
 import StudentRegistration from './components/StudentRegistration';
 import StudentExam from './components/StudentExam';
 import AdminPanel from './components/AdminPanel';
@@ -29,9 +30,9 @@ import ProctorPanel from './components/ProctorPanel';
 import { ShieldCheck, GraduationCap, Award, RefreshCw, XCircle, ArrowRight, CheckCircle2, ChevronRight, AlertTriangle, BookOpen, Radio, Sparkles } from 'lucide-react';
 
 // Shared helper to calculate actual slot/subject questions, score, and correct count for a student
-export function getStudentMetrics(s: Student, questionsList: Question[]) {
-  let studentQuestions = questionsList.filter(
-    (q) => (!q.subjectId && (!s.subjectId || s.subjectId === 'sub1')) || q.subjectId === s.subjectId
+export function getStudentMetrics(s: Student, questionsList: Question[], subjectsList?: ExamSubject[]) {
+  let studentQuestions = questionsList.filter((q) =>
+    doesQuestionBelongToSubject(q, s.subjectId, subjectsList)
   );
 
   // If student has randomized assigned question subset, respect and use exact assigned questions
@@ -154,24 +155,49 @@ export default function App() {
     }
 
     const active = students.find((s) => s.id === currentStudentId);
+    const subjects = getExamSubjects(config);
+
+    const isSessionSubjectValidForStudent = (s: Student): boolean => {
+      // Use latest class from studentUsers account database if available (in case Admin updated student's class)
+      const matchedUser = s.username
+        ? studentUsers.find(u => u.username.trim().toLowerCase() === s.username!.trim().toLowerCase())
+        : undefined;
+      const effectiveClass = matchedUser?.studentClass || s.studentClass;
+      const studentSub = subjects.find(sub => sub.id === (s.subjectId || subjects[0]?.id || 'sub1'));
+
+      if (!studentSub || studentSub.isActive === false) {
+        return false;
+      }
+      if (!isSubjectMatchingStudentClass(studentSub, effectiveClass, false)) {
+        return false;
+      }
+      return true;
+    };
+
+    const resetInvalidLocalSession = (reason: string) => {
+      console.warn(reason);
+      setCurrentStudentId('');
+      try {
+        localStorage.removeItem('active_student_id');
+      } catch (e) {}
+      if (role !== 'ADMIN' && role !== 'PROCTOR') {
+        setRole('SETUP');
+      }
+    };
 
     // If this session has already been verified with the server, synchronize state smoothly without re-querying Firestore
     if (verifiedStudentIdRef.current === currentStudentId) {
       if (active) {
-        if (active.status === 'SELESAI' && role !== 'STUDENT_FINISHED') {
-          setRole('STUDENT_FINISHED');
-        } else if (active.status !== 'SELESAI' && role !== 'STUDENT_EXAM') {
+        if (active.status === 'SELESAI') {
+          if (role !== 'STUDENT_FINISHED') setRole('STUDENT_FINISHED');
+        } else if (!isSessionSubjectValidForStudent(active)) {
+          resetInvalidLocalSession(`Naskah (${active.subjectId}) tidak aktif atau tidak sesuai kelas siswa (${active.studentClass}). Mengembalikan ke menu pemilihan.`);
+        } else if (role !== 'STUDENT_EXAM') {
           setRole('STUDENT_EXAM');
         }
       } else {
         // Active student was purged / deleted by admin
-        setCurrentStudentId('');
-        try {
-          localStorage.removeItem('active_student_id');
-        } catch (e) {}
-        if (role !== 'ADMIN' && role !== 'PROCTOR') {
-          setRole('SETUP');
-        }
+        resetInvalidLocalSession('Sesi siswa aktif tidak ditemukan di database.');
       }
       return;
     }
@@ -183,17 +209,8 @@ export default function App() {
       if (active.status === 'SELESAI') {
         if (role !== 'STUDENT_FINISHED') setRole('STUDENT_FINISHED');
       } else {
-        // Check if subject is still active in system
-        const subjects = getExamSubjects(config);
-        const studentSub = subjects.find(sub => sub.id === (active.subjectId || 'sub1'));
-        
-        if (studentSub && studentSub.isActive === false) {
-          console.warn(`Subject ${active.subjectId} (${studentSub.name}) is currently deactivated by admin.`);
-          setCurrentStudentId('');
-          try {
-            localStorage.removeItem('active_student_id');
-          } catch (e) {}
-          setRole('SETUP');
+        if (!isSessionSubjectValidForStudent(active)) {
+          resetInvalidLocalSession(`Naskah ${active.subjectId} dinonaktifkan atau tidak sesuai kelas siswa (${active.studentClass}).`);
           return;
         }
 
@@ -204,19 +221,16 @@ export default function App() {
     // Verify ONCE with server in case admin deleted or reset this student while student was away
     getStudentFromServer(currentStudentId).then((serverStudent) => {
       if (!serverStudent) {
-        console.log('Sesi siswa telah dihapus oleh Admin Master di cloud. Membersihkan sesi lokal...');
-        setCurrentStudentId('');
-        try {
-          localStorage.removeItem('active_student_id');
-        } catch (e) {}
-        setRole('SETUP');
+        resetInvalidLocalSession('Sesi siswa telah dihapus oleh Admin Master di cloud. Membersihkan sesi lokal...');
       } else if (serverStudent.status === 'SELESAI') {
         if (role !== 'STUDENT_FINISHED') setRole('STUDENT_FINISHED');
+      } else if (!isSessionSubjectValidForStudent(serverStudent)) {
+        resetInvalidLocalSession(`Naskah sesi cloud (${serverStudent.subjectId}) tidak sesuai dengan kelas siswa (${serverStudent.studentClass}).`);
       } else {
         if (role !== 'STUDENT_EXAM') setRole('STUDENT_EXAM');
       }
     });
-  }, [students, currentStudentId, config, role]);
+  }, [students, studentUsers, currentStudentId, config, role]);
 
   // Dynamic smart sync listener: ONLY enable heavy all-students sync on ADMIN and PROCTOR dashboards!
   // Student devices (SETUP, STUDENT_EXAM, STUDENT_FINISHED) NEVER subscribe to the full 400+ students collection!
@@ -349,21 +363,25 @@ export default function App() {
   // 3. STUDENT FLOW: Registration Action (Supports Multi-Subject exams, Reconnection & Randomized question sampling)
   const handleRegisterStudent = async (data: { name: string; absentNumber: string; studentClass: string; subjectId: string; username?: string }) => {
     const existingStudents = getStudents();
-    
-    const normalizedNewName = data.name.trim().toLowerCase().replace(/\s+/g, '');
-    const normalizedUsername = data.username ? data.username.trim().toLowerCase() : '';
-    const targetSubjectId = data.subjectId || 'sub1';
+    const subjects = getExamSubjects(config);
+    const targetSubjectId = data.subjectId || subjects[0]?.id || 'sub1';
+    const targetSubObj = subjects.find(s => s.id === targetSubjectId);
 
-    // Look for existing session for THIS SPECIFIC SUBJECT so students can take multiple subjects
+    // Guard against registering into an inactive or wrong-class subject
+    if (!targetSubObj || targetSubObj.isActive === false || !isSubjectMatchingStudentClass(targetSubObj, data.studentClass, false)) {
+      console.warn(`Blocked registration into mismatched subject ${targetSubjectId} for class ${data.studentClass}`);
+      return;
+    }
+
+    // Look for existing session for THIS SPECIFIC ACCOUNT & SUBJECT without cross-class name collisions
     let existing = existingStudents.find((s) => {
-      const sSubId = s.subjectId || 'sub1';
+      const sSubId = s.subjectId || subjects[0]?.id || 'sub1';
       if (sSubId !== targetSubjectId) return false;
-
-      if (normalizedUsername && s.username && s.username.toLowerCase() === normalizedUsername) {
-        return true;
-      }
-      const normalizedExisting = s.name.trim().toLowerCase().replace(/\s+/g, '');
-      return normalizedExisting === normalizedNewName;
+      return isSameStudentAccount(s, {
+        username: data.username,
+        name: data.name,
+        studentClass: data.studentClass
+      });
     });
 
     // Verifikasi kepastian status sesi langsung dari server cloud (bukan hanya cache lokal)
@@ -379,7 +397,6 @@ export default function App() {
 
     const sampleQuestionsForSubject = (subId: string): string[] | undefined => {
       // Find the specific subject configuration
-      const subjects = config.subjects || [];
       const targetSub = subjects.find(s => s.id === subId) || (subId === 'sub1' ? subjects[0] : undefined);
 
       // Check per-subject random sampling first, then fall back to global config if set
@@ -389,8 +406,8 @@ export default function App() {
 
       if (!isRandomSamplingEnabled) return undefined;
 
-      const subQuestions = questions.filter(
-        (q) => (!q.subjectId && (!subId || subId === 'sub1')) || q.subjectId === subId
+      const subQuestions = questions.filter((q) =>
+        doesQuestionBelongToSubject(q, subId, subjects)
       );
       if (subQuestions.length === 0) return undefined;
 
@@ -468,8 +485,8 @@ export default function App() {
       }
 
       // Reconnect to existing session, ensuring assigned questions strictly match current subject pool
-      const subQuestions = questions.filter(
-        (q) => (!q.subjectId && (!targetSubjectId || targetSubjectId === 'sub1')) || q.subjectId === targetSubjectId
+      const subQuestions = questions.filter((q) =>
+        doesQuestionBelongToSubject(q, targetSubjectId, subjects)
       );
       const subQuestionIdSet = new Set(subQuestions.map(q => q.id));
       const hasValidAssignedIds = Array.isArray(existing.assignedQuestionIds) &&
@@ -822,7 +839,8 @@ export default function App() {
         <StudentExam
           student={activeStudent}
           questions={(() => {
-            const pool = questions.filter(q => (!q.subjectId && (!activeStudent.subjectId || activeStudent.subjectId === 'sub1')) || q.subjectId === activeStudent.subjectId);
+            const subjectsList = getExamSubjects(config);
+            const pool = questions.filter(q => doesQuestionBelongToSubject(q, activeStudent.subjectId, subjectsList));
             if (activeStudent.assignedQuestionIds && activeStudent.assignedQuestionIds.length > 0) {
               const map = new Map<string, Question>(pool.map(q => [q.id, q]));
               const ordered: Question[] = [];

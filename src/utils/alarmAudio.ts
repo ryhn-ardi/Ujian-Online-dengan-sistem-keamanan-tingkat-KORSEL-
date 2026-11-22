@@ -2,7 +2,16 @@ import { ExamConfig } from '../types';
 
 let sharedAudioContext: AudioContext | null = null;
 let currentPlayingAudio: HTMLAudioElement | null = null;
+let unlockedAlarmAudioEl: HTMLAudioElement | null = null;
+let isAudioElementUnlocked = false;
+let activeAlarmStopTimer: ReturnType<typeof setTimeout> | null = null;
 let activeOscillators: OscillatorNode[] = [];
+
+const generatedAlarmWavUrlCache: Record<string, string> = {};
+
+// Ultra-short 1-frame silent PCM WAV data URI used solely to unlock mobile HTMLAudioElement inside a user tap
+const SILENT_WAV_DATA_URI =
+  'data:audio/wav;base64,UklGRigAAABXQVZFZm10IBIAAAABAAEARKwAAIhYAQACABAAAABkYXRhAgAAAAEA';
 
 export const CUSTOM_ALARM_STORAGE_KEY = 'proktor_custom_alarm_audio';
 export const CUSTOM_ANNOUNCEMENT_STORAGE_KEY = 'proktor_custom_announcement_audio';
@@ -60,8 +69,171 @@ export function getCustomAnnouncementAudioData(): string | null {
   return null;
 }
 
+/**
+ * Generates an in-memory 16-bit Mono PCM WAV Blob URL for built-in alarms.
+ * Used with a pre-unlocked HTMLAudioElement so mobile browsers (Android Chrome / iOS Safari)
+ * still ring loudly when Quick Settings / Notification Shade suspends Web Audio AudioContext.
+ */
+export function generateAlarmWavUrl(alarmType: string = 'SIREN', durationSec = 4.0): string | null {
+  const key = `${alarmType}_${durationSec}`;
+  if (generatedAlarmWavUrlCache[key]) {
+    return generatedAlarmWavUrlCache[key];
+  }
+
+  if (typeof window === 'undefined' || typeof Blob === 'undefined' || typeof URL === 'undefined' || typeof URL.createObjectURL !== 'function') {
+    return null;
+  }
+
+  try {
+    const sampleRate = 16000;
+    const totalSamples = Math.floor(sampleRate * durationSec);
+    const dataSize = totalSamples * 2;
+    const buffer = new ArrayBuffer(44 + dataSize);
+    const view = new DataView(buffer);
+
+    const writeStr = (offset: number, str: string) => {
+      for (let i = 0; i < str.length; i++) {
+        view.setUint8(offset + i, str.charCodeAt(i));
+      }
+    };
+
+    // Standard RIFF/WAVE PCM header
+    writeStr(0, 'RIFF');
+    view.setUint32(4, 36 + dataSize, true);
+    writeStr(8, 'WAVE');
+    writeStr(12, 'fmt ');
+    view.setUint32(16, 16, true); // PCM chunk size
+    view.setUint16(20, 1, true); // PCM format = 1
+    view.setUint16(22, 1, true); // Channels = 1
+    view.setUint32(24, sampleRate, true);
+    view.setUint32(28, sampleRate * 2, true); // ByteRate
+    view.setUint16(32, 2, true); // BlockAlign
+    view.setUint16(34, 16, true); // BitsPerSample
+    writeStr(36, 'data');
+    view.setUint32(40, dataSize, true);
+
+    const saw = (phase: number) => 2 * (phase - Math.floor(phase)) - 1;
+    const square = (phase: number) => ((phase - Math.floor(phase)) < 0.5 ? 1 : -1);
+
+    let phase1 = 0;
+    let phase2 = 0;
+
+    for (let i = 0; i < totalSamples; i++) {
+      const t = i / sampleRate;
+      let sample = 0;
+
+      // Envelope to avoid start/end click
+      const fadeIn = Math.min(1, t / 0.04);
+      const fadeOut = Math.min(1, (durationSec - t) / 0.15);
+      const env = Math.max(0, Math.min(fadeIn, fadeOut));
+
+      if (alarmType === 'BUZZER') {
+        const pulse = Math.sin(2 * Math.PI * 8 * t) >= 0 ? 1 : 0.05;
+        phase1 += 480 / sampleRate;
+        sample = square(phase1) * pulse * 0.85;
+      } else if (alarmType === 'NUCLEAR') {
+        const cycle = (t % 2.0) / 2.0;
+        const freq = cycle < 0.5
+          ? 300 + 500 * (cycle * 2)
+          : 800 - 500 * ((cycle - 0.5) * 2);
+        phase1 += freq / sampleRate;
+        sample = saw(phase1) * 0.88;
+      } else if (alarmType === 'BELL') {
+        const chimeCount = 6;
+        const interval = durationSec / chimeCount;
+        const chimeIndex = Math.floor(t / interval);
+        const localT = t - chimeIndex * interval;
+        const freq = chimeIndex % 2 === 0 ? 920 : 1070;
+        const decay = Math.exp(-4.2 * localT);
+        sample = Math.sin(2 * Math.PI * freq * localT) * decay * 0.9;
+      } else if (alarmType === 'HORN') {
+        const pulse = Math.sin(2 * Math.PI * 1.2 * t) >= -0.15 ? 1 : 0.05;
+        phase1 += 175 / sampleRate;
+        phase2 += 235 / sampleRate;
+        sample = (saw(phase1) * 0.5 + square(phase2) * 0.45) * pulse;
+      } else if (alarmType === 'AMBULANCE') {
+        const step = Math.floor(t / 0.45);
+        const freq = step % 2 === 0 ? 960 : 720;
+        phase1 += freq / sampleRate;
+        sample = saw(phase1) * 0.85;
+      } else {
+        // Default SIREN (sweeping dual pitch)
+        const lfo = Math.sin(2 * Math.PI * 4.5 * t) * 180;
+        phase1 += (650 + lfo) / sampleRate;
+        phase2 += (850 + lfo) / sampleRate;
+        sample = (saw(phase1) * 0.52 + square(phase2) * 0.42);
+      }
+
+      const clamped = Math.max(-1, Math.min(1, sample * env));
+      view.setInt16(44 + i * 2, Math.floor(clamped * 32767), true);
+    }
+
+    const blob = new Blob([buffer], { type: 'audio/wav' });
+    const url = URL.createObjectURL(blob);
+    generatedAlarmWavUrlCache[key] = url;
+    return url;
+  } catch (e) {
+    console.warn('WAV alarm generation fallback:', e);
+    return null;
+  }
+}
+
+function getOrCreateUnlockedAudioElement(): HTMLAudioElement | null {
+  if (typeof Audio === 'undefined') return null;
+  if (!unlockedAlarmAudioEl) {
+    unlockedAlarmAudioEl = new Audio();
+    unlockedAlarmAudioEl.setAttribute('playsinline', '');
+    unlockedAlarmAudioEl.preload = 'auto';
+  }
+  return unlockedAlarmAudioEl;
+}
+
+/**
+ * Unlocks HTML5 Audio element during a user gesture (tap/click) so mobile browsers
+ * allow playing alarm sounds later even during window.blur or Quick Settings overlay.
+ */
+export function unlockAlarmAudioElement(): void {
+  const el = getOrCreateUnlockedAudioElement();
+  if (!el || isAudioElementUnlocked) return;
+  try {
+    // Only prime with silent WAV if nothing is actively playing
+    if (el.paused) {
+      el.src = SILENT_WAV_DATA_URI;
+      el.volume = 0.01;
+      const p = el.play();
+      if (p !== undefined) {
+        p.then(() => {
+          isAudioElementUnlocked = true;
+          try {
+            el.pause();
+            el.currentTime = 0;
+            el.volume = 1.0;
+          } catch (e) {}
+        }).catch(() => {});
+      }
+    }
+  } catch (e) {}
+}
+
 export function warmUpAlarmAudioContext(): AudioContext | null {
-  return getAudioContext();
+  // 1. Unlock HTMLAudioElement (survives Quick Settings / Notification shade focus steal on HP)
+  unlockAlarmAudioElement();
+
+  // 2. Also warm up & pre-generate default SIREN wav buffer in cache
+  generateAlarmWavUrl('SIREN', 4.5);
+
+  // 3. Unlock Web Audio API AudioContext
+  const ctx = getAudioContext();
+  if (ctx) {
+    try {
+      const buffer = ctx.createBuffer(1, 1, 22050);
+      const src = ctx.createBufferSource();
+      src.buffer = buffer;
+      src.connect(ctx.destination);
+      src.start(0);
+    } catch (e) {}
+  }
+  return ctx;
 }
 
 export function getAudioContext(): AudioContext | null {
@@ -71,7 +243,7 @@ export function getAudioContext(): AudioContext | null {
     if (!sharedAudioContext || sharedAudioContext.state === 'closed') {
       sharedAudioContext = new AudioContextClass();
     }
-    if (sharedAudioContext.state === 'suspended') {
+    if (sharedAudioContext.state === 'suspended' || (sharedAudioContext.state as string) === 'interrupted') {
       sharedAudioContext.resume().catch(() => {});
     }
     return sharedAudioContext;
@@ -81,13 +253,25 @@ export function getAudioContext(): AudioContext | null {
 }
 
 export function stopAllAlarmSounds() {
-  // Stop custom audio if playing
+  if (activeAlarmStopTimer) {
+    clearTimeout(activeAlarmStopTimer);
+    activeAlarmStopTimer = null;
+  }
+
+  // Stop custom / WAV HTMLAudioElement if playing
   if (currentPlayingAudio) {
     try {
       currentPlayingAudio.pause();
       currentPlayingAudio.currentTime = 0;
     } catch (e) {}
     currentPlayingAudio = null;
+  }
+
+  if (unlockedAlarmAudioEl && !unlockedAlarmAudioEl.paused) {
+    try {
+      unlockedAlarmAudioEl.pause();
+      unlockedAlarmAudioEl.currentTime = 0;
+    } catch (e) {}
   }
 
   // Stop active Web Audio oscillators
@@ -100,9 +284,19 @@ export function stopAllAlarmSounds() {
   activeOscillators = [];
 }
 
+function playSynthByType(alarmType: string, durationSec = 5.0): { stop: () => void } {
+  if (alarmType === 'BUZZER') return playBuzzerSynth(durationSec);
+  if (alarmType === 'NUCLEAR') return playNuclearSynth(durationSec);
+  if (alarmType === 'BELL') return playBellSynth(durationSec);
+  if (alarmType === 'HORN') return playHornSynth(durationSec);
+  if (alarmType === 'AMBULANCE') return playAmbulanceSynth(durationSec);
+  return playSirenSynth(durationSec);
+}
+
 /**
  * Play Alarm based on config selection.
- * Returns a controller with a stop function.
+ * Uses pre-unlocked HTMLAudioElement + PCM WAV first so mobile Quick Settings / focus loss
+ * never silences the alarm, with Web Audio API synth as seamless fallback.
  */
 export function playAlarmSound(config?: Partial<ExamConfig>): { stop: () => void } {
   stopAllAlarmSounds();
@@ -121,7 +315,8 @@ export function playAlarmSound(config?: Partial<ExamConfig>): { stop: () => void
     const audioSource = config?.customAlarmAudioUrl || getCustomAlarmAudioData();
     if (audioSource) {
       try {
-        const audio = new Audio(audioSource);
+        const audio = getOrCreateUnlockedAudioElement() || new Audio();
+        audio.src = audioSource;
         audio.volume = 1.0;
         currentPlayingAudio = audio;
 
@@ -129,22 +324,18 @@ export function playAlarmSound(config?: Partial<ExamConfig>): { stop: () => void
         if (playPromise !== undefined) {
           playPromise.catch((err) => {
             console.warn('Custom audio playback failed, falling back to siren:', err);
-            playSirenSynth(5.0);
+            playSirenWithResume('SIREN', 5.0);
           });
         }
 
-        // Auto stop after 8 seconds if long audio
-        const timeoutId = setTimeout(() => {
+        activeAlarmStopTimer = setTimeout(() => {
           if (currentPlayingAudio === audio) {
             stopAllAlarmSounds();
           }
         }, 8000);
 
         return {
-          stop: () => {
-            clearTimeout(timeoutId);
-            stopAllAlarmSounds();
-          }
+          stop: () => stopAllAlarmSounds()
         };
       } catch (err) {
         console.warn('Audio element error, fallback to siren:', err);
@@ -152,33 +343,59 @@ export function playAlarmSound(config?: Partial<ExamConfig>): { stop: () => void
     }
   }
 
-  // 2. ELECTRONIC WARNING BUZZER
-  if (alarmType === 'BUZZER') {
-    return playBuzzerSynth(5.0);
+  // 2. BUILT-IN ALARM: Try pre-unlocked HTMLAudioElement with generated PCM WAV (survives mobile Quick Settings!)
+  const wavUrl = generateAlarmWavUrl(alarmType, 4.5);
+  const audioEl = getOrCreateUnlockedAudioElement();
+
+  if (wavUrl && audioEl) {
+    try {
+      audioEl.src = wavUrl;
+      audioEl.volume = 1.0;
+      audioEl.currentTime = 0;
+      currentPlayingAudio = audioEl;
+
+      const playPromise = audioEl.play();
+      if (playPromise !== undefined) {
+        playPromise.catch((err) => {
+          console.warn('HTMLAudioElement alarm blocked, falling back to Web Audio:', err);
+          playSirenWithResume(alarmType, 5.0);
+        });
+      }
+
+      activeAlarmStopTimer = setTimeout(() => {
+        stopAllAlarmSounds();
+      }, 5000);
+
+      return {
+        stop: () => stopAllAlarmSounds()
+      };
+    } catch (e) {
+      console.warn('WAV AudioElement fallback to Web Audio:', e);
+    }
   }
 
-  // 3. NUCLEAR / AIR RAID SIREN
-  if (alarmType === 'NUCLEAR') {
-    return playNuclearSynth(5.0);
+  // 3. Fallback directly to Web Audio API synth (awaits resume if suspended)
+  return playSirenWithResume(alarmType, 5.0);
+}
+
+function playSirenWithResume(alarmType: string, durationSec = 5.0): { stop: () => void } {
+  const ctx = getAudioContext();
+  if (!ctx) return { stop: () => {} };
+
+  if (ctx.state === 'suspended' || (ctx.state as string) === 'interrupted') {
+    ctx.resume()
+      .then(() => {
+        playSynthByType(alarmType, durationSec);
+      })
+      .catch(() => {
+        playSynthByType(alarmType, durationSec);
+      });
+    return {
+      stop: () => stopAllAlarmSounds()
+    };
   }
 
-  // 4. ALARM BELL
-  if (alarmType === 'BELL') {
-    return playBellSynth(5.0);
-  }
-
-  // 5. INDUSTRIAL DUAL AIR HORN
-  if (alarmType === 'HORN') {
-    return playHornSynth(5.0);
-  }
-
-  // 6. TWO-TONE EMERGENCY AMBULANCE SIREN
-  if (alarmType === 'AMBULANCE') {
-    return playAmbulanceSynth(5.0);
-  }
-
-  // 7. DEFAULT: STANDARD POLICE / PROCTOR SIREN (The currently used sound)
-  return playSirenSynth(5.0);
+  return playSynthByType(alarmType, durationSec);
 }
 
 /**
