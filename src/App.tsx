@@ -11,6 +11,7 @@ import {
   subscribeToSync,
   isInitialSyncCompleted,
   saveSingleStudent,
+  saveMultipleStudents,
   deleteSingleStudent,
   getExamSubjects,
   debounceSaveSingleStudent,
@@ -1067,46 +1068,44 @@ export default function App() {
           students={students}
           questions={questions}
           config={config}
-          onUnlockStudent={(studentId) => {
-            const updated = students.map((s) => {
-              if (s.id === studentId) {
-                const refreshed: Student = {
-                  ...s,
-                  status: 'SEDANG_MENGERJAKAN',
-                  lockedReason: undefined,
-                  violationCount: 0,
-                  tokenUnlockCount: (s.tokenUnlockCount || 0) + 1,
-                  lastActive: new Date().toISOString()
-                };
-                saveSingleStudent(refreshed);
-                return refreshed;
-              }
-              return s;
-            });
-            setStudents(updated);
+          onUnlockStudent={async (studentId) => {
+            const freshStudents = getStudents();
+            const target = freshStudents.find((s) => s.id === studentId);
+            if (!target) return;
+            const refreshed: Student = {
+              ...target,
+              status: 'SEDANG_MENGERJAKAN',
+              lockedReason: undefined,
+              violationCount: 0,
+              answers: target.answers || {},
+              lastActive: new Date().toISOString()
+            };
+            const ok = await saveSingleStudent(refreshed);
+            setStudents([...getStudents()]);
+            if (!ok) {
+              alert('Gagal mengirim perintah buka kunci ke Cloud Firestore. Periksa koneksi internet Anda lalu coba lagi.');
+            }
           }}
-          onUnlockAllStudents={() => {
-            const locked = students.filter(s => s.status === 'TERKUNCI');
+          onUnlockAllStudents={async () => {
+            const freshStudents = getStudents();
+            const locked = freshStudents.filter(s => s.status === 'TERKUNCI');
             if (locked.length === 0) {
               alert('Tidak ada siswa yang berstatus TERKUNCI saat ini.');
               return;
             }
-            const updated = students.map(s => {
-              if (s.status === 'TERKUNCI') {
-                const refreshed: Student = {
-                  ...s,
-                  status: 'SEDANG_MENGERJAKAN',
-                  lockedReason: undefined,
-                  violationCount: 0,
-                  tokenUnlockCount: (s.tokenUnlockCount || 0) + 1,
-                  lastActive: new Date().toISOString()
-                };
-                saveSingleStudent(refreshed);
-                return refreshed;
-              }
-              return s;
-            });
-            setStudents(updated);
+            const changed: Student[] = locked.map(s => ({
+              ...s,
+              status: 'SEDANG_MENGERJAKAN',
+              lockedReason: undefined,
+              violationCount: 0,
+              answers: s.answers || {},
+              lastActive: new Date().toISOString()
+            }));
+            const ok = await saveMultipleStudents(changed);
+            setStudents([...getStudents()]);
+            if (!ok) {
+              alert('Gagal mengirim perintah buka kunci masal ke Cloud Firestore. Periksa koneksi internet Anda lalu coba lagi.');
+            }
           }}
           onResetStudentAttempt={(studentId) => {
             const freshStudents = getStudents();

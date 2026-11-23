@@ -678,12 +678,12 @@ export function subscribeToMyStudentSession(studentId: string): () => void {
     (snap) => {
       if (snap.exists()) {
         recordFirestoreRead(1, 'STUDENT_DOC_SYNC', `students/${studentId}`, 'Sinkronisasi status sesi siswa');
-        const studentData = snap.data() as Student;
+        const studentData = cleanStudent(snap.data() as Student);
         const index = localStudents.findIndex((s) => s.id === studentData.id);
         let changed = false;
         if (index !== -1) {
           if (JSON.stringify(localStudents[index]) !== JSON.stringify(studentData)) {
-            localStudents[index] = { ...localStudents[index], ...studentData };
+            localStudents[index] = studentData;
             changed = true;
           }
         } else {
@@ -1194,8 +1194,8 @@ export function saveStudentsLocally(students: Student[], broadcast = true): void
 }
 
 // Save/Update multiple students in a single Firestore batch without doing full collection getDocs reads (Saves 100% redundant reads!)
-export async function saveMultipleStudents(students: Student[], broadcast = true): Promise<void> {
-  if (!students || students.length === 0) return;
+export async function saveMultipleStudents(students: Student[], broadcast = true): Promise<boolean> {
+  if (!students || students.length === 0) return true;
   const cleanedList = students.map(s => cleanStudent(s));
   
   // Update local cache
@@ -1222,8 +1222,10 @@ export async function saveMultipleStudents(students: Student[], broadcast = true
       await batch.commit();
     }
     recordFirestoreWrite(cleanedList.length, 'SAVE_STUDENTS_BATCH', 'students', `Menyimpan ${cleanedList.length} data siswa terperbarui secara efisien`);
+    return true;
   } catch (err) {
     console.error('Error saving multiple students to cloud:', err);
+    return false;
   }
 }
 
@@ -1326,7 +1328,7 @@ export function saveSingleStudentLocallyOnly(student: Student, broadcast = true)
 }
 
 // Save/Update a single student session document in Firestore (Immediate flush)
-export async function saveSingleStudent(student: Student, broadcast = true): Promise<void> {
+export async function saveSingleStudent(student: Student, broadcast = true): Promise<boolean> {
   const cleaned = cleanStudent(student);
   if (pendingStudentSaves.has(cleaned.id)) {
     clearTimeout(pendingStudentSaves.get(cleaned.id));
@@ -1345,8 +1347,10 @@ export async function saveSingleStudent(student: Student, broadcast = true): Pro
   try {
     await setDoc(doc(db, 'students', cleaned.id), sanitizeForFirestore(cleaned));
     recordFirestoreWrite(1, 'SAVE_STUDENT', `students/${cleaned.id}`, `Kirim ke cloud: ${cleaned.name} (${cleaned.status})`);
+    return true;
   } catch (err) {
     handleFirestoreError(err, OperationType.WRITE, `students/${cleaned.id}`);
+    return false;
   }
 }
 
@@ -1420,7 +1424,7 @@ export async function getStudentFromServer(studentId: string): Promise<Student |
       snap = await getDoc(docRef);
     }
     if (snap && snap.exists()) {
-      const student = snap.data() as Student;
+      const student = cleanStudent(snap.data() as Student);
       // Also update local list in memory only if changed
       const index = localStudents.findIndex((s) => s.id === student.id);
       let changed = false;

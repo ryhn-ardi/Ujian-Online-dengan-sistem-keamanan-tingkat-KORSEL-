@@ -398,7 +398,7 @@ export default function StudentRegistration({
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                   <div>
                     <label className="block text-xs font-bold text-slate-700 uppercase font-mono tracking-wider mb-1.5">
-                      Username / NISN
+                      Username
                     </label>
                     <input
                       type="text"

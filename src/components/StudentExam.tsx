@@ -11,6 +11,16 @@ export function warmUpAudioContext(): AudioContext | null {
   return warmUpAlarmAudioContext();
 }
 
+function checkIsFullscreenActive(): boolean {
+  if (typeof document === 'undefined') return false;
+  return !!(
+    document.fullscreenElement ||
+    (document as any).webkitFullscreenElement ||
+    (document as any).mozFullScreenElement ||
+    (document as any).msFullscreenElement
+  );
+}
+
 interface StudentExamProps {
   student: Student;
   questions: Question[];
@@ -79,7 +89,8 @@ export default function StudentExam({
   const [isCheckingProctorStatus, setIsCheckingProctorStatus] = useState(false);
   const [statusMessage, setStatusMessage] = useState('');
   const [unlockProgress, setUnlockProgress] = useState(0);
-  const [isCurrentlyFullscreen, setIsCurrentlyFullscreen] = useState(!!document.fullscreenElement);
+  const [isCurrentlyFullscreen, setIsCurrentlyFullscreen] = useState<boolean>(() => checkIsFullscreenActive());
+  const [needsFullscreenResume, setNeedsFullscreenResume] = useState(false);
   const [examStatus, setExamStatus] = useState(student.status);
   const [isGraceActive, setIsGraceActive] = useState(false);
   const [violationToast, setViolationToast] = useState<{ message: string; count: number; max: number } | null>(null);
@@ -90,6 +101,13 @@ export default function StudentExam({
   const [dndConfirmed, setDndConfirmed] = useState(false);
   const [isTestingAudio, setIsTestingAudio] = useState(false);
   const [showQuestionGridDrawer, setShowQuestionGridDrawer] = useState(false);
+
+  const isGraceActiveRef = useRef(false);
+  isGraceActiveRef.current = isGraceActive;
+  const needsFullscreenResumeRef = useRef(false);
+  needsFullscreenResumeRef.current = needsFullscreenResume;
+  const lockWritePendingUntilRef = useRef(0);
+  const graceTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const isStrictMode = config.strictSecurityEnabled !== false;
   const isPassiveLoggingMode = !isStrictMode && config.passiveViolationLoggingEnabled !== false;
@@ -209,37 +227,116 @@ export default function StudentExam({
   );
 
   // Core auto-unlock sequence triggered by Admin Proktor (Channel 1) or Token (Channel 2)
-  const performAutoUnlock = (customNotice = 'KUNCI TELAH DIBUKA! Membuka halaman ujian...') => {
+  const performAutoUnlock = async (customNotice = 'KUNCI TELAH DIBUKA! Membuka halaman ujian...', skipAutoFs = false) => {
     if (isUnlockingRef.current) return;
     isUnlockingRef.current = true;
 
+    stopAllAlarmSounds();
+    setViolationToast(null);
+    setPassiveToast(null);
+    setTokenError('');
     setStatusMessage(customNotice);
-    setIsGraceActive(true); // Temporary grace for screen transition
     setUnlockProgress(100);
+    setIsGraceActive(true);
+    isGraceActiveRef.current = true;
+    lockWritePendingUntilRef.current = 0;
 
-    setTimeout(() => {
-      setExamStatus('SEDANG_MENGERJAKAN');
-      setStatusMessage('');
-      setUnlockProgress(0);
-      isUnlockingRef.current = false;
-      setIsCurrentlyFullscreen(!!document.fullscreenElement);
+    if (graceTimeoutRef.current) {
+      clearTimeout(graceTimeoutRef.current);
+    }
 
-      // Brief grace period (2.5 seconds) so animations complete without accidental trigger
-      setTimeout(() => {
-        setIsGraceActive(false);
-        setIsCurrentlyFullscreen(!!document.fullscreenElement);
-      }, 2500);
-    }, 600);
+    // Attempt automatic fullscreen entry immediately upon unlock
+    let fsActive = checkIsFullscreenActive();
+    if (isStrictMode && isFullscreenSupported && !fsActive && !skipAutoFs) {
+      fsActive = await requestFullscreen();
+    }
+
+    setExamStatus('SEDANG_MENGERJAKAN');
+    setIsCurrentlyFullscreen(fsActive);
+
+    if (isStrictMode && isFullscreenSupported && !fsActive) {
+      // Browser blocked fullscreen outside direct click gesture:
+      // show non-penalizing 1-tap Fullscreen Resume screen instead of freezing/penalizing!
+      setNeedsFullscreenResume(true);
+      needsFullscreenResumeRef.current = true;
+    } else {
+      setNeedsFullscreenResume(false);
+      needsFullscreenResumeRef.current = false;
+    }
+
+    setStatusMessage('');
+    setUnlockProgress(0);
+    isUnlockingRef.current = false;
+
+    // Grace period so layout/fullscreen transitions settle cleanly without false violation
+    graceTimeoutRef.current = setTimeout(() => {
+      setIsGraceActive(false);
+      isGraceActiveRef.current = false;
+      const latestFs = checkIsFullscreenActive();
+      setIsCurrentlyFullscreen(latestFs);
+      if (latestFs) {
+        setNeedsFullscreenResume(false);
+        needsFullscreenResumeRef.current = false;
+      }
+    }, 2000);
   };
 
   const prevStudentStatusRef = useRef(student.status);
 
+  useEffect(() => {
+    return () => {
+      if (graceTimeoutRef.current) clearTimeout(graceTimeoutRef.current);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!isStrictMode || !isFullscreenSupported || examStatus !== 'SEDANG_MENGERJAKAN') {
+      setNeedsFullscreenResume(false);
+      needsFullscreenResumeRef.current = false;
+    }
+  }, [isStrictMode, isFullscreenSupported, examStatus]);
+
+  // Allow desktop students on the 1-tap Fullscreen Resume overlay to press Enter/Space to re-enter Fullscreen
+  useEffect(() => {
+    if (!needsFullscreenResume || !isStrictMode || !isFullscreenSupported || examStatus !== 'SEDANG_MENGERJAKAN') {
+      return;
+    }
+    const handleResumeKey = async (e: KeyboardEvent) => {
+      if (e.key === 'Enter' || e.key === ' ') {
+        e.preventDefault();
+        setIsGraceActive(true);
+        isGraceActiveRef.current = true;
+        const ok = await requestFullscreen();
+        if (ok) {
+          setNeedsFullscreenResume(false);
+          needsFullscreenResumeRef.current = false;
+        }
+        if (graceTimeoutRef.current) clearTimeout(graceTimeoutRef.current);
+        graceTimeoutRef.current = setTimeout(() => {
+          setIsGraceActive(false);
+          isGraceActiveRef.current = false;
+          setIsCurrentlyFullscreen(checkIsFullscreenActive());
+        }, 1500);
+      }
+    };
+    window.addEventListener('keydown', handleResumeKey);
+    return () => window.removeEventListener('keydown', handleResumeKey);
+  }, [needsFullscreenResume, isStrictMode, isFullscreenSupported, examStatus]);
+
   // Keep local exam status synchronized with student.status prop from Firestore
   useEffect(() => {
-    // Only auto-unlock if the server student status transitioned from TERKUNCI to SEDANG_MENGERJAKAN (Proctor remote action)
-    if (prevStudentStatusRef.current === 'TERKUNCI' && student.status === 'SEDANG_MENGERJAKAN') {
+    const waitingLocalLockWrite =
+      examStatus === 'TERKUNCI' &&
+      student.status === 'SEDANG_MENGERJAKAN' &&
+      Date.now() <= lockWritePendingUntilRef.current;
+
+    if (
+      student.status === 'SEDANG_MENGERJAKAN' &&
+      (prevStudentStatusRef.current === 'TERKUNCI' || examStatus === 'TERKUNCI') &&
+      !waitingLocalLockWrite
+    ) {
       performAutoUnlock('KUNCI TELAH DIBUKA OLEH PENGAWAS!');
-    } else if (!isUnlockingRef.current) {
+    } else if (!isUnlockingRef.current && !waitingLocalLockWrite) {
       setExamStatus(student.status);
     }
     prevStudentStatusRef.current = student.status;
@@ -251,10 +348,15 @@ export default function StudentExam({
 
     const interval = setInterval(async () => {
       if (isUnlockingRef.current) return;
+      if (Date.now() < lockWritePendingUntilRef.current) return;
       try {
         const serverStudent = await getStudentFromServer(student.id);
-        if (serverStudent && serverStudent.status === 'SEDANG_MENGERJAKAN' && prevStudentStatusRef.current === 'TERKUNCI') {
-          performAutoUnlock('KUNCI TELAH DIBUKA OLEH PENGAWAS!');
+        if (serverStudent && serverStudent.status !== 'TERKUNCI') {
+          if (serverStudent.status === 'SEDANG_MENGERJAKAN') {
+            performAutoUnlock('KUNCI TELAH DIBUKA OLEH PENGAWAS!');
+          } else {
+            setExamStatus(serverStudent.status);
+          }
         }
       } catch (err) {
         console.error('Background check status failed:', err);
@@ -322,9 +424,16 @@ export default function StudentExam({
   }, [examStatus, timeRemaining]);
 
   // Request Fullscreen on entering active exam state
-  const requestFullscreen = async () => {
+  const requestFullscreen = async (): Promise<boolean> => {
     warmUpAudioContext();
     try {
+      if (checkIsFullscreenActive()) {
+        setFullscreenFailed(false);
+        setIsCurrentlyFullscreen(true);
+        setNeedsFullscreenResume(false);
+        needsFullscreenResumeRef.current = false;
+        return true;
+      }
       const docEl = document.documentElement as any;
       if (docEl.requestFullscreen) {
         await docEl.requestFullscreen();
@@ -335,12 +444,20 @@ export default function StudentExam({
       } else if (docEl.msRequestFullscreen) {
         await docEl.msRequestFullscreen();
       }
-      setFullscreenFailed(false);
-      setIsCurrentlyFullscreen(true);
+      const activeFs = checkIsFullscreenActive();
+      setFullscreenFailed(!activeFs);
+      setIsCurrentlyFullscreen(activeFs);
+      if (activeFs) {
+        setNeedsFullscreenResume(false);
+        needsFullscreenResumeRef.current = false;
+      }
+      return activeFs;
     } catch (err) {
-      console.error('Request fullscreen failed:', err);
-      setFullscreenFailed(true);
-      setIsCurrentlyFullscreen(false);
+      console.warn('Request fullscreen failed/blocked:', err);
+      const activeFs = checkIsFullscreenActive();
+      setFullscreenFailed(!activeFs);
+      setIsCurrentlyFullscreen(activeFs);
+      return activeFs;
     }
   };
 
@@ -365,14 +482,7 @@ export default function StudentExam({
 
   // Full Screen Mode Toggle using Screen Fullscreen API
   const toggleFullscreen = async () => {
-    const isFs = !!(
-      document.fullscreenElement ||
-      (document as any).webkitFullscreenElement ||
-      (document as any).mozFullScreenElement ||
-      (document as any).msFullscreenElement
-    );
-
-    if (isFs) {
+    if (checkIsFullscreenActive()) {
       await exitFullscreen();
     } else {
       await requestFullscreen();
@@ -385,10 +495,10 @@ export default function StudentExam({
 
   const triggerViolation = (reason: string, category: ViolationCategory = 'OTHER') => {
     if (isSubmittingRef.current) return; // Do not trigger violation during exam submission
+    if (isGraceActiveRef.current || needsFullscreenResumeRef.current || isUnlockingRef.current) return;
     const strictActive = config.strictSecurityEnabled !== false;
     const passiveActive = !strictActive && config.passiveViolationLoggingEnabled !== false;
     if (!strictActive && !passiveActive) return; // Ignore completely if both strict & passive logging are off
-    if (isGraceActive) return; // Skip if in brief grace period
 
     const now = Date.now();
     if (now - lastViolationTime.current < 1500) return; // Prevent double trigger
@@ -416,6 +526,7 @@ export default function StudentExam({
       });
 
       if (nextCount >= maxAllowed) {
+        lockWritePendingUntilRef.current = Date.now() + 3000;
         setExamStatus('TERKUNCI');
       }
     } else {
@@ -451,14 +562,7 @@ export default function StudentExam({
     let preBlurViewportHeight = window.visualViewport ? window.visualViewport.height : window.innerHeight;
     let preBlurViewportWidth = window.visualViewport ? window.visualViewport.width : window.innerWidth;
 
-    const checkIsFs = () => {
-      return !!(
-        document.fullscreenElement ||
-        (document as any).webkitFullscreenElement ||
-        (document as any).mozFullScreenElement ||
-        (document as any).msFullscreenElement
-      );
-    };
+    const checkIsFs = () => checkIsFullscreenActive();
 
     const classifyVisibleOverlayViolation = (): { reason: string; category: ViolationCategory } => {
       const vw = window.visualViewport ? window.visualViewport.width : window.innerWidth;
@@ -522,25 +626,42 @@ export default function StudentExam({
     const handleFullscreenChange = () => {
       const isFs = checkIsFs();
       setIsCurrentlyFullscreen(isFs);
-      if (strictActive && isFullscreenSupported && !isFs && !isGraceActive && examStartedRef.current) {
+      if (isFs) {
+        setNeedsFullscreenResume(false);
+        needsFullscreenResumeRef.current = false;
+        setFullscreenFailed(false);
+      }
+      if (
+        strictActive &&
+        isFullscreenSupported &&
+        !isFs &&
+        !isGraceActiveRef.current &&
+        !needsFullscreenResumeRef.current &&
+        examStartedRef.current
+      ) {
         triggerViolation('Keluar dari Mode Layar Penuh (Fullscreen)', 'FULLSCREEN_EXIT');
       }
     };
 
     const handleVisibilityChange = () => {
-      if ((document.hidden || document.visibilityState === 'hidden') && !isGraceActive && examStartedRef.current) {
+      if (
+        (document.hidden || document.visibilityState === 'hidden') &&
+        !isGraceActiveRef.current &&
+        !needsFullscreenResumeRef.current &&
+        examStartedRef.current
+      ) {
         triggerViolation('Beralih ke aplikasi lain / meminimalkan tab ujian', 'TAB_SWITCH');
       }
     };
 
     const handleWindowBlur = () => {
-      if (isGraceActive || !examStartedRef.current) return;
+      if (isGraceActiveRef.current || needsFullscreenResumeRef.current || !examStartedRef.current) return;
       if (Date.now() - lastRightClickTime < 1500) return;
       if (blurTimeout) clearTimeout(blurTimeout);
       if (!focusLostSince) focusLostSince = Date.now();
 
       blurTimeout = setTimeout(() => {
-        if (!isGraceActive && examStartedRef.current) {
+        if (!isGraceActiveRef.current && !needsFullscreenResumeRef.current && examStartedRef.current) {
           if (document.hidden || document.visibilityState === 'hidden') {
             triggerViolation('Beralih ke aplikasi lain / meninggalkan jendela ujian', 'TAB_SWITCH');
           } else if (!document.hasFocus()) {
@@ -583,7 +704,7 @@ export default function StudentExam({
     };
 
     const handleTouchMove = (e: TouchEvent) => {
-      if (isGraceActive || !examStartedRef.current) return;
+      if (isGraceActiveRef.current || needsFullscreenResumeRef.current || !examStartedRef.current) return;
       if (e.touches && e.touches.length > 0) {
         const currentY = e.touches[0].clientY;
         const currentX = e.touches[0].clientX;
@@ -607,7 +728,7 @@ export default function StudentExam({
     };
 
     const handleTouchCancel = () => {
-      if (isGraceActive || !examStartedRef.current) return;
+      if (isGraceActiveRef.current || needsFullscreenResumeRef.current || !examStartedRef.current) return;
       const elapsed = Date.now() - touchStartTime;
       if (elapsed > 1500) return;
 
@@ -624,13 +745,13 @@ export default function StudentExam({
     };
 
     const handlePageHide = () => {
-      if (!isGraceActive && examStartedRef.current) {
+      if (!isGraceActiveRef.current && !needsFullscreenResumeRef.current && examStartedRef.current) {
         triggerViolation('Aplikasi ujian berpindah ke latar belakang (Page Hide)', 'TAB_SWITCH');
       }
     };
 
     const handleResize = () => {
-      if (isGraceActive || !examStartedRef.current) return;
+      if (isGraceActiveRef.current || needsFullscreenResumeRef.current || !examStartedRef.current) return;
       const vw = window.visualViewport ? window.visualViewport.width : window.innerWidth;
       const vh = window.visualViewport ? window.visualViewport.height : window.innerHeight;
       const screenW = window.screen?.width || window.innerWidth;
@@ -659,7 +780,7 @@ export default function StudentExam({
     };
 
     const handleKeyDown = (e: KeyboardEvent) => {
-      if (isGraceActive || !examStartedRef.current) return;
+      if (isGraceActiveRef.current || needsFullscreenResumeRef.current || !examStartedRef.current) return;
       const keyLower = e.key.toLowerCase();
 
       // Screenshot / Lens capture shortcuts
@@ -719,7 +840,15 @@ export default function StudentExam({
 
     // Continuous Active Sentinel Heartbeat Monitor
     const heartbeatInterval = setInterval(() => {
-      if (!examStartedRef.current || isGraceActive || isSubmittingRef.current) return;
+      if (
+        !examStartedRef.current ||
+        isGraceActiveRef.current ||
+        needsFullscreenResumeRef.current ||
+        isUnlockingRef.current ||
+        isSubmittingRef.current
+      ) {
+        return;
+      }
       if (Date.now() - lastRightClickTime < 1500) return;
 
       if (document.hidden || document.visibilityState === 'hidden') {
@@ -791,7 +920,7 @@ export default function StudentExam({
       document.removeEventListener('touchmove', handleTouchMove);
       document.removeEventListener('touchcancel', handleTouchCancel);
     };
-  }, [examStatus, config.strictSecurityEnabled, config.passiveViolationLoggingEnabled, isGraceActive]);
+  }, [examStatus, config.strictSecurityEnabled, config.passiveViolationLoggingEnabled]);
 
   const handleSelectOption = (questionId: string, optionIndex: number) => {
     warmUpAudioContext();
@@ -908,38 +1037,33 @@ export default function StudentExam({
       return;
     }
 
+    const activeTokenSet = new Set(activeTokens.map(t => t.trim().toUpperCase()));
     if (isSubmittingToken) return;
     setIsSubmittingToken(true);
     setTokenError('');
 
     try {
+      // Request fullscreen synchronously inside the user submit gesture if token format is valid
+      let enteredFsEarly = checkIsFullscreenActive();
+      if (isStrictMode && isFullscreenSupported && !enteredFsEarly && activeTokenSet.has(normalized)) {
+        enteredFsEarly = await requestFullscreen();
+      }
+
       if (onTokenUnlock) {
-        // Direct fullscreen request immediately inside the click handler
-        if (document.documentElement.requestFullscreen) {
-          try {
-            await document.documentElement.requestFullscreen();
-            setIsCurrentlyFullscreen(true);
-          } catch (e) {
-            console.warn('Direct requestFullscreen error:', e);
-          }
-        }
         const res = await onTokenUnlock(tokenInput.trim());
         if (res.success) {
-          performAutoUnlock(res.message);
           setTokenInput('');
+          await performAutoUnlock(res.message, enteredFsEarly);
         } else {
+          if (enteredFsEarly && checkIsFullscreenActive()) {
+            await exitFullscreen();
+          }
           setTokenError(res.message);
         }
       } else {
-        if (activeTokens.map(t => t.toUpperCase()).includes(normalized)) {
-          if (document.documentElement.requestFullscreen) {
-            try {
-              await document.documentElement.requestFullscreen();
-              setIsCurrentlyFullscreen(true);
-            } catch (e) {}
-          }
-          performAutoUnlock('Token Valid! Membuka halaman ujian...');
+        if (activeTokenSet.has(normalized)) {
           setTokenInput('');
+          await performAutoUnlock('Token Valid! Membuka halaman ujian...', enteredFsEarly);
           onViolation('unlocked_locally');
         } else {
           setTokenError('Kode token salah atau tidak valid.');
@@ -960,7 +1084,7 @@ export default function StudentExam({
       const serverStudent = await getStudentFromServer(student.id);
       if (serverStudent) {
         if (serverStudent.status !== 'TERKUNCI') {
-          performAutoUnlock('KUNCI TELAH DIBUKA OLEH PROKTOR! Membuka lembar ujian...');
+          await performAutoUnlock('KUNCI TELAH DIBUKA OLEH PROKTOR! Membuka lembar ujian...');
         } else {
           setStatusMessage('');
           alert('Status ujian Anda masih TERKUNCI di komputer Proktor. Silakan tunggu Proktor menekan "Unlock" atau gunakan Token Mandiri (Channel 2).');
@@ -1167,8 +1291,73 @@ export default function StudentExam({
     );
   }
 
+  // 1a. --- RENDERING: AUTO-FULLSCREEN RESUME OVERLAY AFTER REMOTE UNLOCK ---
+  if (needsFullscreenResume && isStrictMode && isFullscreenSupported && !isCurrentlyFullscreen && examStatus === 'SEDANG_MENGERJAKAN') {
+    const handleTapToResumeFullscreen = async () => {
+      warmUpAudioContext();
+      setIsGraceActive(true);
+      isGraceActiveRef.current = true;
+      const ok = await requestFullscreen();
+      if (ok) {
+        setNeedsFullscreenResume(false);
+        needsFullscreenResumeRef.current = false;
+      }
+      if (graceTimeoutRef.current) clearTimeout(graceTimeoutRef.current);
+      graceTimeoutRef.current = setTimeout(() => {
+        setIsGraceActive(false);
+        isGraceActiveRef.current = false;
+        setIsCurrentlyFullscreen(checkIsFullscreenActive());
+      }, 1500);
+    };
+
+    return (
+      <div
+        onClick={handleTapToResumeFullscreen}
+        className="fixed inset-0 z-[9999] bg-slate-950/95 backdrop-blur-md flex flex-col justify-center items-center p-4 text-white text-center font-sans cursor-pointer select-none"
+      >
+        <div className="max-w-md w-full bg-slate-900 border border-emerald-500/40 rounded-3xl p-6 sm:p-8 shadow-2xl relative overflow-hidden">
+          <div className="absolute top-0 inset-x-0 h-1.5 bg-emerald-500"></div>
+
+          <div className="inline-flex items-center justify-center p-4 bg-emerald-500/15 rounded-2xl mb-4 text-emerald-400 border border-emerald-500/30">
+            <Maximize2 className="w-11 h-11 animate-pulse" />
+          </div>
+
+          <span className="inline-block px-3 py-1 rounded-full bg-emerald-500/15 border border-emerald-500/30 text-emerald-300 text-[10px] font-mono font-bold uppercase tracking-wider mb-3">
+            Akses Ujian Aktif Kembali • 0 Pelanggaran
+          </span>
+
+          <h2 className="text-xl sm:text-2xl font-black tracking-tight text-white mb-2">
+            Kunci Ujian Telah Dibuka!
+          </h2>
+          <p className="text-slate-300 text-xs sm:text-sm mb-6 leading-relaxed">
+            Pengawas telah membuka kunci naskah Anda. Ketuk layar di mana saja untuk langsung masuk kembali ke <strong>Mode Layar Penuh (Fullscreen)</strong> dan melanjutkan ujian.
+          </p>
+
+          <button
+            type="button"
+            id="btn-resume-fullscreen-after-unlock"
+            onClick={(e) => {
+              e.stopPropagation();
+              handleTapToResumeFullscreen();
+            }}
+            className="w-full bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-black py-3.5 px-6 rounded-2xl transition flex items-center justify-center gap-2 shadow-lg cursor-pointer active:scale-[0.98] text-sm"
+          >
+            <Maximize2 className="w-4 h-4" />
+            Masuk Layar Penuh &amp; Lanjut Ujian
+          </button>
+
+          {fullscreenFailed && (
+            <p className="text-[11px] text-amber-300 font-medium mt-3 leading-snug">
+              Browser memerlukan ketukan langsung pada layar di atas untuk mengaktifkan mode layar penuh. Jawaban Anda tetap tersimpan aman.
+            </p>
+          )}
+        </div>
+      </div>
+    );
+  }
+
   // 1b. --- RENDERING: BLOCKED SCENE IF EXITING FULLSCREEN ---
-  if (config.strictSecurityEnabled !== false && isFullscreenSupported && !isCurrentlyFullscreen && !isGraceActive && examStatus === 'SEDANG_MENGERJAKAN') {
+  if (config.strictSecurityEnabled !== false && isFullscreenSupported && !isCurrentlyFullscreen && !isGraceActive && !needsFullscreenResume && examStatus === 'SEDANG_MENGERJAKAN') {
     return (
       <div className="min-h-screen bg-slate-950 flex flex-col justify-center items-center p-4 text-white text-center font-sans">
         <div className="max-w-md w-full bg-slate-900 border border-red-500/30 rounded-2xl p-8 shadow-2xl relative overflow-hidden">

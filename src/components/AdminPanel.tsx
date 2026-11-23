@@ -4,6 +4,7 @@ import * as XLSX from 'xlsx';
 import { Student, Question, ExamConfig, ExamSubject, StudentUser, ProctorPermissions, BroadcastAnnouncement } from '../types';
 import { DEFAULT_PROCTOR_PERMISSIONS } from '../data';
 import {
+  getStudents,
   getExamSubjects,
   saveSingleStudent,
   saveMultipleStudents,
@@ -189,6 +190,8 @@ export default function AdminPanel({
   // Search filter query & violation inspection modal
   const [studentSearch, setStudentSearch] = useState('');
   const [inspectViolationStudent, setInspectViolationStudent] = useState<Student | null>(null);
+  const [unlockingStudentIds, setUnlockingStudentIds] = useState<Record<string, boolean>>({});
+  const [isUnlockingAll, setIsUnlockingAll] = useState(false);
   const [selectedClassFilter, setSelectedClassFilter] = useState('all');
   const [selectedSubjectFilter, setSelectedSubjectFilter] = useState('all');
   const [selectedStatusFilter, setSelectedStatusFilter] = useState('all');
@@ -1931,9 +1934,14 @@ export default function AdminPanel({
   // --- ACTIONS: STUDENT MANAGEMENT ---
 
   // Real-time unlock! Set status back to 'SEDANG_MENGERJAKAN' and reset violations to 0
-  const handleUnlockStudent = (studentId: string) => {
-    const student = students.find((s) => s.id === studentId);
-    if (student) {
+  const handleUnlockStudent = async (studentId: string) => {
+    if (unlockingStudentIds[studentId]) return;
+    const freshList = getStudents();
+    const student = freshList.find((s) => s.id === studentId) || students.find((s) => s.id === studentId);
+    if (!student) return;
+
+    setUnlockingStudentIds((prev) => ({ ...prev, [studentId]: true }));
+    try {
       const unlockedStudent: Student = {
         ...student,
         status: 'SEDANG_MENGERJAKAN' as const,
@@ -1943,31 +1951,26 @@ export default function AdminPanel({
         lastActive: new Date().toISOString()
       };
       // Direct Firestore document update for instant sub-second propagation (1 write, 0 read)
-      saveSingleStudent(unlockedStudent);
-    }
-
-    const updated = students.map((s) => {
-      if (s.id === studentId) {
-        return {
-          ...s,
-          status: 'SEDANG_MENGERJAKAN' as const,
-          violationCount: 0, // Reset violation count on unlock!
-          lockedReason: undefined,
-          answers: s.answers || {}, // Preserve existing student answers on unlock
-          lastActive: new Date().toISOString()
-        };
+      const ok = await saveSingleStudent(unlockedStudent);
+      if (!ok) {
+        alert(`Gagal mengirim perintah Unlock untuk "${student.name}" ke Cloud Firestore. Periksa koneksi internet Anda lalu coba lagi.`);
       }
-      return s;
-    });
-    saveStudentsLocally(updated);
+    } finally {
+      setUnlockingStudentIds((prev) => {
+        const next = { ...prev };
+        delete next[studentId];
+        return next;
+      });
+    }
   };
 
   // Reset student entire attempt
-  const handleResetStudentAttempt = (studentId: string) => {
+  const handleResetStudentAttempt = async (studentId: string) => {
     if (!window.confirm('Apakah Anda yakin ingin mereset seluruh pengerjaan siswa ini? Jawaban yang ada akan dihapus dan siswa harus masuk layar penuh lagi.')) {
       return;
     }
-    const student = students.find(s => s.id === studentId);
+    const freshList = getStudents();
+    const student = freshList.find(s => s.id === studentId) || students.find(s => s.id === studentId);
     if (student) {
       const resetStd: Student = {
         ...student,
@@ -1982,35 +1985,17 @@ export default function AdminPanel({
         endTime: undefined,
         lastActive: new Date().toISOString()
       };
-      saveSingleStudent(resetStd);
+      await saveSingleStudent(resetStd);
     }
-
-    const updated = students.map((s) => {
-      if (s.id === studentId) {
-        return {
-          ...s,
-          status: 'BELUM_MULAI' as const,
-          answers: {},
-          violationCount: 0,
-          violationLogs: [],
-          lockedReason: undefined,
-          score: undefined,
-          correctAnswersCount: undefined,
-          startTime: undefined,
-          endTime: undefined
-        };
-      }
-      return s;
-    });
-    saveStudentsLocally(updated);
   };
 
   // Reset student violation count only (removes locks & keeps existing answers)
-  const handleResetStudentViolations = (studentId: string) => {
+  const handleResetStudentViolations = async (studentId: string) => {
     if (!window.confirm('Apakah Anda yakin ingin ME-RESET pelanggaran siswa ini menjadi 0? Jika status ujian terkunci, siswa akan bisa mengakses kembali naskah ujian setara tabungan jawaban sebelumnya.')) {
       return;
     }
-    const student = students.find(s => s.id === studentId);
+    const freshList = getStudents();
+    const student = freshList.find(s => s.id === studentId) || students.find(s => s.id === studentId);
     if (student) {
       const resetStd: Student = {
         ...student,
@@ -2020,22 +2005,12 @@ export default function AdminPanel({
         status: student.status === 'TERKUNCI' ? ('SEDANG_MENGERJAKAN' as const) : student.status,
         lastActive: new Date().toISOString()
       };
-      saveSingleStudent(resetStd);
-    }
-
-    const updated = students.map((s) => {
-      if (s.id === studentId) {
-        return {
-          ...s,
-          violationCount: 0,
-          violationLogs: [],
-          lockedReason: undefined,
-          status: s.status === 'TERKUNCI' ? ('SEDANG_MENGERJAKAN' as const) : s.status
-        };
+      const ok = await saveSingleStudent(resetStd);
+      if (!ok) {
+        alert('Gagal menyinkronkan reset pelanggaran ke Cloud Firestore. Periksa koneksi internet Anda.');
+        return;
       }
-      return s;
-    });
-    saveStudentsLocally(updated);
+    }
     alert('Pelanggaran berhasil di-reset menjadi 0 dan status ujian diaktifkan kembali!');
   };
 
@@ -2130,7 +2105,8 @@ export default function AdminPanel({
   };
 
   // Unlock all locked students at once and reset their violations
-  const handleUnlockAllStudents = () => {
+  const handleUnlockAllStudents = async () => {
+    if (isUnlockingAll) return;
     const targetStudents = isFilterActive ? filteredStudents : students;
     const lockedStudents = targetStudents.filter((s) => s.status === 'TERKUNCI');
     if (lockedStudents.length === 0) {
@@ -2143,25 +2119,34 @@ export default function AdminPanel({
     if (!window.confirm(confirmMessage)) {
       return;
     }
-    const targetIds = new Set(lockedStudents.map(s => s.id));
-    const changedStudents: Student[] = [];
-    const updated = students.map((s) => {
-      if (targetIds.has(s.id)) {
-        const unlocked: Student = {
-          ...s,
-          status: 'SEDANG_MENGERJAKAN' as const,
-          violationCount: 0, // Reset violation count on unlock!
-          lockedReason: undefined,
-          answers: s.answers || {}, // Preserve answers already typed
-          lastActive: new Date().toISOString()
-        };
-        changedStudents.push(unlocked);
-        return unlocked;
+
+    setIsUnlockingAll(true);
+    try {
+      const targetIds = new Set(lockedStudents.map(s => s.id));
+      const freshById = new Map<string, Student>(getStudents().map(s => [s.id, s]));
+      const changedStudents: Student[] = [];
+      targetIds.forEach((id) => {
+        const base = freshById.get(id) || lockedStudents.find(s => s.id === id);
+        if (base) {
+          changedStudents.push({
+            ...base,
+            status: 'SEDANG_MENGERJAKAN' as const,
+            violationCount: 0, // Reset violation count on unlock!
+            lockedReason: undefined,
+            answers: base.answers || {}, // Preserve answers already typed
+            lastActive: new Date().toISOString()
+          });
+        }
+      });
+      const ok = await saveMultipleStudents(changedStudents);
+      if (ok) {
+        alert(`Sukses membuka kunci & me-reset pelanggaran untuk ${changedStudents.length} siswa!`);
+      } else {
+        alert('Gagal menyinkronkan buka kunci masal ke Cloud Firestore. Periksa koneksi internet Anda lalu coba lagi.');
       }
-      return s;
-    });
-    saveMultipleStudents(changedStudents);
-    alert(`Sukses membuka kunci & me-reset pelanggaran untuk ${lockedStudents.length} siswa!`);
+    } finally {
+      setIsUnlockingAll(false);
+    }
   };
 
   // Mass reset entire student violations to 0
@@ -3514,11 +3499,12 @@ export default function AdminPanel({
                 <button
                   type="button"
                   id="btn-alert-unlock-all"
+                  disabled={isUnlockingAll}
                   onClick={handleUnlockAllStudents}
-                  className="px-5 py-3 bg-white hover:bg-rose-50 text-rose-700 font-black text-xs sm:text-sm rounded-xl shadow-md transition flex items-center justify-center gap-2 cursor-pointer active:scale-95 shrink-0"
+                  className="px-5 py-3 bg-white hover:bg-rose-50 text-rose-700 font-black text-xs sm:text-sm rounded-xl shadow-md transition flex items-center justify-center gap-2 cursor-pointer active:scale-95 shrink-0 disabled:opacity-60"
                 >
-                  <KeyRound className="w-4 h-4 text-rose-600" />
-                  Buka Kunci Semua ({students.filter(s => s.status === 'TERKUNCI').length})
+                  <KeyRound className={`w-4 h-4 text-rose-600 ${isUnlockingAll ? 'animate-spin' : ''}`} />
+                  {isUnlockingAll ? 'Membuka Semua Kunci...' : `Buka Kunci Semua (${students.filter(s => s.status === 'TERKUNCI').length})`}
                 </button>
               </div>
             )}
@@ -3562,13 +3548,16 @@ export default function AdminPanel({
                 <button
                   type="button"
                   id="btn-bulk-unlock"
+                  disabled={isUnlockingAll}
                   onClick={handleUnlockAllStudents}
-                  className="px-4 py-3.5 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 hover:text-indigo-800 border border-indigo-200 hover:border-indigo-300 font-extrabold rounded-xl text-xs sm:text-sm transition flex items-center justify-center gap-2 cursor-pointer active:scale-[0.98] shadow-xs"
+                  className="px-4 py-3.5 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 hover:text-indigo-800 border border-indigo-200 hover:border-indigo-300 font-extrabold rounded-xl text-xs sm:text-sm transition flex items-center justify-center gap-2 cursor-pointer active:scale-[0.98] shadow-xs disabled:opacity-60"
                 >
-                  <KeyRound className="w-4 h-4 text-indigo-650" />
-                  {isFilterActive 
-                    ? `Unlock Ter-filter (${filteredStudents.filter(s => s.status === 'TERKUNCI').length})`
-                    : `Buka Kunci Semua (${students.filter(s => s.status === 'TERKUNCI').length})`
+                  <KeyRound className={`w-4 h-4 text-indigo-650 ${isUnlockingAll ? 'animate-spin' : ''}`} />
+                  {isUnlockingAll
+                    ? 'Membuka Kunci...'
+                    : isFilterActive 
+                      ? `Unlock Ter-filter (${filteredStudents.filter(s => s.status === 'TERKUNCI').length})`
+                      : `Buka Kunci Semua (${students.filter(s => s.status === 'TERKUNCI').length})`
                   }
                 </button>
 
@@ -3941,12 +3930,13 @@ export default function AdminPanel({
                                   <button
                                     type="button"
                                     id={`btn-direct-unlock-${s.id}`}
+                                    disabled={!!unlockingStudentIds[s.id]}
                                     onClick={() => handleUnlockStudent(s.id)}
-                                    className="px-3 py-1.5 bg-amber-400 hover:bg-amber-300 active:scale-95 text-slate-950 font-extrabold text-xs rounded-xl shadow-md transition flex items-center gap-1.5 cursor-pointer animate-pulse"
+                                    className="px-3 py-1.5 bg-amber-400 hover:bg-amber-300 active:scale-95 text-slate-950 font-extrabold text-xs rounded-xl shadow-md transition flex items-center gap-1.5 cursor-pointer animate-pulse disabled:opacity-60"
                                     title="Langsung buka kunci untuk siswa ini"
                                   >
-                                    <KeyRound className="w-3.5 h-3.5 text-slate-900" />
-                                    <span>Buka Kunci (Unlock)</span>
+                                    <KeyRound className={`w-3.5 h-3.5 text-slate-900 ${unlockingStudentIds[s.id] ? 'animate-spin' : ''}`} />
+                                    <span>{unlockingStudentIds[s.id] ? 'Membuka...' : 'Buka Kunci (Unlock)'}</span>
                                   </button>
                                 </div>
                               )}
@@ -4047,12 +4037,14 @@ export default function AdminPanel({
                               {/* Option to Unlock (Reset Status to Sedang Mengerjakan) */}
                               {s.status === 'TERKUNCI' && (
                                 <button
+                                  type="button"
                                   id={`btn-unlock-${s.id}`}
+                                  disabled={!!unlockingStudentIds[s.id]}
                                   onClick={() => handleUnlockStudent(s.id)}
-                                  className="px-2.5 py-1 text-xs font-bold bg-yellow-400 hover:bg-yellow-300 text-slate-900 rounded-lg shadow-xs transition"
+                                  className="px-2.5 py-1 text-xs font-bold bg-yellow-400 hover:bg-yellow-300 text-slate-900 rounded-lg shadow-xs transition cursor-pointer disabled:opacity-60"
                                   title="Buka blokir dan izinkan lanjut ujian"
                                 >
-                                  Unlock Ujian
+                                  {unlockingStudentIds[s.id] ? 'Membuka...' : 'Unlock Ujian'}
                                 </button>
                               )}
 
