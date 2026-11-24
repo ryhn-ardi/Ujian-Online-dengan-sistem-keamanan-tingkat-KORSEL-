@@ -23,7 +23,7 @@ import {
   getStudentFromServer
 } from './utils/sync';
 import { Student, Question, ExamConfig, StudentStatus, StudentUser, BroadcastAnnouncement, ExamSubject, ViolationCategory } from './types';
-import { isSubjectMatchingStudentClass, doesQuestionBelongToSubject, isSameStudentAccount } from './utils/gradeHelper';
+import { isSubjectMatchingStudentClass, doesQuestionBelongToSubject, isSameStudentAccount, buildAttemptHistoryOnSubmit } from './utils/gradeHelper';
 import { createViolationLogEntry, formatViolationTime, getViolationCategoryMeta } from './utils/violationHelper';
 import StudentRegistration from './components/StudentRegistration';
 import StudentExam from './components/StudentExam';
@@ -1156,6 +1156,7 @@ export default function App() {
             const target = freshStudents.find(s => s.id === studentId);
             if (!target) return;
             const metrics = getStudentMetrics(target, questions);
+            const completedAt = new Date().toISOString();
             const updated = freshStudents.map((s) => {
               if (s.id === studentId) {
                 const refreshed: Student = {
@@ -1164,8 +1165,15 @@ export default function App() {
                   score: metrics.score,
                   correctAnswersCount: metrics.correctAnswersCount,
                   totalQuestions: metrics.totalQuestions,
-                  endTime: new Date().toISOString(),
-                  lastActive: new Date().toISOString()
+                  endTime: completedAt,
+                  lastActive: completedAt,
+                  attemptHistory: buildAttemptHistoryOnSubmit(
+                    s,
+                    metrics.score,
+                    metrics.correctAnswersCount,
+                    metrics.totalQuestions,
+                    completedAt
+                  )
                 };
                 saveSingleStudent(refreshed);
                 return refreshed;

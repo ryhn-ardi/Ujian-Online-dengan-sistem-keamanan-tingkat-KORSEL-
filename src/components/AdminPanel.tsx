@@ -35,14 +35,25 @@ import AnalyticsCharts from './AnalyticsCharts';
 import ItemAnalysisTab from './ItemAnalysisTab';
 import { playAlarmSound, stopAllAlarmSounds, playAnnouncementSound, setCustomAlarmAudioData, getCustomAlarmAudioData } from '../utils/alarmAudio';
 import { verifyUltimateCode, ULTIMATE_AUTHORIZATION_CODE } from '../utils/securityAuth';
-import { GRADE_PRESETS, getGradeBadge } from '../utils/gradeHelper';
+import { GRADE_PRESETS, getGradeBadge, getStudentScoreBreakdown, buildAttemptHistoryOnSubmit } from '../utils/gradeHelper';
 import { getViolationCategoryMeta, formatViolationTime, formatViolationLogsForExport } from '../utils/violationHelper';
 
 // Helper to calculate actual subject metrics for a student
 export function getStudentMetrics(s: Student, questionsList: Question[]) {
-  const studentQuestions = questionsList.filter(
+  let studentQuestions = questionsList.filter(
     (q) => (!q.subjectId && (!s.subjectId || s.subjectId === 'sub1')) || q.subjectId === s.subjectId
   );
+  if (s.assignedQuestionIds && s.assignedQuestionIds.length > 0) {
+    const map = new Map(studentQuestions.map(q => [q.id, q]));
+    const ordered: Question[] = [];
+    s.assignedQuestionIds.forEach(id => {
+      const found = map.get(id);
+      if (found) ordered.push(found);
+    });
+    if (ordered.length > 0) {
+      studentQuestions = ordered;
+    }
+  }
   const totalQuestions = studentQuestions.length;
 
   let correctAnswersCount = 0;
@@ -2185,25 +2196,31 @@ export default function AdminPanel({
 
   // Force finish a single student's ongoing exam and record their score
   const handleForceSubmitStudent = (studentId: string) => {
-    const target = students.find(s => s.id === studentId);
+    const freshList = getStudents();
+    const target = freshList.find(s => s.id === studentId) || students.find(s => s.id === studentId);
     if (!target) return;
     if (!window.confirm(`Kumpulkan lembar ujian ${target.name} sekarang dan tetapkan nilai akhirnya?`)) {
       return;
     }
     const metrics = getStudentMetrics(target, questions);
+    const completedAt = target.endTime || new Date().toISOString();
     const updatedStudent: Student = {
       ...target,
       status: 'SELESAI' as const,
       score: metrics.score,
       correctAnswersCount: metrics.correctAnswersCount,
       totalQuestions: metrics.totalQuestions,
-      endTime: target.endTime || new Date().toISOString(),
-      lastActive: new Date().toISOString()
+      endTime: completedAt,
+      lastActive: new Date().toISOString(),
+      attemptHistory: buildAttemptHistoryOnSubmit(
+        target,
+        metrics.score,
+        metrics.correctAnswersCount,
+        metrics.totalQuestions,
+        completedAt
+      )
     };
     saveSingleStudent(updatedStudent);
-
-    const updated = students.map((s) => (s.id === studentId ? updatedStudent : s));
-    saveStudentsLocally(updated);
     alert(`Ujian siswa ${target.name} berhasil dikumpulkan! Nilai akhir: ${metrics.score.toFixed(1)} (${metrics.correctAnswersCount}/${metrics.totalQuestions} Benar).`);
   };
 
@@ -2219,26 +2236,33 @@ export default function AdminPanel({
       return;
     }
     const ongoingIds = new Set(ongoingList.map(s => s.id));
+    const freshById = new Map<string, Student>(getStudents().map(s => [s.id, s]));
     const changedStudents: Student[] = [];
-    const updated = students.map((s) => {
-      if (ongoingIds.has(s.id)) {
-        const metrics = getStudentMetrics(s, questions);
-        const finished: Student = {
-          ...s,
+    ongoingIds.forEach((id) => {
+      const base = freshById.get(id) || ongoingList.find(s => s.id === id);
+      if (base) {
+        const metrics = getStudentMetrics(base, questions);
+        const completedAt = base.endTime || new Date().toISOString();
+        changedStudents.push({
+          ...base,
           status: 'SELESAI' as const,
           score: metrics.score,
           correctAnswersCount: metrics.correctAnswersCount,
           totalQuestions: metrics.totalQuestions,
-          endTime: s.endTime || new Date().toISOString(),
-          lastActive: new Date().toISOString()
-        };
-        changedStudents.push(finished);
-        return finished;
+          endTime: completedAt,
+          lastActive: new Date().toISOString(),
+          attemptHistory: buildAttemptHistoryOnSubmit(
+            base,
+            metrics.score,
+            metrics.correctAnswersCount,
+            metrics.totalQuestions,
+            completedAt
+          )
+        });
       }
-      return s;
     });
     saveMultipleStudents(changedStudents);
-    alert(`Berhasil mengumpulkan dan menetapkan nilai untuk ${ongoingList.length} siswa!`);
+    alert(`Berhasil mengumpulkan dan menetapkan nilai untuk ${changedStudents.length} siswa!`);
   };
 
   // Admin clear local browser cache and force re-sync
@@ -2333,11 +2357,15 @@ export default function AdminPanel({
       'Kelas',
       'Naskah / Mata Pelajaran',
       'Status Ujian',
+      'Sesi Terakhir',
       'Pelanggaran (Jumlah)',
       'Detail Pelanggaran',
       'Total Benar',
       'Jumlah Soal',
+      'Nilai Ujian Utama',
+      'Nilai Remedial',
       'Nilai Akhir (%)',
+      'Riwayat Percobaan',
       'Waktu Mulai (WIB)',
       'Waktu Selesai (WIB)'
     ];
@@ -2348,9 +2376,7 @@ export default function AdminPanel({
         ? metrics.correctAnswersCount 
         : (s.correctAnswersCount !== undefined ? s.correctAnswersCount : (metrics.correctAnswersCount || 0));
       const totalCount = metrics.totalQuestions;
-      const finalScore = s.status === 'SELESAI' 
-        ? Number(metrics.score.toFixed(1)) 
-        : (s.score !== undefined ? Number(s.score.toFixed(1)) : (Object.keys(s.answers || {}).length > 0 ? Number(metrics.score.toFixed(1)) : 0));
+      const scoreBreakdown = getStudentScoreBreakdown(s, metrics.score);
       
       const formatTimeText = (isoStr?: string) => {
         if (!isoStr) return '-';
@@ -2368,11 +2394,15 @@ export default function AdminPanel({
         s.studentClass,
         subjectName,
         s.status === 'TERKUNCI' ? 'TERKOMPROMISI / TERKUNCI' : s.status,
+        scoreBreakdown.sessionLabel,
         s.violationCount || 0,
         formatViolationLogsForExport(s),
         correctCount,
         totalCount,
-        finalScore,
+        scoreBreakdown.mainScore,
+        scoreBreakdown.remedialScore,
+        scoreBreakdown.finalScore,
+        scoreBreakdown.historySummary,
         formatTimeText(s.startTime),
         formatTimeText(s.endTime)
       ];
@@ -2389,11 +2419,15 @@ export default function AdminPanel({
       { wch: 12 }, // Kelas
       { wch: 26 }, // Naskah Soal
       { wch: 24 }, // Status Ujian
+      { wch: 16 }, // Sesi Terakhir
       { wch: 16 }, // Pelanggaran
       { wch: 44 }, // Detail Pelanggaran
       { wch: 12 }, // Total Benar
       { wch: 12 }, // Jumlah Soal
-      { wch: 15 }, // Nilai Akhir
+      { wch: 18 }, // Nilai Ujian Utama
+      { wch: 16 }, // Nilai Remedial
+      { wch: 15 }, // Nilai Akhir (%)
+      { wch: 30 }, // Riwayat Percobaan
       { wch: 20 }, // Mulai
       { wch: 20 }  // Selesai
     ];

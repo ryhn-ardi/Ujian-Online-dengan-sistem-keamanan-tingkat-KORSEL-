@@ -33,6 +33,7 @@ import { DEFAULT_PROCTOR_PERMISSIONS } from '../data';
 import { getExamSubjects } from '../utils/sync';
 import { playAnnouncementSound } from '../utils/alarmAudio';
 import { getViolationCategoryMeta, formatViolationTime, formatViolationLogsForExport } from '../utils/violationHelper';
+import { getStudentScoreBreakdown } from '../utils/gradeHelper';
 import AnalyticsCharts from './AnalyticsCharts';
 import ItemAnalysisTab from './ItemAnalysisTab';
 
@@ -148,11 +149,15 @@ export default function ProctorPanel({
       'Kelas',
       'Naskah / Mata Pelajaran',
       'Status Ujian',
+      'Sesi Terakhir',
       'Pelanggaran (Jumlah)',
       'Detail Pelanggaran',
       'Total Benar',
       'Jumlah Soal',
+      'Nilai Ujian Utama',
+      'Nilai Remedial',
       'Nilai Akhir (%)',
+      'Riwayat Percobaan',
       'Waktu Mulai (WIB)',
       'Waktu Selesai (WIB)'
     ];
@@ -163,9 +168,7 @@ export default function ProctorPanel({
         ? metrics.correctAnswersCount 
         : (s.correctAnswersCount !== undefined ? s.correctAnswersCount : (metrics.correctAnswersCount || 0));
       const totalCount = metrics.totalQuestions;
-      const finalScore = s.status === 'SELESAI' 
-        ? Number(metrics.score.toFixed(1)) 
-        : (s.score !== undefined ? Number(s.score.toFixed(1)) : (Object.keys(s.answers || {}).length > 0 ? Number(metrics.score.toFixed(1)) : 0));
+      const scoreBreakdown = getStudentScoreBreakdown(s, metrics.score);
       
       const formatTimeText = (isoStr?: string) => {
         if (!isoStr) return '-';
@@ -183,11 +186,15 @@ export default function ProctorPanel({
         s.studentClass,
         subjectName,
         s.status === 'TERKUNCI' ? 'TERKOMPROMISI / TERKUNCI' : s.status,
+        scoreBreakdown.sessionLabel,
         s.violationCount || 0,
         formatViolationLogsForExport(s),
         correctCount,
         totalCount,
-        finalScore,
+        scoreBreakdown.mainScore,
+        scoreBreakdown.remedialScore,
+        scoreBreakdown.finalScore,
+        scoreBreakdown.historySummary,
         formatTimeText(s.startTime),
         formatTimeText(s.endTime)
       ];
@@ -204,11 +211,15 @@ export default function ProctorPanel({
       { wch: 12 }, // Kelas
       { wch: 26 }, // Naskah Soal
       { wch: 24 }, // Status Ujian
+      { wch: 16 }, // Sesi Terakhir
       { wch: 16 }, // Pelanggaran
       { wch: 44 }, // Detail Pelanggaran
       { wch: 12 }, // Total Benar
       { wch: 12 }, // Jumlah Soal
-      { wch: 15 }, // Nilai Akhir
+      { wch: 18 }, // Nilai Ujian Utama
+      { wch: 16 }, // Nilai Remedial
+      { wch: 15 }, // Nilai Akhir (%)
+      { wch: 30 }, // Riwayat Percobaan
       { wch: 20 }, // Mulai
       { wch: 20 }  // Selesai
     ];

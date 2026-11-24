@@ -1,4 +1,4 @@
-import { ExamSubject, Question } from '../types';
+import { ExamSubject, Question, Student, StudentAttemptHistory } from '../types';
 
 export const GRADE_PRESETS = [
   { id: 'ALL', label: 'Semua Tingkatan (Umum)', shortLabel: 'Semua Kelas', description: 'Dapat diakses oleh seluruh siswa dari semua kelas', badgeBg: 'bg-emerald-50 text-emerald-700 border-emerald-200' },
@@ -257,4 +257,127 @@ export function getGradeBadge(targetGrade?: string) {
     badgeBg: 'bg-indigo-50 text-indigo-700 border-indigo-200',
     tagColor: 'bg-indigo-50 text-indigo-700 border-indigo-200'
   };
+}
+
+export interface StudentScoreBreakdown {
+  mainScore: number | '-';
+  remedialScore: number | '-';
+  finalScore: number;
+  sessionLabel: string;
+  historySummary: string;
+}
+
+/**
+ * Extracts Nilai Ujian Utama, Nilai Remedial, and Nilai Akhir consistently
+ * from attemptHistory and active student attempt state for Excel & reporting exports.
+ */
+export function getStudentScoreBreakdown(
+  s: Student,
+  computedScore: number
+): StudentScoreBreakdown {
+  const hasAnswers = Object.keys(s.answers || {}).length > 0;
+  const hasCurrentResult = s.status === 'SELESAI' || typeof s.score === 'number' || hasAnswers;
+  const roundedCurrent = Number(
+    (s.status === 'SELESAI'
+      ? computedScore
+      : typeof s.score === 'number'
+      ? s.score
+      : computedScore
+    ).toFixed(1)
+  );
+
+  const currentAttemptNum = s.attemptNumber || 1;
+  const isCurrentRemidi = Boolean(s.isRemedial) || currentAttemptNum > 1;
+
+  const sortedHistory = [...(s.attemptHistory || [])].sort(
+    (a, b) => (a.attemptNumber || 1) - (b.attemptNumber || 1)
+  );
+
+  const utamaEntry = sortedHistory.find(
+    (h) => h.attemptType === 'UTAMA' || h.attemptNumber === 1
+  );
+
+  let mainScore: number | '-' = '-';
+  if (utamaEntry) {
+    mainScore = Number((utamaEntry.score || 0).toFixed(1));
+  } else if (!isCurrentRemidi && hasCurrentResult) {
+    mainScore = roundedCurrent;
+  }
+
+  const remedialMap = new Map<number, number>();
+  sortedHistory
+    .filter((h) => h.attemptType === 'REMIDI' || h.attemptNumber > 1)
+    .forEach((h) => {
+      const attemptIdx = h.attemptNumber > 1 ? h.attemptNumber : 2;
+      remedialMap.set(attemptIdx, Number((h.score || 0).toFixed(1)));
+    });
+
+  if (isCurrentRemidi && hasCurrentResult) {
+    remedialMap.set(currentAttemptNum, roundedCurrent);
+  }
+
+  const orderedRemedials = Array.from(remedialMap.entries()).sort((a, b) => a[0] - b[0]);
+  const remedialScore: number | '-' =
+    orderedRemedials.length > 0
+      ? orderedRemedials[orderedRemedials.length - 1][1]
+      : '-';
+
+  const finalScore =
+    remedialScore !== '-'
+      ? remedialScore
+      : mainScore !== '-'
+      ? mainScore
+      : 0;
+
+  const sessionLabel = isCurrentRemidi
+    ? `REMIDI (Ke-${currentAttemptNum})`
+    : orderedRemedials.length > 0
+    ? 'REMIDI'
+    : 'UTAMA';
+
+  const parts: string[] = [];
+  if (mainScore !== '-') {
+    parts.push(`Utama: ${mainScore}`);
+  }
+  orderedRemedials.forEach(([num, sc]) => {
+    const label = orderedRemedials.length > 1 ? `Remidi ${num - 1}` : 'Remidi';
+    parts.push(`${label}: ${sc}`);
+  });
+
+  return {
+    mainScore,
+    remedialScore,
+    finalScore,
+    sessionLabel,
+    historySummary: parts.length > 0 ? parts.join(' | ') : '-'
+  };
+}
+
+/**
+ * Builds updated attemptHistory when finalizing an exam attempt (submit or force-submit).
+ */
+export function buildAttemptHistoryOnSubmit(
+  student: Student,
+  score: number,
+  correctAnswersCount: number,
+  totalQuestions: number,
+  completedAt: string
+): StudentAttemptHistory[] {
+  const currentAttemptNum = student.attemptNumber || 1;
+  const currentAttemptType: 'UTAMA' | 'REMIDI' =
+    currentAttemptNum > 1 || student.isRemedial ? 'REMIDI' : 'UTAMA';
+
+  const newRecord: StudentAttemptHistory = {
+    attemptNumber: currentAttemptNum,
+    attemptType: currentAttemptType,
+    score,
+    correctAnswersCount,
+    totalQuestions,
+    completedAt,
+    answers: student.answers || {}
+  };
+
+  const existingHistory = student.attemptHistory || [];
+  const filtered = existingHistory.filter((h) => h.attemptNumber !== currentAttemptNum);
+  return [...filtered, newRecord];
 }
