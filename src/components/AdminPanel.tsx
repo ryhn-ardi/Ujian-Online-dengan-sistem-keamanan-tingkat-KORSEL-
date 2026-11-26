@@ -6,6 +6,14 @@ import { DEFAULT_PROCTOR_PERMISSIONS } from '../data';
 import {
   getStudents,
   getExamSubjects,
+  getExamConfig,
+  patchExamConfig,
+  upsertSingleQuestion,
+  deleteSingleQuestion,
+  replaceQuestionsForSubject,
+  findOrphanedQuestionSubjects,
+  detectMismatchedDefaultSubjectSlots,
+  recoverSubjectsToConfig,
   saveSingleStudent,
   saveMultipleStudents,
   deleteSingleStudent,
@@ -117,6 +125,7 @@ interface AdminPanelProps {
   onUpdateStudents: (updated: Student[]) => void;
   onUpdateQuestions: (updated: Question[]) => void;
   onUpdateConfig: (updated: ExamConfig) => void;
+  onPatchConfig?: (partial: Partial<ExamConfig>) => Promise<boolean> | void;
   onUpdateStudentUsers?: (updated: StudentUser[]) => void;
   onExit: () => void;
 }
@@ -129,9 +138,16 @@ export default function AdminPanel({
   onUpdateStudents,
   onUpdateQuestions,
   onUpdateConfig,
+  onPatchConfig,
   onUpdateStudentUsers,
   onExit
 }: AdminPanelProps) {
+  const applyConfigPatch = (partial: Partial<ExamConfig>) => {
+    if (onPatchConfig) {
+      return onPatchConfig(partial);
+    }
+    return patchExamConfig(partial);
+  };
   // Tabs for the Admin Control Panel
   const [activeTab, setActiveTab] = useState<'MONITOR' | 'CHARTS' | 'ITEM_ANALYSIS' | 'QUESTIONS' | 'CONFIG' | 'ACCOUNTS' | 'TELEMETRY'>('MONITOR');
 
@@ -166,10 +182,10 @@ export default function AdminPanel({
   const handleManualCreateCheckpoint = async () => {
     setIsCreatingCheckpoint(true);
     try {
-      await saveQuestionCheckpoint(questions, 'MANUAL');
+      await saveQuestionCheckpoint(questions, 'MANUAL', subjects);
       const updatedMeta = getQuestionCheckpointMeta();
       setCheckpointMeta(updatedMeta);
-      setCheckpointNotice(`✨ Checkpoint cloud baru berhasil dibuat (${questions.length} butir soal, ${updatedMeta?.formattedTime || 'WIB'})!`);
+      setCheckpointNotice(`✨ Checkpoint cloud baru berhasil dibuat (${questions.length} butir soal & ${subjects.length} slot naskah, ${updatedMeta?.formattedTime || 'WIB'})!`);
       setTimeout(() => setCheckpointNotice(''), 4000);
     } catch (err: any) {
       alert(`Gagal membuat checkpoint: ${err.message || err}`);
@@ -217,17 +233,83 @@ export default function AdminPanel({
   const [editClass, setEditClass] = useState('');
   const [editSubjectId, setEditSubjectId] = useState('');
 
-  // Dynamic Subjects state (up to 20 slots)
+  // Dynamic Subjects state (up to 50 slots) + Orphaned/Reverted Subject Detection
   const subjects: ExamSubject[] = getExamSubjects(config);
-  const [activeSubjectId, setActiveSubjectId] = useState<string>(() => subjects[0]?.id || 'sub1');
+  const [activeSubjectId, setActiveSubjectId] = useState<string>(() => subjects[0]?.id || 'sub2');
 
-  // Ensure activeSubjectId is valid
-  const effectiveActiveSubject = subjects.find(s => s.id === activeSubjectId) || subjects[0] || {
-    id: 'sub1',
-    name: config.subject1Name || 'Mata Pelajaran 1',
-    code: 'MAPEL-1',
-    isActive: true
+  const orphanedSubjects = findOrphanedQuestionSubjects(questions, subjects);
+  const customOrphanedSubjects = orphanedSubjects.filter((o) => !o.isLegacySampleOnly);
+  const mismatchedDefaultSlots = detectMismatchedDefaultSubjectSlots(questions, subjects);
+
+  const [isRecoveringSubjects, setIsRecoveringSubjects] = useState(false);
+  const [renameRevertedDefaultsOnRecover, setRenameRevertedDefaultsOnRecover] = useState(true);
+
+  const handleRecoverSubjectsAndNames = async () => {
+    setIsRecoveringSubjects(true);
+    try {
+      const renames: Record<string, { name: string; code?: string }> = {};
+      if (renameRevertedDefaultsOnRecover) {
+        mismatchedDefaultSlots.forEach((m) => {
+          renames[m.subject.id] = {
+            name: m.suggestedName,
+            code: m.suggestedName === 'Informatika' ? 'INF' : m.suggestedName === 'Seni Budaya' ? 'SB' : m.subject.code
+          };
+        });
+      }
+      const ok = await recoverSubjectsToConfig(customOrphanedSubjects, renames);
+      if (ok) {
+        const msgParts: string[] = [];
+        if (customOrphanedSubjects.length > 0) {
+          msgParts.push(`${customOrphanedSubjects.length} slot naskah tersembunyi dipulihkan`);
+        }
+        if (renameRevertedDefaultsOnRecover && mismatchedDefaultSlots.length > 0) {
+          msgParts.push(`${mismatchedDefaultSlots.length} nama mapel diperbarui sesuai isi soal`);
+        }
+        setCheckpointNotice(`✅ Pemulihan berhasil: ${msgParts.join(' & ')}. Tersimpan aman ke Cloud Firestore!`);
+        if (customOrphanedSubjects[0]) {
+          setActiveSubjectId(customOrphanedSubjects[0].subjectId);
+        }
+        setTimeout(() => setCheckpointNotice(''), 6000);
+      } else {
+        alert('Gagal menyimpan pemulihan naskah ke Cloud Firestore. Periksa koneksi internet Anda lalu coba lagi.');
+      }
+    } finally {
+      setIsRecoveringSubjects(false);
+    }
   };
+
+  // Buffered ExamTitle & DurationMinutes inputs to avoid per-keystroke Firestore overwrites
+  const [draftExamTitle, setDraftExamTitle] = useState<string>(config.examTitle || '');
+  const [draftDurationMinutes, setDraftDurationMinutes] = useState<number>(config.durationMinutes || 90);
+  const titleSaveTimerRef = useRef<any>(null);
+  const durationSaveTimerRef = useRef<any>(null);
+
+  React.useEffect(() => {
+    setDraftExamTitle(config.examTitle || '');
+  }, [config.examTitle]);
+
+  React.useEffect(() => {
+    setDraftDurationMinutes(config.durationMinutes || 90);
+  }, [config.durationMinutes]);
+
+  // Ensure activeSubjectId can view both active subjects AND orphaned subjects in Bank Soal
+  const matchedOrphanActive = customOrphanedSubjects.find((o) => o.subjectId === activeSubjectId);
+  const effectiveActiveSubject: ExamSubject =
+    subjects.find((s) => s.id === activeSubjectId) ||
+    (matchedOrphanActive
+      ? {
+          id: matchedOrphanActive.subjectId,
+          name: matchedOrphanActive.suggestedName,
+          code: matchedOrphanActive.suggestedCode,
+          isActive: false,
+          targetGrade: 'ALL'
+        }
+      : subjects[0] || {
+          id: 'sub1',
+          name: config.subject1Name || 'Mata Pelajaran 1',
+          code: 'MAPEL-1',
+          isActive: true
+        });
 
   // Modals for Subject Management (Maksimal 50 Slot)
   const [isAddingSubjectModal, setIsAddingSubjectModal] = useState(false);
@@ -320,8 +402,7 @@ export default function AdminPanel({
     reader.onload = () => {
       const base64 = reader.result as string;
       setCustomAlarmAudioData(base64);
-      onUpdateConfig({
-        ...config,
+      applyConfigPatch({
         alarmType: 'CUSTOM_AUDIO',
         customAlarmAudioUrl: base64,
         customAlarmName: file.name,
@@ -334,8 +415,7 @@ export default function AdminPanel({
 
   const handleSaveCustomAudioUrl = () => {
     if (!customAudioUrlInput.trim()) return;
-    onUpdateConfig({
-      ...config,
+    applyConfigPatch({
       alarmType: 'CUSTOM_AUDIO',
       customAlarmAudioUrl: customAudioUrlInput.trim(),
       customAlarmName: 'Audio Link Eksternal',
@@ -353,13 +433,11 @@ export default function AdminPanel({
   const handleSendRefreshToStudents = async (mode: 'SOFT' | 'HARD' = refreshMode, customReason = refreshReason) => {
     setIsSendingRefresh(true);
     try {
-      const updatedConfig: ExamConfig = {
-        ...config,
+      await applyConfigPatch({
         forcedRefreshTimestamp: Date.now(),
         forcedRefreshType: mode,
         forcedRefreshReason: customReason.trim() || 'Pembaruan konfigurasi ujian dari Admin'
-      };
-      await onUpdateConfig(updatedConfig);
+      });
       setShowRefreshModal(false);
       alert(`Sinyal refresh (${mode === 'SOFT' ? 'Refresh Halus / Hot-Update' : 'Hard Reload Browser'}) sukses dikirim ke seluruh HP siswa! Layar dan lembar ujian siswa akan langsung tersinkronkan.`);
     } catch (e) {
@@ -411,8 +489,7 @@ export default function AdminPanel({
     const reader = new FileReader();
     reader.onload = () => {
       const base64 = reader.result as string;
-      onUpdateConfig({
-        ...config,
+      applyConfigPatch({
         announcementSoundType: 'CUSTOM_AUDIO',
         customAnnouncementAudioUrl: base64,
         customAnnouncementName: file.name
@@ -468,8 +545,7 @@ export default function AdminPanel({
       active: true
     };
 
-    onUpdateConfig({
-      ...config,
+    applyConfigPatch({
       announcementSoundType: broadcastSoundType,
       activeAnnouncement: newAnnouncement
     });
@@ -487,8 +563,7 @@ export default function AdminPanel({
     const confirmClear = window.confirm('Apakah Anda yakin ingin menarik / menghapus pengumuman yang sedang aktif dari layar siswa?');
     if (!confirmClear) return;
 
-    onUpdateConfig({
-      ...config,
+    applyConfigPatch({
       activeAnnouncement: null
     });
     alert('Pengumuman aktif telah ditarik.');
@@ -508,7 +583,7 @@ export default function AdminPanel({
     }
 
     // 2. Validate input
-    let updatedConfig = { ...config };
+    const passwordPatch: Partial<ExamConfig> = {};
     let changedItems: string[] = [];
 
     if (passwordTargetRole === 'PROCTOR' || passwordTargetRole === 'BOTH') {
@@ -519,7 +594,7 @@ export default function AdminPanel({
         });
         return;
       }
-      updatedConfig.proctorPassword = newProctorPasswordInput.trim();
+      passwordPatch.proctorPassword = newProctorPasswordInput.trim();
       changedItems.push('Pengawas Ruang');
     }
 
@@ -531,11 +606,11 @@ export default function AdminPanel({
         });
         return;
       }
-      updatedConfig.adminPassword = newAdminPasswordInput.trim();
+      passwordPatch.adminPassword = newAdminPasswordInput.trim();
       changedItems.push('Administrator Master');
     }
 
-    onUpdateConfig(updatedConfig);
+    applyConfigPatch(passwordPatch);
     setAuthCodeInput('');
     setNewProctorPasswordInput('');
     setNewAdminPasswordInput('');
@@ -671,7 +746,9 @@ export default function AdminPanel({
   // --- ACTIONS: SUBJECT SLOT MANAGEMENT (MAX 50 SLOTS) ---
   const handleAddSubjectSlot = (e: React.FormEvent) => {
     e.preventDefault();
-    if (subjects.length >= 50) {
+    const latestSubjects = getExamSubjects(getExamConfig());
+    const baseSubjects = latestSubjects.length > 0 ? latestSubjects : subjects;
+    if (baseSubjects.length >= 50) {
       alert('Batas maksimal 50 slot mata pelajaran telah tercapai!');
       return;
     }
@@ -680,9 +757,13 @@ export default function AdminPanel({
       return;
     }
 
-    let nextId = `sub${subjects.length + 1}`;
-    let counter = 1;
-    while (subjects.some(s => s.id === nextId)) {
+    const usedIds = new Set<string>([
+      ...baseSubjects.map(s => s.id),
+      ...questions.map(q => q.subjectId).filter(Boolean) as string[]
+    ]);
+    let counter = baseSubjects.length + 1;
+    let nextId = `sub${counter}`;
+    while (usedIds.has(nextId)) {
       counter++;
       nextId = `sub${counter}`;
     }
@@ -690,14 +771,13 @@ export default function AdminPanel({
     const newSub: ExamSubject = {
       id: nextId,
       name: newSubjectName.trim(),
-      code: newSubjectCode.trim() || `MAPEL-${subjects.length + 1}`,
+      code: newSubjectCode.trim() || `MAPEL-${baseSubjects.length + 1}`,
       isActive: newSubjectIsActive,
       targetGrade: newSubjectTargetGrade || 'ALL'
     };
 
-    const updated = [...subjects, newSub];
-    onUpdateConfig({
-      ...config,
+    const updated = [...baseSubjects, newSub];
+    applyConfigPatch({
       subjects: updated,
       subject1Name: updated[0]?.name,
       subject2Name: updated[1]?.name
@@ -719,28 +799,29 @@ export default function AdminPanel({
       return;
     }
 
-    const updated = subjects.map(s => {
-      if (s.id === editingSubjectModal.id) {
-        return {
-          ...s,
-          name: editSubjectName.trim(),
-          code: editSubjectCode.trim() || s.code,
-          isActive: editSubjectIsActive,
-          targetGrade: editSubjectTargetGrade || 'ALL',
-          enableRandomSampling: editSubjectEnableSampling,
-          sampleQuestionCount: Math.max(1, editSubjectSampleCount || 40),
-          scheduleEnabled: editSubjectScheduleEnabled,
-          scheduleDisplayStart: editSubjectScheduleDisplayStart ? parseWIBInputValueToISO(editSubjectScheduleDisplayStart) : undefined,
-          scheduleDisplayEnd: editSubjectScheduleDisplayEnd ? parseWIBInputValueToISO(editSubjectScheduleDisplayEnd) : undefined,
-          scheduleExamStart: editSubjectScheduleExamStart ? parseWIBInputValueToISO(editSubjectScheduleExamStart) : undefined,
-          scheduleExamEnd: editSubjectScheduleExamEnd ? parseWIBInputValueToISO(editSubjectScheduleExamEnd) : undefined
-        };
-      }
-      return s;
-    });
+    const latestSubjects = getExamSubjects(getExamConfig());
+    const baseSubjects = latestSubjects.length > 0 ? latestSubjects : subjects;
 
-    onUpdateConfig({
-      ...config,
+    const existsInSubjects = baseSubjects.some(s => s.id === editingSubjectModal.id);
+    const updatedFields = {
+      name: editSubjectName.trim(),
+      code: editSubjectCode.trim() || editingSubjectModal.code,
+      isActive: editSubjectIsActive,
+      targetGrade: editSubjectTargetGrade || 'ALL',
+      enableRandomSampling: editSubjectEnableSampling,
+      sampleQuestionCount: Math.max(1, editSubjectSampleCount || 40),
+      scheduleEnabled: editSubjectScheduleEnabled,
+      scheduleDisplayStart: editSubjectScheduleDisplayStart ? parseWIBInputValueToISO(editSubjectScheduleDisplayStart) : undefined,
+      scheduleDisplayEnd: editSubjectScheduleDisplayEnd ? parseWIBInputValueToISO(editSubjectScheduleDisplayEnd) : undefined,
+      scheduleExamStart: editSubjectScheduleExamStart ? parseWIBInputValueToISO(editSubjectScheduleExamStart) : undefined,
+      scheduleExamEnd: editSubjectScheduleExamEnd ? parseWIBInputValueToISO(editSubjectScheduleExamEnd) : undefined
+    };
+
+    const updated = existsInSubjects
+      ? baseSubjects.map(s => (s.id === editingSubjectModal.id ? { ...s, ...updatedFields } : s))
+      : [...baseSubjects, { ...editingSubjectModal, ...updatedFields }];
+
+    applyConfigPatch({
       subjects: updated,
       subject1Name: updated[0]?.name,
       subject2Name: updated[1]?.name
@@ -768,7 +849,9 @@ export default function AdminPanel({
   const handleExecuteDuplicate = (e: React.FormEvent) => {
     e.preventDefault();
     if (!duplicateSubjectModal) return;
-    if (subjects.length >= 50) {
+    const latestSubjects = getExamSubjects(getExamConfig());
+    const baseSubjects = latestSubjects.length > 0 ? latestSubjects : subjects;
+    if (baseSubjects.length >= 50) {
       alert('Batas maksimal 50 slot mata pelajaran telah tercapai!');
       return;
     }
@@ -777,9 +860,13 @@ export default function AdminPanel({
       return;
     }
 
-    let nextId = `sub${subjects.length + 1}`;
-    let counter = 1;
-    while (subjects.some(s => s.id === nextId)) {
+    const usedIds = new Set<string>([
+      ...baseSubjects.map(s => s.id),
+      ...questions.map(q => q.subjectId).filter(Boolean) as string[]
+    ]);
+    let counter = baseSubjects.length + 1;
+    let nextId = `sub${counter}`;
+    while (usedIds.has(nextId)) {
       counter++;
       nextId = `sub${counter}`;
     }
@@ -788,7 +875,7 @@ export default function AdminPanel({
       ...duplicateSubjectModal,
       id: nextId,
       name: dupNewName.trim(),
-      code: dupNewCode.trim() || `MP-${subjects.length + 1}`,
+      code: dupNewCode.trim() || `MP-${baseSubjects.length + 1}`,
       targetGrade: dupTargetGrade || 'ALL',
       isActive: true,
       enableRandomSampling: duplicateSubjectModal.enableRandomSampling,
@@ -800,9 +887,8 @@ export default function AdminPanel({
       scheduleExamEnd: duplicateSubjectModal.scheduleExamEnd,
     };
 
-    const updatedSubjects = [...subjects, newSub];
-    onUpdateConfig({
-      ...config,
+    const updatedSubjects = [...baseSubjects, newSub];
+    applyConfigPatch({
       subjects: updatedSubjects,
       subject1Name: updatedSubjects[0]?.name,
       subject2Name: updatedSubjects[1]?.name,
@@ -820,8 +906,7 @@ export default function AdminPanel({
         subjectId: newSub.id,
       }));
 
-      const allNewQuestions = [...questions, ...clonedQuestions];
-      onUpdateQuestions(allNewQuestions);
+      replaceQuestionsForSubject(newSub.id, clonedQuestions, 'OVERWRITE');
       copiedQuestionsCount = clonedQuestions.length;
     }
 
@@ -832,7 +917,9 @@ export default function AdminPanel({
   };
 
   const handleUpdateSubjectSampling = (subId: string, enabled: boolean, count?: number) => {
-    const updated = subjects.map(s => {
+    const latestSubjects = getExamSubjects(getExamConfig());
+    const baseSubjects = latestSubjects.length > 0 ? latestSubjects : subjects;
+    const updated = baseSubjects.map(s => {
       if (s.id === subId) {
         return {
           ...s,
@@ -843,8 +930,7 @@ export default function AdminPanel({
       return s;
     });
 
-    onUpdateConfig({
-      ...config,
+    applyConfigPatch({
       subjects: updated,
       subject1Name: updated[0]?.name,
       subject2Name: updated[1]?.name
@@ -879,15 +965,16 @@ export default function AdminPanel({
   };
 
   const handleToggleSubjectActive = (subId: string) => {
-    const updated = subjects.map(s => {
+    const latestSubjects = getExamSubjects(getExamConfig());
+    const baseSubjects = latestSubjects.length > 0 ? latestSubjects : subjects;
+    const updated = baseSubjects.map(s => {
       if (s.id === subId) {
         return { ...s, isActive: s.isActive === false ? true : false };
       }
       return s;
     });
 
-    onUpdateConfig({
-      ...config,
+    applyConfigPatch({
       subjects: updated,
       subject1Name: updated[0]?.name,
       subject2Name: updated[1]?.name
@@ -895,9 +982,10 @@ export default function AdminPanel({
   };
 
   const handleSetAllSubjectsActive = (active: boolean) => {
-    const updated = subjects.map(s => ({ ...s, isActive: active }));
-    onUpdateConfig({
-      ...config,
+    const latestSubjects = getExamSubjects(getExamConfig());
+    const baseSubjects = latestSubjects.length > 0 ? latestSubjects : subjects;
+    const updated = baseSubjects.map(s => ({ ...s, isActive: active }));
+    applyConfigPatch({
       subjects: updated,
       subject1Name: updated[0]?.name,
       subject2Name: updated[1]?.name
@@ -905,12 +993,14 @@ export default function AdminPanel({
   };
 
   const handleDeleteSubjectSlot = (subId: string) => {
-    if (subjects.length <= 1) {
+    const latestSubjects = getExamSubjects(getExamConfig());
+    const baseSubjects = latestSubjects.length > 0 ? latestSubjects : subjects;
+    if (baseSubjects.length <= 1) {
       alert('Minimal harus ada 1 slot mata pelajaran dalam sistem!');
       return;
     }
 
-    const targetSub = subjects.find(s => s.id === subId);
+    const targetSub = baseSubjects.find(s => s.id === subId);
     const subName = targetSub?.name || subId;
     const subQCount = questions.filter(q => (!q.subjectId && subId === 'sub1') || q.subjectId === subId).length;
 
@@ -920,16 +1010,11 @@ export default function AdminPanel({
 
     if (window.confirm(confirmMsg)) {
       if (subQCount > 0) {
-        const remainingQuestions = questions.filter(q => {
-          const qSub = q.subjectId || 'sub1';
-          return qSub !== subId;
-        });
-        onUpdateQuestions(remainingQuestions);
+        replaceQuestionsForSubject(subId, [], 'OVERWRITE');
       }
 
-      const updated = subjects.filter(s => s.id !== subId);
-      onUpdateConfig({
-        ...config,
+      const updated = baseSubjects.filter(s => s.id !== subId);
+      applyConfigPatch({
         subjects: updated,
         subject1Name: updated[0]?.name,
         subject2Name: updated[1]?.name
@@ -943,7 +1028,8 @@ export default function AdminPanel({
 
   const handleDeleteAllQuestionsForSubject = (subId: string) => {
     const targetSub = subjects.find(s => s.id === subId);
-    const subName = targetSub?.name || subId;
+    const orphanMatch = customOrphanedSubjects.find(o => o.subjectId === subId);
+    const subName = targetSub?.name || orphanMatch?.suggestedName || subId;
     const count = questions.filter(q => (!q.subjectId && subId === 'sub1') || q.subjectId === subId).length;
 
     if (count === 0) {
@@ -952,11 +1038,7 @@ export default function AdminPanel({
     }
 
     if (window.confirm(`Yakin ingin MENGHAPUS SEMUA (${count} butir) soal pada mata pelajaran "${subName}"?\n\nSoal pada mata pelajaran lain TIDAK akan terhapus.`)) {
-      const remainingQuestions = questions.filter(q => {
-        const qSub = q.subjectId || 'sub1';
-        return qSub !== subId;
-      });
-      onUpdateQuestions(remainingQuestions);
+      replaceQuestionsForSubject(subId, [], 'OVERWRITE');
     }
   };
 
@@ -1543,29 +1625,31 @@ export default function AdminPanel({
     if (!parsedQuestionsPreview || parsedQuestionsPreview.length === 0) return;
 
     const targetSubId = importSubjectTarget === 'current' ? effectiveActiveSubject.id : importSubjectTarget;
-    
+
     // Assign correct subjectId
     const finalQs = parsedQuestionsPreview.map(q => ({
       ...q,
       subjectId: importSubjectTarget === 'auto' ? q.subjectId : targetSubId
     }));
 
-    let updatedQuestions: Question[] = [];
-    if (questionImportMode === 'OVERWRITE') {
-      if (importSubjectTarget === 'auto') {
-        updatedQuestions = finalQs;
+    if (importSubjectTarget === 'auto') {
+      if (questionImportMode === 'OVERWRITE') {
+        onUpdateQuestions(finalQs);
       } else {
-        const remaining = questions.filter(q => {
-          const qSub = q.subjectId || 'sub1';
-          return qSub !== targetSubId;
+        const grouped = new Map<string, Question[]>();
+        finalQs.forEach(q => {
+          const sid = q.subjectId || effectiveActiveSubject.id || 'sub1';
+          if (!grouped.has(sid)) grouped.set(sid, []);
+          grouped.get(sid)!.push(q);
         });
-        updatedQuestions = [...remaining, ...finalQs];
+        grouped.forEach((qsForSid, sid) => {
+          replaceQuestionsForSubject(sid, qsForSid, 'APPEND');
+        });
       }
     } else {
-      updatedQuestions = [...questions, ...finalQs];
+      replaceQuestionsForSubject(targetSubId, finalQs, questionImportMode);
     }
 
-    onUpdateQuestions(updatedQuestions);
     setShowQuestionImportModal(false);
     setParsedQuestionsPreview(null);
     alert(`Sukses mengimpor ${finalQs.length} butir soal ke Bank Soal!`);
@@ -1627,22 +1711,24 @@ export default function AdminPanel({
       subjectId: importSubjectTarget === 'auto' ? q.subjectId : targetSubId
     }));
 
-    let updatedQuestions: Question[] = [];
-    if (wordImportMode === 'OVERWRITE') {
-      if (importSubjectTarget === 'auto') {
-        updatedQuestions = finalQs;
+    if (importSubjectTarget === 'auto') {
+      if (wordImportMode === 'OVERWRITE') {
+        onUpdateQuestions(finalQs);
       } else {
-        const remaining = questions.filter(q => {
-          const qSub = q.subjectId || 'sub1';
-          return qSub !== targetSubId;
+        const grouped = new Map<string, Question[]>();
+        finalQs.forEach(q => {
+          const sid = q.subjectId || effectiveActiveSubject.id || 'sub1';
+          if (!grouped.has(sid)) grouped.set(sid, []);
+          grouped.get(sid)!.push(q);
         });
-        updatedQuestions = [...remaining, ...finalQs];
+        grouped.forEach((qsForSid, sid) => {
+          replaceQuestionsForSubject(sid, qsForSid, 'APPEND');
+        });
       }
     } else {
-      updatedQuestions = [...questions, ...finalQs];
+      replaceQuestionsForSubject(targetSubId, finalQs, wordImportMode);
     }
 
-    onUpdateQuestions(updatedQuestions);
     setShowWordImportModal(false);
     setParsedWordResult(null);
     setWordModalError('');
@@ -1912,27 +1998,29 @@ export default function AdminPanel({
         return;
       }
 
-      const targetSubName = subjects.find(s => s.id === (importSubjectTarget === 'current' ? effectiveActiveSubject.id : importSubjectTarget))?.name || 'Mata Pelajaran';
+      const targetSubId = importSubjectTarget === 'current' ? effectiveActiveSubject.id : importSubjectTarget;
+      const targetSubName = subjects.find(s => s.id === targetSubId)?.name || 'Mata Pelajaran';
 
-      if (mode === 'OVERWRITE') {
-        const targetIdToOverwrite = importSubjectTarget === 'current' ? effectiveActiveSubject.id : (importSubjectTarget === 'auto' ? null : importSubjectTarget);
-        
-        let updatedList: Question[] = [];
-        if (targetIdToOverwrite) {
-          // Keep all questions of OTHER subjects
-          const otherQs = questions.filter(q => {
-            const qSub = q.subjectId || 'sub1';
-            return qSub !== targetIdToOverwrite;
-          });
-          updatedList = [...otherQs, ...importedQs];
+      if (importSubjectTarget !== 'auto') {
+        replaceQuestionsForSubject(targetSubId, importedQs, mode);
+        if (mode === 'OVERWRITE') {
           setImportSuccess(`Sukses mengganti bank soal "${targetSubName}" dengan ${importedQs.length} butir soal baru (soal mata pelajaran lain tetap utuh)!`);
         } else {
-          updatedList = importedQs;
-          setImportSuccess(`Sukses mengganti seluruh bank soal dengan ${importedQs.length} butir soal baru dari Excel!`);
+          setImportSuccess(`Sukses menambahkan ${importedQs.length} butir soal baru ke "${targetSubName}"!`);
         }
-        onUpdateQuestions(updatedList);
+      } else if (mode === 'OVERWRITE') {
+        onUpdateQuestions(importedQs);
+        setImportSuccess(`Sukses mengganti seluruh bank soal dengan ${importedQs.length} butir soal baru dari Excel!`);
       } else {
-        onUpdateQuestions([...questions, ...importedQs]);
+        const grouped = new Map<string, Question[]>();
+        importedQs.forEach(q => {
+          const sid = q.subjectId || effectiveActiveSubject.id || 'sub1';
+          if (!grouped.has(sid)) grouped.set(sid, []);
+          grouped.get(sid)!.push(q);
+        });
+        grouped.forEach((qsForSid, sid) => {
+          replaceQuestionsForSubject(sid, qsForSid, 'APPEND');
+        });
         setImportSuccess(`Sukses menambahkan ${importedQs.length} butir soal baru ke bank soal!`);
       }
 
@@ -2274,6 +2362,9 @@ export default function AdminPanel({
     localStorage.removeItem('proktor_config');
     localStorage.removeItem('proktor_students');
     localStorage.removeItem('proktor_student_users');
+    localStorage.removeItem('proktor_subjects_backup');
+    localStorage.removeItem('proktor_config_pending_sync');
+    localStorage.removeItem('proktor_questions_pending_sync');
     window.location.reload();
   };
 
@@ -2580,27 +2671,22 @@ export default function AdminPanel({
         score: qScore,
         subjectId: qSubjectId
       };
-      onUpdateQuestions([...questions, newQ]);
+      upsertSingleQuestion(newQ);
     } else if (editingQuestion) {
-      const updated = questions.map((q) => {
-        if (q.id === editingQuestion.id) {
-          return {
-            ...q,
-            questionText: qText.trim(),
-            imageUrl: qImageUrl.trim() || undefined,
-            isReadingPassage: qIsReadingPassage,
-            options: qOptions.map(o => o.trim()),
-            optionImages: cleanedOptionImages,
-            correctAnswerIndex: primaryCorrectIndex,
-            correctAnswerIndices: qType === 'MR' ? sortedIndices : [primaryCorrectIndex],
-            type: qType,
-            subjectId: qSubjectId,
-            score: qScore
-          };
-        }
-        return q;
-      });
-      onUpdateQuestions(updated);
+      const updatedQ: Question = {
+        ...editingQuestion,
+        questionText: qText.trim(),
+        imageUrl: qImageUrl.trim() || undefined,
+        isReadingPassage: qIsReadingPassage,
+        options: qOptions.map(o => o.trim()),
+        optionImages: cleanedOptionImages,
+        correctAnswerIndex: primaryCorrectIndex,
+        correctAnswerIndices: qType === 'MR' ? sortedIndices : [primaryCorrectIndex],
+        type: qType,
+        subjectId: qSubjectId,
+        score: qScore
+      };
+      upsertSingleQuestion(updatedQ);
     }
 
     // Reset questions form status
@@ -3189,8 +3275,7 @@ export default function AdminPanel({
     if (!window.confirm('Apakah Anda yakin ingin menghapus soal ini?')) {
       return;
     }
-    const updated = questions.filter(q => q.id !== questionId);
-    onUpdateQuestions(updated);
+    deleteSingleQuestion(questionId);
   };
 
   return (
@@ -3416,6 +3501,120 @@ export default function AdminPanel({
 
       {/* Main Panel Content Area */}
       <main className="max-w-6xl mx-auto w-full flex-1 p-4 sm:p-6 pb-20">
+        {checkpointNotice && (
+          <div className="mb-5 p-4 rounded-2xl bg-emerald-50 border border-emerald-200 text-emerald-900 text-xs font-bold flex items-center justify-between gap-3 shadow-xs">
+            <span>{checkpointNotice}</span>
+            <button
+              type="button"
+              onClick={() => setCheckpointNotice('')}
+              className="p-1 text-emerald-700 hover:bg-emerald-100 rounded-lg"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          </div>
+        )}
+
+        {(customOrphanedSubjects.length > 0 || mismatchedDefaultSlots.length > 0) && (
+          <div className="mb-6 p-5 rounded-2xl bg-gradient-to-br from-amber-50 via-orange-50/70 to-white border-2 border-amber-300 shadow-sm space-y-4">
+            <div className="flex flex-col md:flex-row md:items-start justify-between gap-4">
+              <div className="flex items-start gap-3">
+                <div className="w-10 h-10 rounded-xl bg-amber-500 text-white flex items-center justify-center shrink-0 shadow-xs">
+                  <AlertTriangle className="w-5 h-5" />
+                </div>
+                <div className="space-y-1">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <span className="text-xs font-black uppercase tracking-wider font-mono text-amber-900">
+                      Pemulihan Naskah &amp; Bank Soal Terdeteksi di Cloud
+                    </span>
+                    <span className="px-2 py-0.5 rounded-full text-[10px] font-bold font-mono bg-amber-200 text-amber-950">
+                      {customOrphanedSubjects.reduce((acc, o) => acc + o.count, 0) + mismatchedDefaultSlots.reduce((acc, m) => acc + m.count, 0)} Butir Soal Terselamatkan
+                    </span>
+                  </div>
+                  <p className="text-xs text-slate-700 leading-relaxed">
+                    Soal Anda sebenarnya <strong>masih tersimpan aman di Firestore</strong>, namun daftar slot naskah sempat kembali ke nama bawaan sehingga beberapa naskah tersembunyi atau namanya tertukar:
+                  </p>
+                </div>
+              </div>
+
+              <div className="flex flex-wrap items-center gap-2 shrink-0">
+                <button
+                  type="button"
+                  disabled={isRecoveringSubjects}
+                  onClick={handleRecoverSubjectsAndNames}
+                  className="px-4 py-2.5 bg-amber-600 hover:bg-amber-500 disabled:opacity-60 text-white font-extrabold text-xs rounded-xl shadow-sm transition flex items-center gap-2 cursor-pointer"
+                >
+                  <RotateCcw className={`w-4 h-4 ${isRecoveringSubjects ? 'animate-spin' : ''}`} />
+                  {isRecoveringSubjects ? 'Memulihkan...' : 'Pulihkan Semua Naskah Sekarang'}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setActiveTab('QUESTIONS');
+                    if (customOrphanedSubjects[0]) {
+                      setActiveSubjectId(customOrphanedSubjects[0].subjectId);
+                    }
+                  }}
+                  className="px-3.5 py-2.5 bg-white hover:bg-amber-50 text-amber-900 border border-amber-300 font-bold text-xs rounded-xl transition flex items-center gap-1.5 cursor-pointer"
+                >
+                  <BookOpen className="w-4 h-4 text-amber-700" />
+                  Lihat di Bank Soal
+                </button>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-2.5 text-xs">
+              {mismatchedDefaultSlots.map((m) => (
+                <div key={m.subject.id} className="p-3 bg-white rounded-xl border border-amber-200 flex flex-col gap-1">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="font-mono text-[10px] font-bold text-amber-700 uppercase">
+                      Slot {m.subject.id} • Nama Tertukar
+                    </span>
+                    <span className="font-mono text-[10px] font-bold bg-indigo-50 text-indigo-700 px-2 py-0.5 rounded">
+                      {m.count} Soal
+                    </span>
+                  </div>
+                  <div className="font-bold text-slate-800">
+                    Label saat ini: <span className="line-through text-rose-600">{m.subject.name}</span> → Terdeteksi: <span className="text-emerald-700">{m.suggestedName}</span>
+                  </div>
+                  {m.sampleText && (
+                    <p className="text-[11px] text-slate-500 line-clamp-1 italic">Contoh: &quot;{m.sampleText}&quot;</p>
+                  )}
+                </div>
+              ))}
+
+              {customOrphanedSubjects.map((o) => (
+                <div key={o.subjectId} className="p-3 bg-white rounded-xl border border-amber-200 flex flex-col gap-1">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="font-mono text-[10px] font-bold text-rose-700 uppercase">
+                      Slot {o.subjectId} • Terputus / Tersembunyi
+                    </span>
+                    <span className="font-mono text-[10px] font-bold bg-emerald-50 text-emerald-700 px-2 py-0.5 rounded">
+                      {o.count} Soal
+                    </span>
+                  </div>
+                  <div className="font-bold text-slate-800">
+                    Akan dipulihkan sebagai: <span className="text-indigo-700">{o.suggestedName}</span> ({o.suggestedCode})
+                  </div>
+                  {o.sampleTexts?.[0] && (
+                    <p className="text-[11px] text-slate-500 line-clamp-1 italic">Contoh: &quot;{o.sampleTexts[0]}&quot;</p>
+                  )}
+                </div>
+              ))}
+            </div>
+
+            {mismatchedDefaultSlots.length > 0 && (
+              <label className="flex items-center gap-2 text-xs text-slate-700 cursor-pointer select-none pt-1">
+                <input
+                  type="checkbox"
+                  checked={renameRevertedDefaultsOnRecover}
+                  onChange={(e) => setRenameRevertedDefaultsOnRecover(e.target.checked)}
+                  className="w-4 h-4 rounded text-amber-600 focus:ring-amber-500 border-amber-400 cursor-pointer"
+                />
+                <span>Perbaiki otomatis nama slot bawaan yang tertukar sesuai isi butir soalnya</span>
+              </label>
+            )}
+          </div>
+        )}
         
         {/* TAB 1: MONITORING TABLE */}
         {activeTab === 'MONITOR' && (
@@ -3462,8 +3661,7 @@ export default function AdminPanel({
                 </button>
                 <button
                   type="button"
-                  onClick={() => onUpdateConfig({
-                    ...config,
+                  onClick={() => applyConfigPatch({
                     ecoSyncMode: config.ecoSyncMode !== false ? false : true
                   })}
                   className={`px-4 py-2 font-bold text-xs rounded-xl shadow-xs transition cursor-pointer shrink-0 ${
@@ -4398,6 +4596,45 @@ export default function AdminPanel({
                     </button>
                   );
                 })}
+                {customOrphanedSubjects.map((orphan) => {
+                  const isCurrent = orphan.subjectId === effectiveActiveSubject.id;
+                  return (
+                    <button
+                      key={orphan.subjectId}
+                      type="button"
+                      onClick={() => {
+                        setActiveSubjectId(orphan.subjectId);
+                        setQSubjectId(orphan.subjectId);
+                      }}
+                      className={`px-3.5 py-2.5 rounded-xl text-left border shrink-0 transition-all flex items-center gap-2.5 ${
+                        isCurrent
+                          ? 'bg-amber-600 text-white border-amber-700 shadow-sm'
+                          : 'bg-amber-50 hover:bg-amber-100 text-amber-950 border-amber-300'
+                      }`}
+                    >
+                      <div className={`w-5 h-5 rounded-md flex items-center justify-center font-mono font-bold text-[10px] ${
+                        isCurrent ? 'bg-amber-700 text-white' : 'bg-amber-200 text-amber-900'
+                      }`}>
+                        !
+                      </div>
+                      <div>
+                        <div className="flex items-center gap-1.5 flex-wrap">
+                          <span className="text-xs font-extrabold truncate max-w-[160px]">{orphan.suggestedName}</span>
+                          <span className={`text-[9px] font-mono font-bold px-1.5 py-0.2 rounded border ${
+                            isCurrent ? 'bg-amber-700 text-amber-100 border-amber-500' : 'bg-rose-100 text-rose-800 border-rose-200'
+                          }`}>
+                            TERPUTUS ({orphan.subjectId})
+                          </span>
+                        </div>
+                        <div className="flex items-center gap-2 mt-0.5">
+                          <span className={`text-[10px] font-mono ${isCurrent ? 'text-amber-100' : 'text-amber-800'}`}>
+                            {orphan.count} Soal Tersimpan
+                          </span>
+                        </div>
+                      </div>
+                    </button>
+                  );
+                })}
               </div>
             </div>
 
@@ -4405,11 +4642,15 @@ export default function AdminPanel({
             <div className="bg-white rounded-2xl border-2 border-indigo-100 p-5 shadow-xs">
               <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 border-b border-slate-100 pb-4">
                 <div className="flex items-center gap-3">
-                  <div className="w-10 h-10 rounded-xl bg-indigo-50 border border-indigo-200 flex items-center justify-center text-indigo-600 font-bold font-mono">
-                    #{subjects.findIndex(s => s.id === effectiveActiveSubject.id) + 1}
+                  <div className={`w-10 h-10 rounded-xl border flex items-center justify-center font-bold font-mono text-xs ${
+                    matchedOrphanActive
+                      ? 'bg-amber-50 border-amber-300 text-amber-700'
+                      : 'bg-indigo-50 border-indigo-200 text-indigo-600'
+                  }`}>
+                    {matchedOrphanActive ? 'ORPHAN' : `#${subjects.findIndex(s => s.id === effectiveActiveSubject.id) + 1}`}
                   </div>
                   <div>
-                    <div className="flex items-center gap-2">
+                    <div className="flex items-center gap-2 flex-wrap">
                       <h4 className="text-base font-extrabold text-slate-800">{effectiveActiveSubject.name}</h4>
                       {effectiveActiveSubject.code && (
                         <span className="text-[10px] font-mono font-bold bg-slate-100 text-slate-600 px-2 py-0.5 rounded">
@@ -4419,31 +4660,53 @@ export default function AdminPanel({
                       <span className="text-xs font-bold font-mono px-2 py-0.5 rounded bg-indigo-50 text-indigo-700">
                         {questions.filter(q => (!q.subjectId && effectiveActiveSubject.id === 'sub1') || q.subjectId === effectiveActiveSubject.id).length} Soal
                       </span>
+                      {matchedOrphanActive && (
+                        <button
+                          type="button"
+                          onClick={async () => {
+                            const ok = await recoverSubjectsToConfig([matchedOrphanActive], {});
+                            if (ok) {
+                              setCheckpointNotice(`✅ Slot "${matchedOrphanActive.suggestedName}" (${matchedOrphanActive.subjectId}) berhasil dipulihkan ke daftar naskah!`);
+                              setTimeout(() => setCheckpointNotice(''), 5000);
+                            }
+                          }}
+                          className="text-[11px] font-extrabold px-2.5 py-0.5 rounded-lg bg-amber-600 hover:bg-amber-500 text-white transition cursor-pointer flex items-center gap-1"
+                        >
+                          <RotateCcw className="w-3 h-3" />
+                          Pulihkan Slot Ini
+                        </button>
+                      )}
                     </div>
                     <div className="flex items-center gap-2 mt-1">
                       <span className="text-xs text-slate-500">Status Siswa:</span>
-                      <button
-                        type="button"
-                        onClick={() => handleToggleSubjectActive(effectiveActiveSubject.id)}
-                        className={`text-[11px] font-bold px-2 py-0.5 rounded-full flex items-center gap-1 transition ${
-                          effectiveActiveSubject.isActive !== false
-                            ? 'bg-emerald-100 text-emerald-800 hover:bg-emerald-200'
-                            : 'bg-amber-100 text-amber-800 hover:bg-amber-200'
-                        }`}
-                        title="Klik untuk mengubah status tampil/tidaknya mapel ini di menu registrasi siswa"
-                      >
-                        {effectiveActiveSubject.isActive !== false ? (
-                          <>
-                            <Eye className="w-3 h-3 text-emerald-600" />
-                            Tampil di Menu Siswa (Aktif)
-                          </>
-                        ) : (
-                          <>
-                            <EyeOff className="w-3 h-3 text-amber-600" />
-                            Disembunyikan dari Siswa (Nonaktif)
-                          </>
-                        )}
-                      </button>
+                      {matchedOrphanActive ? (
+                        <span className="text-[11px] font-bold px-2 py-0.5 rounded-full bg-rose-100 text-rose-800">
+                          Terputus dari Daftar Naskah (Belum Tampil di Siswa)
+                        </span>
+                      ) : (
+                        <button
+                          type="button"
+                          onClick={() => handleToggleSubjectActive(effectiveActiveSubject.id)}
+                          className={`text-[11px] font-bold px-2 py-0.5 rounded-full flex items-center gap-1 transition ${
+                            effectiveActiveSubject.isActive !== false
+                              ? 'bg-emerald-100 text-emerald-800 hover:bg-emerald-200'
+                              : 'bg-amber-100 text-amber-800 hover:bg-amber-200'
+                          }`}
+                          title="Klik untuk mengubah status tampil/tidaknya mapel ini di menu registrasi siswa"
+                        >
+                          {effectiveActiveSubject.isActive !== false ? (
+                            <>
+                              <Eye className="w-3 h-3 text-emerald-600" />
+                              Tampil di Menu Siswa (Aktif)
+                            </>
+                          ) : (
+                            <>
+                              <EyeOff className="w-3 h-3 text-amber-600" />
+                              Disembunyikan dari Siswa (Nonaktif)
+                            </>
+                          )}
+                        </button>
+                      )}
                     </div>
 
                     {/* Live Schedule Status Indicator */}
@@ -5386,7 +5649,7 @@ export default function AdminPanel({
                       <input
                         type="checkbox"
                         checked={config.autoBroadcastRefreshOnConfigChange !== false}
-                        onChange={(e) => onUpdateConfig({ ...config, autoBroadcastRefreshOnConfigChange: e.target.checked })}
+                        onChange={(e) => applyConfigPatch({ autoBroadcastRefreshOnConfigChange: e.target.checked })}
                         className="w-4 h-4 rounded text-indigo-600 focus:ring-indigo-500 border-slate-600 cursor-pointer"
                       />
                       <span className="text-[11px] text-slate-300">
@@ -5399,6 +5662,12 @@ export default function AdminPanel({
                 <form
                   onSubmit={(e) => {
                     e.preventDefault();
+                    if (titleSaveTimerRef.current) clearTimeout(titleSaveTimerRef.current);
+                    if (durationSaveTimerRef.current) clearTimeout(durationSaveTimerRef.current);
+                    applyConfigPatch({
+                      examTitle: draftExamTitle.trim() || config.examTitle,
+                      durationMinutes: Math.max(1, Number(draftDurationMinutes) || 1)
+                    });
                     if (config.autoBroadcastRefreshOnConfigChange !== false) {
                       handleSendRefreshToStudents('SOFT', 'Pembaruan konfigurasi ujian telah disimpan oleh Admin');
                     } else {
@@ -5427,8 +5696,21 @@ export default function AdminPanel({
                   <input
                     type="text"
                     required
-                    value={config.examTitle}
-                    onChange={(e) => onUpdateConfig({ ...config, examTitle: e.target.value })}
+                    value={draftExamTitle}
+                    onChange={(e) => {
+                      const val = e.target.value;
+                      setDraftExamTitle(val);
+                      if (titleSaveTimerRef.current) clearTimeout(titleSaveTimerRef.current);
+                      titleSaveTimerRef.current = setTimeout(() => {
+                        if (val.trim()) applyConfigPatch({ examTitle: val });
+                      }, 450);
+                    }}
+                    onBlur={() => {
+                      if (titleSaveTimerRef.current) clearTimeout(titleSaveTimerRef.current);
+                      if (draftExamTitle.trim() && draftExamTitle !== config.examTitle) {
+                        applyConfigPatch({ examTitle: draftExamTitle });
+                      }
+                    }}
                     className="w-full px-4 py-3 bg-slate-50 border border-slate-200 focus:border-indigo-500 focus:bg-white rounded-xl text-slate-800 text-sm focus:outline-none transition"
                   />
                 </div>
@@ -5441,8 +5723,21 @@ export default function AdminPanel({
                       required
                       min="1"
                       max="300"
-                      value={config.durationMinutes}
-                      onChange={(e) => onUpdateConfig({ ...config, durationMinutes: Math.max(1, parseInt(e.target.value) || 1) })}
+                      value={draftDurationMinutes}
+                      onChange={(e) => {
+                        const val = Math.max(1, parseInt(e.target.value, 10) || 1);
+                        setDraftDurationMinutes(val);
+                        if (durationSaveTimerRef.current) clearTimeout(durationSaveTimerRef.current);
+                        durationSaveTimerRef.current = setTimeout(() => {
+                          applyConfigPatch({ durationMinutes: val });
+                        }, 450);
+                      }}
+                      onBlur={() => {
+                        if (durationSaveTimerRef.current) clearTimeout(durationSaveTimerRef.current);
+                        if (draftDurationMinutes !== config.durationMinutes) {
+                          applyConfigPatch({ durationMinutes: Math.max(1, draftDurationMinutes || 1) });
+                        }
+                      }}
                       className="w-32 px-4 py-3 bg-slate-50 border border-slate-200 focus:border-indigo-500 focus:bg-white rounded-xl text-slate-800 text-sm text-center font-mono focus:outline-none transition font-bold"
                     />
                     <span className="text-sm font-semibold text-slate-500">Menit Hitung Mundur</span>
@@ -5640,8 +5935,7 @@ export default function AdminPanel({
                   </div>
                   <button
                     type="button"
-                    onClick={() => onUpdateConfig({
-                      ...config,
+                    onClick={() => applyConfigPatch({
                       ecoSyncMode: config.ecoSyncMode !== false ? false : true
                     })}
                     className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none ${
@@ -5667,8 +5961,7 @@ export default function AdminPanel({
                   <button
                     type="button"
                     id="btn-toggle-strict-security"
-                    onClick={() => onUpdateConfig({
-                      ...config,
+                    onClick={() => applyConfigPatch({
                       strictSecurityEnabled: config.strictSecurityEnabled !== false ? false : true
                     })}
                     className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none ${
@@ -5709,8 +6002,7 @@ export default function AdminPanel({
                   <button
                     type="button"
                     id="btn-toggle-passive-violation-logging"
-                    onClick={() => onUpdateConfig({
-                      ...config,
+                    onClick={() => applyConfigPatch({
                       passiveViolationLoggingEnabled: config.passiveViolationLoggingEnabled !== false ? false : true
                     })}
                     className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none ${
@@ -5738,8 +6030,7 @@ export default function AdminPanel({
                         min="1"
                         max="20"
                         value={config.maxAllowedViolations !== undefined ? config.maxAllowedViolations : 3}
-                        onChange={(e) => onUpdateConfig({
-                          ...config,
+                        onChange={(e) => applyConfigPatch({
                           maxAllowedViolations: Math.max(1, parseInt(e.target.value) || 1)
                         })}
                         className="w-24 px-3 py-2 bg-white border border-slate-200 rounded-xl text-slate-800 text-sm font-mono text-center font-bold"
@@ -5760,8 +6051,7 @@ export default function AdminPanel({
                       <span className="text-[11px] font-bold text-slate-500 uppercase font-mono">STATUS: {config.clearAnswersOnViolation ? 'AKTIF (KOSONGKAN)' : 'LINDUNGI DATA JAWABAN'}</span>
                       <button
                         type="button"
-                        onClick={() => onUpdateConfig({
-                          ...config,
+                        onClick={() => applyConfigPatch({
                           clearAnswersOnViolation: !config.clearAnswersOnViolation
                         })}
                         className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none ${
@@ -5829,8 +6119,7 @@ export default function AdminPanel({
                       </span>
                       <button
                         type="button"
-                        onClick={() => onUpdateConfig({
-                          ...config,
+                        onClick={() => applyConfigPatch({
                           sirenAlarmEnabled: config.sirenAlarmEnabled !== false ? false : true
                         })}
                         className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none ${
@@ -5874,7 +6163,7 @@ export default function AdminPanel({
                                 name="alarmType"
                                 value="SIREN"
                                 checked={(config.alarmType || 'SIREN') === 'SIREN'}
-                                onChange={() => onUpdateConfig({ ...config, alarmType: 'SIREN' })}
+                                onChange={() => applyConfigPatch({ alarmType: 'SIREN' })}
                                 className="text-indigo-600 focus:ring-indigo-500 w-4 h-4 cursor-pointer shrink-0"
                               />
                               <div className="min-w-0">
@@ -5911,7 +6200,7 @@ export default function AdminPanel({
                                 name="alarmType"
                                 value="BUZZER"
                                 checked={config.alarmType === 'BUZZER'}
-                                onChange={() => onUpdateConfig({ ...config, alarmType: 'BUZZER' })}
+                                onChange={() => applyConfigPatch({ alarmType: 'BUZZER' })}
                                 className="text-indigo-600 focus:ring-indigo-500 w-4 h-4 cursor-pointer shrink-0"
                               />
                               <div className="min-w-0">
@@ -5948,7 +6237,7 @@ export default function AdminPanel({
                                 name="alarmType"
                                 value="NUCLEAR"
                                 checked={config.alarmType === 'NUCLEAR'}
-                                onChange={() => onUpdateConfig({ ...config, alarmType: 'NUCLEAR' })}
+                                onChange={() => applyConfigPatch({ alarmType: 'NUCLEAR' })}
                                 className="text-indigo-600 focus:ring-indigo-500 w-4 h-4 cursor-pointer shrink-0"
                               />
                               <div className="min-w-0">
@@ -5985,7 +6274,7 @@ export default function AdminPanel({
                                 name="alarmType"
                                 value="BELL"
                                 checked={config.alarmType === 'BELL'}
-                                onChange={() => onUpdateConfig({ ...config, alarmType: 'BELL' })}
+                                onChange={() => applyConfigPatch({ alarmType: 'BELL' })}
                                 className="text-indigo-600 focus:ring-indigo-500 w-4 h-4 cursor-pointer shrink-0"
                               />
                               <div className="min-w-0">
@@ -6022,7 +6311,7 @@ export default function AdminPanel({
                                 name="alarmType"
                                 value="HORN"
                                 checked={config.alarmType === 'HORN'}
-                                onChange={() => onUpdateConfig({ ...config, alarmType: 'HORN' })}
+                                onChange={() => applyConfigPatch({ alarmType: 'HORN' })}
                                 className="text-indigo-600 focus:ring-indigo-500 w-4 h-4 cursor-pointer shrink-0"
                               />
                               <div className="min-w-0">
@@ -6059,7 +6348,7 @@ export default function AdminPanel({
                                 name="alarmType"
                                 value="AMBULANCE"
                                 checked={config.alarmType === 'AMBULANCE'}
-                                onChange={() => onUpdateConfig({ ...config, alarmType: 'AMBULANCE' })}
+                                onChange={() => applyConfigPatch({ alarmType: 'AMBULANCE' })}
                                 className="text-indigo-600 focus:ring-indigo-500 w-4 h-4 cursor-pointer shrink-0"
                               />
                               <div className="min-w-0">
@@ -6096,7 +6385,7 @@ export default function AdminPanel({
                                 name="alarmType"
                                 value="CUSTOM_AUDIO"
                                 checked={config.alarmType === 'CUSTOM_AUDIO'}
-                                onChange={() => onUpdateConfig({ ...config, alarmType: 'CUSTOM_AUDIO' })}
+                                onChange={() => applyConfigPatch({ alarmType: 'CUSTOM_AUDIO' })}
                                 className="text-emerald-600 focus:ring-emerald-500 w-4 h-4 cursor-pointer shrink-0"
                               />
                               <div className="min-w-0">
@@ -6135,8 +6424,7 @@ export default function AdminPanel({
                                 type="button"
                                 onClick={() => {
                                   setCustomAlarmAudioData(null);
-                                  onUpdateConfig({
-                                    ...config,
+                                  applyConfigPatch({
                                     customAlarmAudioUrl: undefined,
                                     customAlarmName: undefined,
                                     hasCustomAlarmAudio: false,
@@ -6287,7 +6575,7 @@ export default function AdminPanel({
                             name="announcementSoundType"
                             value="CHIME_AIRPORT"
                             checked={(config.announcementSoundType || 'CHIME_AIRPORT') === 'CHIME_AIRPORT'}
-                            onChange={() => onUpdateConfig({ ...config, announcementSoundType: 'CHIME_AIRPORT' })}
+                            onChange={() => applyConfigPatch({ announcementSoundType: 'CHIME_AIRPORT' })}
                             className="text-indigo-600 focus:ring-indigo-500 w-4 h-4 cursor-pointer"
                           />
                           <div>
@@ -6318,7 +6606,7 @@ export default function AdminPanel({
                             name="announcementSoundType"
                             value="CHIME_HARMONY"
                             checked={config.announcementSoundType === 'CHIME_HARMONY'}
-                            onChange={() => onUpdateConfig({ ...config, announcementSoundType: 'CHIME_HARMONY' })}
+                            onChange={() => applyConfigPatch({ announcementSoundType: 'CHIME_HARMONY' })}
                             className="text-indigo-600 focus:ring-indigo-500 w-4 h-4 cursor-pointer"
                           />
                           <div>
@@ -6349,7 +6637,7 @@ export default function AdminPanel({
                             name="announcementSoundType"
                             value="CHIME_DIGITAL"
                             checked={config.announcementSoundType === 'CHIME_DIGITAL'}
-                            onChange={() => onUpdateConfig({ ...config, announcementSoundType: 'CHIME_DIGITAL' })}
+                            onChange={() => applyConfigPatch({ announcementSoundType: 'CHIME_DIGITAL' })}
                             className="text-indigo-600 focus:ring-indigo-500 w-4 h-4 cursor-pointer"
                           />
                           <div>
@@ -6380,7 +6668,7 @@ export default function AdminPanel({
                             name="announcementSoundType"
                             value="CHIME_ELEGANT"
                             checked={config.announcementSoundType === 'CHIME_ELEGANT'}
-                            onChange={() => onUpdateConfig({ ...config, announcementSoundType: 'CHIME_ELEGANT' })}
+                            onChange={() => applyConfigPatch({ announcementSoundType: 'CHIME_ELEGANT' })}
                             className="text-indigo-600 focus:ring-indigo-500 w-4 h-4 cursor-pointer"
                           />
                           <div>
@@ -6411,7 +6699,7 @@ export default function AdminPanel({
                             name="announcementSoundType"
                             value="CUSTOM_AUDIO"
                             checked={config.announcementSoundType === 'CUSTOM_AUDIO'}
-                            onChange={() => onUpdateConfig({ ...config, announcementSoundType: 'CUSTOM_AUDIO' })}
+                            onChange={() => applyConfigPatch({ announcementSoundType: 'CUSTOM_AUDIO' })}
                             className="text-emerald-600 focus:ring-emerald-500 w-4 h-4 cursor-pointer"
                           />
                           <div>
@@ -6441,10 +6729,10 @@ export default function AdminPanel({
                           {config.customAnnouncementAudioUrl && (
                             <button
                               type="button"
-                              onClick={() => onUpdateConfig({
-                                ...config,
+                              onClick={() => applyConfigPatch({
                                 customAnnouncementAudioUrl: undefined,
                                 customAnnouncementName: undefined,
+                                hasCustomAnnouncementAudio: false,
                                 announcementSoundType: 'CHIME_AIRPORT'
                               })}
                               className="text-[10px] font-bold text-rose-600 hover:text-rose-800 font-mono cursor-pointer"
@@ -6598,10 +6886,10 @@ export default function AdminPanel({
                           type="button"
                           disabled={(config.unlockTokens || ['TOKEN-1', 'TOKEN-2']).length <= 1}
                           onClick={() => {
-                            const current = config.unlockTokens && config.unlockTokens.length > 0 ? [...config.unlockTokens] : ['TOKEN-1', 'TOKEN-2'];
+                            const latestTokens = getExamConfig().unlockTokens;
+                            const current = latestTokens && latestTokens.length > 0 ? [...latestTokens] : ['TOKEN-1', 'TOKEN-2'];
                             if (current.length > 1) {
-                              onUpdateConfig({
-                                ...config,
+                              applyConfigPatch({
                                 unlockTokens: current.slice(0, current.length - 1)
                               });
                             }
@@ -6619,10 +6907,10 @@ export default function AdminPanel({
                         <button
                           type="button"
                           onClick={() => {
-                            const current = config.unlockTokens && config.unlockTokens.length > 0 ? [...config.unlockTokens] : ['TOKEN-1', 'TOKEN-2'];
+                            const latestTokens = getExamConfig().unlockTokens;
+                            const current = latestTokens && latestTokens.length > 0 ? [...latestTokens] : ['TOKEN-1', 'TOKEN-2'];
                             const nextIndex = current.length + 1;
-                            onUpdateConfig({
-                              ...config,
+                            applyConfigPatch({
                               unlockTokens: [...current, `TOKEN-${nextIndex}`]
                             });
                           }}
@@ -6645,7 +6933,8 @@ export default function AdminPanel({
                             key={count}
                             type="button"
                             onClick={() => {
-                              const current = config.unlockTokens && config.unlockTokens.length > 0 ? [...config.unlockTokens] : ['TOKEN-1', 'TOKEN-2'];
+                              const latestTokens = getExamConfig().unlockTokens;
+                              const current = latestTokens && latestTokens.length > 0 ? [...latestTokens] : ['TOKEN-1', 'TOKEN-2'];
                               let newTokens: string[] = [];
                               if (count <= current.length) {
                                 newTokens = current.slice(0, count);
@@ -6655,8 +6944,7 @@ export default function AdminPanel({
                                   newTokens.push(`TOKEN-${i}`);
                                 }
                               }
-                              onUpdateConfig({
-                                ...config,
+                              applyConfigPatch({
                                 unlockTokens: newTokens
                               });
                             }}
@@ -6702,10 +6990,10 @@ export default function AdminPanel({
                               type="text"
                               value={tok}
                               onChange={(e) => {
-                                const existing = config.unlockTokens && config.unlockTokens.length > 0 ? [...config.unlockTokens] : ['TOKEN-1', 'TOKEN-2'];
+                                const latestTokens = getExamConfig().unlockTokens;
+                                const existing = latestTokens && latestTokens.length > 0 ? [...latestTokens] : ['TOKEN-1', 'TOKEN-2'];
                                 existing[tIdx] = e.target.value.toUpperCase();
-                                onUpdateConfig({
-                                  ...config,
+                                applyConfigPatch({
                                   unlockTokens: existing
                                 });
                               }}
@@ -6717,10 +7005,10 @@ export default function AdminPanel({
                             <button
                               type="button"
                               onClick={() => {
-                                const existing = config.unlockTokens && config.unlockTokens.length > 0 ? [...config.unlockTokens] : ['TOKEN-1', 'TOKEN-2'];
+                                const latestTokens = getExamConfig().unlockTokens;
+                                const existing = latestTokens && latestTokens.length > 0 ? [...latestTokens] : ['TOKEN-1', 'TOKEN-2'];
                                 const updatedTokens = existing.filter((_, i) => i !== tIdx);
-                                onUpdateConfig({
-                                  ...config,
+                                applyConfigPatch({
                                   unlockTokens: updatedTokens
                                 });
                               }}
@@ -6740,10 +7028,10 @@ export default function AdminPanel({
                     <button
                       type="button"
                       onClick={() => {
-                        const existing = config.unlockTokens && config.unlockTokens.length > 0 ? [...config.unlockTokens] : ['TOKEN-1', 'TOKEN-2'];
+                        const latestTokens = getExamConfig().unlockTokens;
+                        const existing = latestTokens && latestTokens.length > 0 ? [...latestTokens] : ['TOKEN-1', 'TOKEN-2'];
                         const nextNum = existing.length + 1;
-                        onUpdateConfig({
-                          ...config,
+                        applyConfigPatch({
                           unlockTokens: [...existing, `TOKEN-${nextNum}`]
                         });
                       }}
@@ -6756,10 +7044,10 @@ export default function AdminPanel({
                     <button
                       type="button"
                       onClick={() => {
-                        const existing = config.unlockTokens && config.unlockTokens.length > 0 ? [...config.unlockTokens] : ['TOKEN-1', 'TOKEN-2'];
+                        const latestTokens = getExamConfig().unlockTokens;
+                        const existing = latestTokens && latestTokens.length > 0 ? [...latestTokens] : ['TOKEN-1', 'TOKEN-2'];
                         const randomized = existing.map((_, idx) => `TOKEN-${Math.random().toString(36).substring(2, 6).toUpperCase()}`);
-                        onUpdateConfig({
-                          ...config,
+                        applyConfigPatch({
                           unlockTokens: randomized
                         });
                       }}
@@ -6773,8 +7061,7 @@ export default function AdminPanel({
                     <button
                       type="button"
                       onClick={() => {
-                        onUpdateConfig({
-                          ...config,
+                        applyConfigPatch({
                           unlockTokens: ['TOKEN-1', 'TOKEN-2']
                         });
                       }}
@@ -6874,8 +7161,7 @@ export default function AdminPanel({
                   </div>
                   <button
                     type="button"
-                    onClick={() => onUpdateConfig({
-                      ...config,
+                    onClick={() => applyConfigPatch({
                       requireStudentLogin: config.requireStudentLogin !== false ? false : true
                     })}
                     className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none ${
@@ -7111,12 +7397,12 @@ export default function AdminPanel({
                     const currentPerms: ProctorPermissions = config.proctorPermissions || DEFAULT_PROCTOR_PERMISSIONS;
 
                     const togglePerm = (key: keyof ProctorPermissions) => {
+                      const latestPerms: ProctorPermissions = getExamConfig().proctorPermissions || currentPerms;
                       const updated: ProctorPermissions = {
-                        ...currentPerms,
-                        [key]: !currentPerms[key]
+                        ...latestPerms,
+                        [key]: !latestPerms[key]
                       };
-                      onUpdateConfig({
-                        ...config,
+                      applyConfigPatch({
                         proctorPermissions: updated
                       });
                     };
@@ -7164,8 +7450,7 @@ export default function AdminPanel({
                           allowChangeSubject: false
                         };
                       }
-                      onUpdateConfig({
-                        ...config,
+                      applyConfigPatch({
                         proctorPermissions: updated
                       });
                     };
@@ -7427,7 +7712,7 @@ export default function AdminPanel({
                             </div>
                             <button
                               type="button"
-                              onClick={() => onUpdateConfig({ ...config, enableRemedialMode: !config.enableRemedialMode })}
+                              onClick={() => applyConfigPatch({ enableRemedialMode: !config.enableRemedialMode })}
                               className={`w-14 h-8 shrink-0 rounded-full transition-colors relative cursor-pointer ${
                                 config.enableRemedialMode ? 'bg-purple-600' : 'bg-slate-300'
                               }`}
@@ -7445,7 +7730,7 @@ export default function AdminPanel({
                           <p className="text-xs text-slate-500">Maksimal jumlah percobaan (Ujian Utama + Remidi) yang diizinkan untuk setiap akun siswa.</p>
                           <select
                             value={config.maxRemedialAttempts || 2}
-                            onChange={(e) => onUpdateConfig({ ...config, maxRemedialAttempts: parseInt(e.target.value, 10) })}
+                            onChange={(e) => applyConfigPatch({ maxRemedialAttempts: parseInt(e.target.value, 10) })}
                             className="w-full px-4 py-2.5 bg-white border border-slate-300 rounded-xl text-sm font-bold text-slate-800 focus:outline-none focus:ring-2 focus:ring-purple-500 cursor-pointer"
                           >
                             <option value={1}>1x Percobaan (Hanya Ujian Utama / Tanpa Remidi)</option>

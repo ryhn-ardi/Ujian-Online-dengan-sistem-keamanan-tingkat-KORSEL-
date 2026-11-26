@@ -20,7 +20,8 @@ import {
   enableAllStudentsSync,
   subscribeToMyStudentSession,
   refreshQuestionsFromServer,
-  getStudentFromServer
+  getStudentFromServer,
+  patchExamConfig
 } from './utils/sync';
 import { Student, Question, ExamConfig, StudentStatus, StudentUser, BroadcastAnnouncement, ExamSubject, ViolationCategory } from './types';
 import { isSubjectMatchingStudentClass, doesQuestionBelongToSubject, isSameStudentAccount, buildAttemptHistoryOnSubmit } from './utils/gradeHelper';
@@ -360,6 +361,11 @@ export default function App() {
   const handleUpdateConfig = (updatedConfig: ExamConfig) => {
     setConfig(updatedConfig);
     saveExamConfig(updatedConfig);
+  };
+
+  const handlePatchConfig = (partial: Partial<ExamConfig>) => {
+    setConfig((prev) => ({ ...prev, ...partial }));
+    return patchExamConfig(partial);
   };
 
   // 3. STUDENT FLOW: Registration Action (Supports Multi-Subject exams, Reconnection & Randomized question sampling)
@@ -1054,6 +1060,7 @@ export default function App() {
           onUpdateStudents={handleUpdateStudents}
           onUpdateQuestions={handleUpdateQuestions}
           onUpdateConfig={handleUpdateConfig}
+          onPatchConfig={handlePatchConfig}
           onUpdateStudentUsers={(users) => {
             setStudentUsers(users);
             saveStudentUsers(users);
@@ -1218,14 +1225,12 @@ export default function App() {
               targetStudentName: targetStudentName || undefined,
               active: true
             };
-            handleUpdateConfig({
-              ...config,
+            handlePatchConfig({
               activeAnnouncement: newAnnouncement
             });
           }}
           onClearAnnouncement={() => {
-            handleUpdateConfig({
-              ...config,
+            handlePatchConfig({
               activeAnnouncement: null
             });
           }}

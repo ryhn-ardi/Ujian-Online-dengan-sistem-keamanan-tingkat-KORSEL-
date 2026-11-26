@@ -11,6 +11,7 @@ import {
   writeBatch,
   doc as fsDoc,
   getDocFromServer,
+  getDocsFromServer,
   query,
   where
 } from 'firebase/firestore';
@@ -65,6 +66,8 @@ function removeStored(key: string): void {
 }
 
 const QUESTIONS_PENDING_SYNC_KEY = 'proktor_questions_pending_sync';
+const CONFIG_PENDING_SYNC_KEY = 'proktor_config_pending_sync';
+const SUBJECTS_BACKUP_KEY = 'proktor_subjects_backup';
 
 // Clean and sanitize data before saving to Firestore (removes undefined values and ensures valid structures)
 export function sanitizeForFirestore<T>(data: T): any {
@@ -144,14 +147,62 @@ let localStudentUsers: StudentUser[] = getStored<StudentUser[]>(STUDENT_USERS_KE
 let localConfig: ExamConfig = getStored<ExamConfig>(CONFIG_KEY, INITIAL_CONFIG);
 
 const initialSyncCompleted = {
-  config: true,
-  questions: true,
-  students: true,
-  studentUsers: true
+  config: false,
+  questions: false,
+  students: false,
+  studentUsers: false
 };
 
+let hasHydratedConfigFromServer = false;
+let hasHydratedQuestionsFromServer = false;
+let configSeedingInProgress = false;
+let questionsSeedingInProgress = false;
+
 export function isInitialSyncCompleted(): boolean {
-  return true;
+  return initialSyncCompleted.config && initialSyncCompleted.questions;
+}
+
+export function isCloudConfigReady(): boolean {
+  return hasHydratedConfigFromServer;
+}
+
+export function isCloudQuestionsReady(): boolean {
+  return hasHydratedQuestionsFromServer;
+}
+
+export function isLikelyDefaultSubjects(subjects?: ExamSubject[]): boolean {
+  if (!subjects || !Array.isArray(subjects) || subjects.length === 0) return true;
+  if (subjects.length !== 2) return false;
+  const s0 = subjects[0];
+  const s1 = subjects[1];
+  return (
+    s0?.id === 'sub2' &&
+    s0?.name === 'Matematika TKA' &&
+    s1?.id === 'sub3' &&
+    s1?.name === 'Bahasa Indonesia TKA'
+  );
+}
+
+export function isLikelyDefaultConfig(cfg?: ExamConfig | null): boolean {
+  if (!cfg) return true;
+  return isLikelyDefaultSubjects(cfg.subjects) && cfg.examTitle === INITIAL_CONFIG.examTitle;
+}
+
+const DEFAULT_SAMPLE_QUESTION_IDS = new Set(INITIAL_QUESTIONS.map(q => q.id));
+
+async function saveSubjectsBackupToCloud(subjects: ExamSubject[]): Promise<void> {
+  if (!Array.isArray(subjects) || subjects.length === 0 || isLikelyDefaultSubjects(subjects)) {
+    return;
+  }
+  setStored(SUBJECTS_BACKUP_KEY, subjects);
+  try {
+    await setDoc(doc(db, 'config', 'subjectsBackup'), sanitizeForFirestore({
+      subjects,
+      updatedAt: new Date().toISOString()
+    }));
+  } catch (err) {
+    console.warn('Silent subjects backup warning:', err);
+  }
 }
 
 // Getters returning the synchronized local state instantly
@@ -441,52 +492,107 @@ async function testConnection() {
 testConnection();
 
 // Populate / Sync from firestore in real-time
-// A. Real-time Config Sync & Seeding Helper
+// A. Real-time Config Sync & Seeding Helper (Hardened against unverified INITIAL_CONFIG overwrites)
 onSnapshot(
   doc(db, 'config', 'examConfig'),
+  { includeMetadataChanges: true },
   async (snapshot) => {
+    const isFromCache = snapshot.metadata.fromCache;
+
     if (snapshot.exists()) {
-      recordFirestoreRead(1, 'CONFIG_SYNC', 'config/examConfig', 'Sinkronisasi konfigurasi ujian');
       const data = snapshot.data() as ExamConfig;
-      localConfig = data;
-      try {
-        localStorage.setItem(CONFIG_KEY, JSON.stringify(data));
-      } catch (e) {}
-      if (typeof document !== 'undefined' && data.examTitle) {
-        document.title = data.examTitle;
+      if (!isFromCache) {
+        recordFirestoreRead(1, 'CONFIG_SYNC', 'config/examConfig', 'Sinkronisasi konfigurasi ujian');
+        hasHydratedConfigFromServer = true;
+        initialSyncCompleted.config = true;
       }
-      initialSyncCompleted.config = true;
+
+      // Preserve in-memory custom audio data URIs if cloud doc omits them due to 1MB split
+      const mergedData: ExamConfig = {
+        ...data,
+        customAlarmAudioUrl: data.customAlarmAudioUrl || localConfig.customAlarmAudioUrl,
+        customAnnouncementAudioUrl: data.customAnnouncementAudioUrl || localConfig.customAnnouncementAudioUrl
+      };
+
+      localConfig = mergedData;
+      setStored(CONFIG_KEY, mergedData);
+      if (Array.isArray(mergedData.subjects) && !isLikelyDefaultSubjects(mergedData.subjects)) {
+        setStored(SUBJECTS_BACKUP_KEY, mergedData.subjects);
+      }
+
+      if (typeof document !== 'undefined' && mergedData.examTitle) {
+        document.title = mergedData.examTitle;
+      }
       notifySubscribers('SYNC_CONFIG');
 
       // Auto load custom audio in background if configured and not present locally
-      if ((data.alarmType === 'CUSTOM_AUDIO' || data.hasCustomAlarmAudio) && !getCustomAlarmAudioData()) {
+      if ((mergedData.alarmType === 'CUSTOM_AUDIO' || mergedData.hasCustomAlarmAudio) && !getCustomAlarmAudioData()) {
         fetchCustomAlarmAudioFromCloud();
       }
-      if ((data.announcementSoundType === 'CUSTOM_AUDIO' || data.hasCustomAnnouncementAudio) && !getCustomAnnouncementAudioData()) {
+      if ((mergedData.announcementSoundType === 'CUSTOM_AUDIO' || mergedData.hasCustomAnnouncementAudio) && !getCustomAnnouncementAudioData()) {
         fetchCustomAnnouncementAudioFromCloud();
       }
     } else {
-      // Config collection has not been seeded, check if we have cached config before writing initial
-      const cachedCfg = getStored<ExamConfig>(CONFIG_KEY, null as any);
-      if (cachedCfg && cachedCfg.subjects && cachedCfg.subjects.length > 0) {
-        localConfig = cachedCfg;
+      // NEVER seed INITIAL_CONFIG based on a cache-only or offline snapshot!
+      if (isFromCache || configSeedingInProgress) {
+        return;
+      }
+
+      configSeedingInProgress = true;
+      try {
+        // Double-check directly against Firestore Server before ever deciding examConfig doesn't exist
+        const serverSnap = await getDocFromServer(doc(db, 'config', 'examConfig'));
+        if (serverSnap.exists()) {
+          const serverData = serverSnap.data() as ExamConfig;
+          hasHydratedConfigFromServer = true;
+          initialSyncCompleted.config = true;
+          localConfig = serverData;
+          setStored(CONFIG_KEY, serverData);
+          if (Array.isArray(serverData.subjects) && !isLikelyDefaultSubjects(serverData.subjects)) {
+            setStored(SUBJECTS_BACKUP_KEY, serverData.subjects);
+          }
+          if (typeof document !== 'undefined' && serverData.examTitle) {
+            document.title = serverData.examTitle;
+          }
+          notifySubscribers('SYNC_CONFIG');
+          return;
+        }
+
+        // Confirmed on server that config/examConfig truly does not exist yet.
+        // Check cloud subjectsBackup or local cached config before falling back to INITIAL_CONFIG.
+        let backupSubjects: ExamSubject[] | null = null;
+        try {
+          const backupSnap = await getDocFromServer(doc(db, 'config', 'subjectsBackup'));
+          if (backupSnap.exists() && Array.isArray(backupSnap.data()?.subjects) && backupSnap.data()!.subjects.length > 0) {
+            backupSubjects = backupSnap.data()!.subjects as ExamSubject[];
+          }
+        } catch {}
+
+        const cachedCfg = getStored<ExamConfig | null>(CONFIG_KEY, null);
+        const seedCfg: ExamConfig = (cachedCfg && cachedCfg.subjects && cachedCfg.subjects.length > 0 && !isLikelyDefaultConfig(cachedCfg))
+          ? cachedCfg
+          : backupSubjects
+            ? {
+                ...INITIAL_CONFIG,
+                subjects: backupSubjects,
+                subject1Name: backupSubjects[0]?.name,
+                subject2Name: backupSubjects[1]?.name
+              }
+            : INITIAL_CONFIG;
+
+        localConfig = seedCfg;
+        setStored(CONFIG_KEY, seedCfg);
+        hasHydratedConfigFromServer = true;
         initialSyncCompleted.config = true;
         notifySubscribers('SYNC_CONFIG');
-        try {
-          await setDoc(doc(db, 'config', 'examConfig'), sanitizeForFirestore(cachedCfg));
-          recordFirestoreWrite(1, 'SAVE_CONFIG', 'config/examConfig', 'Inisialisasi config cached ke cloud');
-        } catch (err) {
-          console.warn('Silent sync of cached config to cloud:', err);
-        }
-      } else {
-        try {
-          await setDoc(doc(db, 'config', 'examConfig'), sanitizeForFirestore(INITIAL_CONFIG));
-          recordFirestoreWrite(1, 'SAVE_CONFIG', 'config/examConfig', 'Inisialisasi config default ke cloud');
-          initialSyncCompleted.config = true;
-          notifySubscribers('SYNC_CONFIG');
-        } catch (err) {
-          handleFirestoreError(err, OperationType.WRITE, 'config/examConfig');
-        }
+
+        await setDoc(doc(db, 'config', 'examConfig'), sanitizeForFirestore(seedCfg));
+        recordFirestoreWrite(1, 'SAVE_CONFIG', 'config/examConfig', 'Inisialisasi config ke cloud');
+      } catch (err) {
+        // Offline / server unreachable: keep localConfig safe, NEVER overwrite cloud with INITIAL_CONFIG
+        console.warn('Skipped config auto-seeding because server check failed:', err);
+      } finally {
+        configSeedingInProgress = false;
       }
     }
   },
@@ -535,12 +641,20 @@ export function sanitizeQuestionItem(q: any, fallbackId: string): Question {
   };
 }
 
-// B. Real-time Questions Sync & Seeding Helper
+// B. Real-time Questions Sync & Seeding Helper (Hardened against empty-cache/offline wipes)
 onSnapshot(
   collection(db, 'questions'),
+  { includeMetadataChanges: true },
   async (snapshot) => {
+    const isFromCache = snapshot.metadata.fromCache;
+
     if (!snapshot.empty) {
-      recordFirestoreRead(snapshot.size, 'QUESTIONS_SYNC', 'questions', `Mengunduh ${snapshot.size} butir bank soal aktif`);
+      if (!isFromCache) {
+        recordFirestoreRead(snapshot.size, 'QUESTIONS_SYNC', 'questions', `Mengunduh ${snapshot.size} butir bank soal aktif`);
+        hasHydratedQuestionsFromServer = true;
+        initialSyncCompleted.questions = true;
+      }
+
       const list: Question[] = [];
       snapshot.forEach((docSnap) => {
         const q = docSnap.data();
@@ -559,7 +673,6 @@ onSnapshot(
           merged.sort((a, b) => String(a.id || '').localeCompare(String(b.id || '')));
           localQuestions = merged;
           setStored(QUESTIONS_KEY, merged);
-          initialSyncCompleted.questions = true;
           notifySubscribers('SYNC_QUESTIONS');
           saveQuestions(merged, false).catch(e => console.warn('Silent upload of merged cached questions to cloud:', e));
           return;
@@ -568,49 +681,93 @@ onSnapshot(
 
       localQuestions = list;
       setStored(QUESTIONS_KEY, list);
-      initialSyncCompleted.questions = true;
       notifySubscribers('SYNC_QUESTIONS');
     } else {
-      // Questions bank snapshot is empty from Firestore
-      const hasPendingLocalSync = getStored<boolean>(QUESTIONS_PENDING_SYNC_KEY, false);
-      const cached = getStored<Question[]>(QUESTIONS_KEY, []);
+      // NEVER wipe/re-seed based on a cache-only empty snapshot!
+      if (isFromCache || questionsSeedingInProgress) {
+        return;
+      }
 
-      // Check seedMeta in Firestore first to respect intentional admin clear
-      let intentionallyCleared = false;
+      questionsSeedingInProgress = true;
       try {
-        const seedSnap = await getDoc(doc(db, 'config', 'seedMeta'));
-        if (seedSnap.exists() && seedSnap.data()?.questionsInitialized === true && (seedSnap.data()?.count ?? 0) === 0) {
-          intentionallyCleared = true;
+        // Confirm directly with server before concluding questions collection is empty
+        const serverSnap = await getDocsFromServer(collection(db, 'questions'));
+        if (!serverSnap.empty) {
+          const serverList: Question[] = [];
+          serverSnap.forEach((docSnap) => {
+            serverList.push(sanitizeQuestionItem(docSnap.data(), docSnap.id));
+          });
+          serverList.sort((a, b) => String(a.id || '').localeCompare(String(b.id || '')));
+          localQuestions = serverList;
+          setStored(QUESTIONS_KEY, serverList);
+          hasHydratedQuestionsFromServer = true;
+          initialSyncCompleted.questions = true;
+          notifySubscribers('SYNC_QUESTIONS');
+          return;
         }
-      } catch (e) {}
 
-      if (cached.length > 0 && (hasPendingLocalSync || !intentionallyCleared)) {
-        const restored = cached.map((q, idx) => sanitizeQuestionItem(q, `q_cached_${idx}`));
-        localQuestions = restored;
-        setStored(QUESTIONS_KEY, restored);
+        const hasPendingLocalSync = getStored<boolean>(QUESTIONS_PENDING_SYNC_KEY, false);
+        const cached = getStored<Question[]>(QUESTIONS_KEY, []);
+
+        // Check seedMeta directly on server first to respect intentional admin clear
+        let intentionallyCleared = false;
+        try {
+          const seedSnap = await getDocFromServer(doc(db, 'config', 'seedMeta'));
+          if (seedSnap.exists() && seedSnap.data()?.questionsInitialized === true && (seedSnap.data()?.count ?? 0) === 0) {
+            intentionallyCleared = true;
+          }
+        } catch (e) {}
+
+        if (cached.length > 0 && (hasPendingLocalSync || !intentionallyCleared)) {
+          const restored = cached.map((q, idx) => sanitizeQuestionItem(q, `q_cached_${idx}`));
+          localQuestions = restored;
+          setStored(QUESTIONS_KEY, restored);
+          hasHydratedQuestionsFromServer = true;
+          initialSyncCompleted.questions = true;
+          notifySubscribers('SYNC_QUESTIONS');
+          if (hasPendingLocalSync) {
+            saveQuestions(restored, false).catch(e => console.warn('Silent upload of cached questions to empty cloud:', e));
+          }
+          return;
+        }
+
+        if (intentionallyCleared) {
+          localQuestions = [];
+          setStored(QUESTIONS_KEY, []);
+          hasHydratedQuestionsFromServer = true;
+          initialSyncCompleted.questions = true;
+          notifySubscribers('SYNC_QUESTIONS');
+          return;
+        }
+
+        // Before seeding INITIAL_QUESTIONS, check if cloud checkpoint has saved user questions!
+        try {
+          const cpSnap = await getDocFromServer(doc(db, 'config', 'questionCheckpoint'));
+          if (cpSnap.exists() && Array.isArray(cpSnap.data()?.questions) && cpSnap.data()!.questions.length > 0) {
+            const cpQuestions = (cpSnap.data()!.questions as Question[]).map((q, idx) => sanitizeQuestionItem(q, `q_cp_${idx}`));
+            localQuestions = cpQuestions;
+            setStored(QUESTIONS_KEY, cpQuestions);
+            hasHydratedQuestionsFromServer = true;
+            initialSyncCompleted.questions = true;
+            notifySubscribers('SYNC_QUESTIONS');
+            saveQuestions(cpQuestions, false).catch(e => console.warn('Silent checkpoint restoration warning:', e));
+            return;
+          }
+        } catch (e) {}
+
+        // Initial installation seeding fallback (only when server is confirmed brand new)
+        const initialList = INITIAL_QUESTIONS.map((q, idx) => sanitizeQuestionItem(q, `q_init_${idx}`));
+        localQuestions = initialList;
+        setStored(QUESTIONS_KEY, initialList);
+        hasHydratedQuestionsFromServer = true;
         initialSyncCompleted.questions = true;
         notifySubscribers('SYNC_QUESTIONS');
-        if (hasPendingLocalSync) {
-          saveQuestions(restored, false).catch(e => console.warn('Silent upload of cached questions to empty cloud:', e));
-        }
-        return;
+        saveQuestions(initialList, false).catch(e => console.warn('Silent seeding of initial questions:', e));
+      } catch (err) {
+        console.warn('Skipped questions seeding because server check failed:', err);
+      } finally {
+        questionsSeedingInProgress = false;
       }
-
-      if (intentionallyCleared) {
-        localQuestions = [];
-        setStored(QUESTIONS_KEY, []);
-        initialSyncCompleted.questions = true;
-        notifySubscribers('SYNC_QUESTIONS');
-        return;
-      }
-
-      // Initial installation seeding fallback
-      const initialList = INITIAL_QUESTIONS.map((q, idx) => sanitizeQuestionItem(q, `q_init_${idx}`));
-      localQuestions = initialList;
-      setStored(QUESTIONS_KEY, initialList);
-      initialSyncCompleted.questions = true;
-      notifySubscribers('SYNC_QUESTIONS');
-      saveQuestions(initialList, false).catch(e => console.warn('Silent seeding of initial questions:', e));
     }
   },
   (error) => {
@@ -836,8 +993,12 @@ export function clearLocalQuestionsCache(): void {
 // Force download fresh questions directly from Firestore server
 export async function refreshQuestionsFromServer(): Promise<Question[]> {
   try {
-    removeStored(QUESTIONS_KEY);
-    const snap = await getDocs(collection(db, 'questions'));
+    let snap;
+    try {
+      snap = await getDocsFromServer(collection(db, 'questions'));
+    } catch {
+      snap = await getDocs(collection(db, 'questions'));
+    }
     recordFirestoreRead(snap.size, 'REFRESH_QUESTIONS', 'questions', `Mengunduh ulang ${snap.size} butir bank soal aktif dari server`);
 
     const list: Question[] = [];
@@ -851,6 +1012,7 @@ export async function refreshQuestionsFromServer(): Promise<Question[]> {
     setStored(QUESTIONS_KEY, list);
     removeStored(QUESTIONS_PENDING_SYNC_KEY);
 
+    hasHydratedQuestionsFromServer = true;
     initialSyncCompleted.questions = true;
     notifySubscribers('SYNC_QUESTIONS');
     return list;
@@ -860,56 +1022,211 @@ export async function refreshQuestionsFromServer(): Promise<Question[]> {
   }
 }
 
+// Force download fresh examConfig directly from Firestore server
+export async function refreshExamConfigFromServer(): Promise<ExamConfig> {
+  try {
+    let snap;
+    try {
+      snap = await getDocFromServer(doc(db, 'config', 'examConfig'));
+    } catch {
+      snap = await getDoc(doc(db, 'config', 'examConfig'));
+    }
+    if (snap && snap.exists()) {
+      const data = snap.data() as ExamConfig;
+      const mergedData: ExamConfig = {
+        ...data,
+        customAlarmAudioUrl: data.customAlarmAudioUrl || localConfig.customAlarmAudioUrl,
+        customAnnouncementAudioUrl: data.customAnnouncementAudioUrl || localConfig.customAnnouncementAudioUrl
+      };
+      localConfig = mergedData;
+      setStored(CONFIG_KEY, mergedData);
+      if (Array.isArray(mergedData.subjects) && !isLikelyDefaultSubjects(mergedData.subjects)) {
+        setStored(SUBJECTS_BACKUP_KEY, mergedData.subjects);
+      }
+      hasHydratedConfigFromServer = true;
+      initialSyncCompleted.config = true;
+      notifySubscribers('SYNC_CONFIG');
+      return mergedData;
+    }
+  } catch (err) {
+    console.warn('Failed to refresh config from server:', err);
+  }
+  return localConfig;
+}
+
 /**
  * Admin triggers mass refresh signal for all active student devices
+ * Uses partial merge update so subjects/other fields are never overwritten!
  */
 export async function triggerStudentsRefresh(
   type: 'SOFT' | 'HARD' = 'SOFT',
   reason = 'Admin telah memperbarui konfigurasi ujian & naskah soal'
 ): Promise<void> {
-  const currentCfg = getExamConfig();
-  const updatedCfg: ExamConfig = {
-    ...currentCfg,
-    forcedRefreshTimestamp: Date.now(),
-    forcedRefreshType: type,
-    forcedRefreshReason: reason
-  };
-  await saveExamConfig(updatedCfg, true);
+  await patchExamConfig(
+    {
+      forcedRefreshTimestamp: Date.now(),
+      forcedRefreshType: type,
+      forcedRefreshReason: reason
+    },
+    true
+  );
 }
 
-// Save global config parameters
-export async function saveExamConfig(config: ExamConfig, broadcast = true): Promise<void> {
-  localConfig = config;
-  try {
-    localStorage.setItem(CONFIG_KEY, JSON.stringify(config));
-  } catch (e) {
-    console.warn('LocalStorage error on config save:', e);
+/**
+ * Partial, merge-safe ExamConfig updater!
+ * Merges `partial` onto the latest synced `localConfig` (never stale React closures)
+ * and writes ONLY the changed fields via Firestore `{ merge: true }` so `subjects`
+ * can NEVER be accidentally overwritten by unrelated config edits or announcements.
+ */
+export async function patchExamConfig(partial: Partial<ExamConfig>, broadcast = true): Promise<boolean> {
+  // If config hasn't hydrated from server yet, pull server config first so localConfig is never stale INITIAL_CONFIG
+  if (!hasHydratedConfigFromServer) {
+    await refreshExamConfigFromServer();
   }
-  if (typeof document !== 'undefined' && config.examTitle) {
-    document.title = config.examTitle;
+
+  const baseConfig = getExamConfig();
+
+  // Protect against accidental downgrade of custom subjects back to DEFAULT_SUBJECTS
+  if (
+    partial.subjects &&
+    isLikelyDefaultSubjects(partial.subjects) &&
+    !isLikelyDefaultSubjects(baseConfig.subjects)
+  ) {
+    console.warn('Blocked attempt to overwrite custom subjects with DEFAULT_SUBJECTS via patchExamConfig.');
+    return false;
+  }
+
+  const mergedConfig: ExamConfig = {
+    ...baseConfig,
+    ...partial
+  };
+
+  localConfig = mergedConfig;
+  setStored(CONFIG_KEY, mergedConfig);
+  if (typeof document !== 'undefined' && mergedConfig.examTitle) {
+    document.title = mergedConfig.examTitle;
   }
   if (broadcast) notifySubscribers('SYNC_CONFIG');
 
-  const customAlarmData = config.customAlarmAudioUrl;
+  const customAlarmData = partial.customAlarmAudioUrl;
   const isAlarmDataUri = Boolean(customAlarmData && customAlarmData.startsWith('data:'));
 
-  const customAnnouncementData = config.customAnnouncementAudioUrl;
+  const customAnnouncementData = partial.customAnnouncementAudioUrl;
+  const isAnnouncementDataUri = Boolean(customAnnouncementData && customAnnouncementData.startsWith('data:'));
+
+  const firestorePatch: Record<string, any> = { ...partial };
+  if (isAlarmDataUri) {
+    delete firestorePatch.customAlarmAudioUrl;
+    firestorePatch.hasCustomAlarmAudio = true;
+  }
+  if (isAnnouncementDataUri) {
+    delete firestorePatch.customAnnouncementAudioUrl;
+    firestorePatch.hasCustomAnnouncementAudio = true;
+  }
+
+  let writeOk = true;
+  try {
+    await setDoc(doc(db, 'config', 'examConfig'), sanitizeForFirestore(firestorePatch), { merge: true });
+    recordFirestoreWrite(1, 'PATCH_CONFIG', 'config/examConfig', `Memperbarui konfigurasi (${Object.keys(firestorePatch).join(', ')})`);
+  } catch (err) {
+    writeOk = false;
+    handleFirestoreError(err, OperationType.WRITE, 'config/examConfig');
+  }
+
+  if (partial.subjects && Array.isArray(partial.subjects) && !isLikelyDefaultSubjects(partial.subjects)) {
+    saveSubjectsBackupToCloud(partial.subjects).catch(() => {});
+    saveQuestionCheckpoint(localQuestions, 'AUTO_WRITEBACK', partial.subjects).catch(() => {});
+  }
+
+  if (isAlarmDataUri && customAlarmData) {
+    try {
+      setCustomAlarmAudioData(customAlarmData);
+      await setDoc(doc(db, 'config', 'customAlarmAudio'), {
+        audioData: customAlarmData,
+        name: mergedConfig.customAlarmName || 'audio_alarm_kustom',
+        updatedAt: new Date().toISOString()
+      });
+      recordFirestoreWrite(1, 'SAVE_CUSTOM_AUDIO', 'config/customAlarmAudio', 'Menyimpan berkas audio alarm kustom ke cloud');
+    } catch (err) {
+      console.warn('Failed to upload custom alarm audio document:', err);
+    }
+  }
+
+  if (isAnnouncementDataUri && customAnnouncementData) {
+    try {
+      setCustomAnnouncementAudioData(customAnnouncementData);
+      await setDoc(doc(db, 'config', 'customAnnouncementAudio'), {
+        audioData: customAnnouncementData,
+        name: mergedConfig.customAnnouncementName || 'audio_pengumuman_kustom',
+        updatedAt: new Date().toISOString()
+      });
+      recordFirestoreWrite(1, 'SAVE_CUSTOM_ANNOUNCEMENT_AUDIO', 'config/customAnnouncementAudio', 'Menyimpan audio pengumuman kustom ke cloud');
+    } catch (err) {
+      console.warn('Failed to upload custom announcement audio document:', err);
+    }
+  }
+
+  return writeOk;
+}
+
+// Save global config parameters (Hardened with server hydration check & anti-default-downgrade protection)
+export async function saveExamConfig(config: ExamConfig, broadcast = true): Promise<boolean> {
+  if (!hasHydratedConfigFromServer) {
+    await refreshExamConfigFromServer();
+  }
+
+  let safeConfig = { ...config };
+  const currentCloudOrLocal = getExamConfig();
+
+  // Critical Anti-Reversion Guard:
+  // If incoming `config` still holds DEFAULT_SUBJECTS (e.g. from an unhydrated/stale React closure)
+  // while `localConfig` (from server) already has custom subjects, NEVER overwrite custom subjects!
+  if (
+    isLikelyDefaultSubjects(safeConfig.subjects) &&
+    !isLikelyDefaultSubjects(currentCloudOrLocal.subjects)
+  ) {
+    console.warn('Anti-reversion guard: Preserving server subjects instead of stale DEFAULT_SUBJECTS.');
+    safeConfig = {
+      ...safeConfig,
+      subjects: currentCloudOrLocal.subjects,
+      subject1Name: currentCloudOrLocal.subject1Name,
+      subject2Name: currentCloudOrLocal.subject2Name
+    };
+  }
+
+  localConfig = safeConfig;
+  setStored(CONFIG_KEY, safeConfig);
+  if (typeof document !== 'undefined' && safeConfig.examTitle) {
+    document.title = safeConfig.examTitle;
+  }
+  if (broadcast) notifySubscribers('SYNC_CONFIG');
+
+  const customAlarmData = safeConfig.customAlarmAudioUrl;
+  const isAlarmDataUri = Boolean(customAlarmData && customAlarmData.startsWith('data:'));
+
+  const customAnnouncementData = safeConfig.customAnnouncementAudioUrl;
   const isAnnouncementDataUri = Boolean(customAnnouncementData && customAnnouncementData.startsWith('data:'));
 
   // Separate huge base64 data URIs from config document to respect Firestore 1MB document limit
   const firestoreSafeConfig: ExamConfig = {
-    ...config,
-    customAlarmAudioUrl: isAlarmDataUri ? undefined : config.customAlarmAudioUrl,
-    hasCustomAlarmAudio: Boolean(config.hasCustomAlarmAudio || isAlarmDataUri || config.customAlarmAudioUrl),
-    customAnnouncementAudioUrl: isAnnouncementDataUri ? undefined : config.customAnnouncementAudioUrl,
-    hasCustomAnnouncementAudio: Boolean(config.hasCustomAnnouncementAudio || isAnnouncementDataUri || config.customAnnouncementAudioUrl)
+    ...safeConfig,
+    customAlarmAudioUrl: isAlarmDataUri ? undefined : safeConfig.customAlarmAudioUrl,
+    hasCustomAlarmAudio: Boolean(safeConfig.hasCustomAlarmAudio || isAlarmDataUri || safeConfig.customAlarmAudioUrl),
+    customAnnouncementAudioUrl: isAnnouncementDataUri ? undefined : safeConfig.customAnnouncementAudioUrl,
+    hasCustomAnnouncementAudio: Boolean(safeConfig.hasCustomAnnouncementAudio || isAnnouncementDataUri || safeConfig.customAnnouncementAudioUrl)
   };
 
+  let writeOk = true;
   try {
-    await setDoc(doc(db, 'config', 'examConfig'), sanitizeForFirestore(firestoreSafeConfig));
+    await setDoc(doc(db, 'config', 'examConfig'), sanitizeForFirestore(firestoreSafeConfig), { merge: true });
     recordFirestoreWrite(1, 'SAVE_CONFIG', 'config/examConfig', 'Memperbarui konfigurasi ujian ke cloud');
   } catch (err) {
+    writeOk = false;
     handleFirestoreError(err, OperationType.WRITE, 'config/examConfig');
+  }
+
+  if (Array.isArray(safeConfig.subjects) && !isLikelyDefaultSubjects(safeConfig.subjects)) {
+    saveSubjectsBackupToCloud(safeConfig.subjects).catch(() => {});
   }
 
   // If custom alarm data URI was provided, save to dedicated doc
@@ -918,7 +1235,7 @@ export async function saveExamConfig(config: ExamConfig, broadcast = true): Prom
       setCustomAlarmAudioData(customAlarmData);
       await setDoc(doc(db, 'config', 'customAlarmAudio'), {
         audioData: customAlarmData,
-        name: config.customAlarmName || 'audio_alarm_kustom',
+        name: safeConfig.customAlarmName || 'audio_alarm_kustom',
         updatedAt: new Date().toISOString()
       });
       recordFirestoreWrite(1, 'SAVE_CUSTOM_AUDIO', 'config/customAlarmAudio', 'Menyimpan berkas audio alarm kustom ke cloud');
@@ -933,7 +1250,7 @@ export async function saveExamConfig(config: ExamConfig, broadcast = true): Prom
       setCustomAnnouncementAudioData(customAnnouncementData);
       await setDoc(doc(db, 'config', 'customAnnouncementAudio'), {
         audioData: customAnnouncementData,
-        name: config.customAnnouncementName || 'audio_pengumuman_kustom',
+        name: safeConfig.customAnnouncementName || 'audio_pengumuman_kustom',
         updatedAt: new Date().toISOString()
       });
       recordFirestoreWrite(1, 'SAVE_CUSTOM_ANNOUNCEMENT_AUDIO', 'config/customAnnouncementAudio', 'Menyimpan audio pengumuman kustom ke cloud');
@@ -941,10 +1258,138 @@ export async function saveExamConfig(config: ExamConfig, broadcast = true): Prom
       console.warn('Failed to upload custom announcement audio document:', err);
     }
   }
+
+  return writeOk;
+}
+
+// Surgical single-question upsert (NEVER wipes or touches other questions in Firestore)
+export async function upsertSingleQuestion(question: Question, broadcast = true): Promise<boolean> {
+  const sanitized = sanitizeQuestionItem(question, question.id || `q_generated_${Date.now()}`);
+  const idx = localQuestions.findIndex((q) => q.id === sanitized.id);
+  const nextList = idx !== -1
+    ? localQuestions.map((q) => (q.id === sanitized.id ? sanitized : q))
+    : [...localQuestions, sanitized];
+
+  localQuestions = nextList;
+  setStored(QUESTIONS_KEY, nextList);
+  if (broadcast) notifySubscribers('SYNC_QUESTIONS');
+
+  try {
+    await setDoc(doc(db, 'questions', sanitized.id), sanitizeForFirestore(sanitized));
+    await setDoc(
+      doc(db, 'config', 'seedMeta'),
+      { questionsInitialized: true, lastUpdated: new Date().toISOString(), count: nextList.length },
+      { merge: true }
+    );
+    recordFirestoreWrite(1, 'UPSERT_QUESTION', `questions/${sanitized.id}`, `Menyimpan 1 butir soal (${sanitized.subjectId})`);
+    saveQuestionCheckpoint(nextList, 'AUTO_WRITEBACK', getExamSubjects()).catch(() => {});
+    return true;
+  } catch (err) {
+    handleFirestoreError(err, OperationType.WRITE, `questions/${sanitized.id}`);
+    return false;
+  }
+}
+
+// Surgical single-question delete (NEVER wipes other questions in Firestore)
+export async function deleteSingleQuestion(questionId: string, broadcast = true): Promise<boolean> {
+  const nextList = localQuestions.filter((q) => q.id !== questionId);
+  localQuestions = nextList;
+  setStored(QUESTIONS_KEY, nextList);
+  if (broadcast) notifySubscribers('SYNC_QUESTIONS');
+
+  try {
+    await deleteDoc(doc(db, 'questions', questionId));
+    await setDoc(
+      doc(db, 'config', 'seedMeta'),
+      { questionsInitialized: true, lastUpdated: new Date().toISOString(), count: nextList.length },
+      { merge: true }
+    );
+    recordFirestoreWrite(1, 'DELETE_QUESTION', `questions/${questionId}`, 'Menghapus 1 butir soal');
+    saveQuestionCheckpoint(nextList, 'AUTO_WRITEBACK', getExamSubjects()).catch(() => {});
+    return true;
+  } catch (err) {
+    handleFirestoreError(err, OperationType.DELETE, `questions/${questionId}`);
+    return false;
+  }
+}
+
+// Surgical per-subject question replacement/append (NEVER touches other subjects' documents in Firestore!)
+export async function replaceQuestionsForSubject(
+  subjectId: string,
+  newSubjectQuestions: Question[],
+  mode: 'OVERWRITE' | 'APPEND',
+  broadcast = true
+): Promise<boolean> {
+  if (!hasHydratedQuestionsFromServer) {
+    await refreshQuestionsFromServer();
+  }
+
+  const sanitizedIncoming = newSubjectQuestions.map((q, idx) =>
+    sanitizeQuestionItem({ ...q, subjectId }, `q_${Date.now()}_${idx}`)
+  );
+
+  const otherSubjectQuestions = localQuestions.filter((q) => (q.subjectId || 'sub1') !== subjectId);
+  const currentSubjectQuestions = localQuestions.filter((q) => (q.subjectId || 'sub1') === subjectId);
+  const nextSubjectQuestions = mode === 'OVERWRITE'
+    ? sanitizedIncoming
+    : [...currentSubjectQuestions, ...sanitizedIncoming];
+  const nextAllQuestions = [...otherSubjectQuestions, ...nextSubjectQuestions];
+
+  localQuestions = nextAllQuestions;
+  setStored(QUESTIONS_PENDING_SYNC_KEY, true);
+  setStored(QUESTIONS_KEY, nextAllQuestions);
+  if (broadcast) notifySubscribers('SYNC_QUESTIONS');
+
+  try {
+    const CHUNK_SIZE = 200;
+
+    if (mode === 'OVERWRITE') {
+      // Query ONLY this subject's docs on server so other subjects are NEVER touched
+      const qSnap = await getDocs(query(collection(db, 'questions'), where('subjectId', '==', subjectId)));
+      const incomingIds = new Set(sanitizedIncoming.map((q) => q.id));
+      const idsToDelete: string[] = [];
+      qSnap.forEach((d) => {
+        if (!incomingIds.has(d.id)) idsToDelete.push(d.id);
+      });
+
+      for (let i = 0; i < idsToDelete.length; i += CHUNK_SIZE) {
+        const chunk = idsToDelete.slice(i, i + CHUNK_SIZE);
+        const batch = writeBatch(db);
+        chunk.forEach((id) => batch.delete(doc(db, 'questions', id)));
+        await batch.commit();
+      }
+    }
+
+    for (let i = 0; i < sanitizedIncoming.length; i += CHUNK_SIZE) {
+      const chunk = sanitizedIncoming.slice(i, i + CHUNK_SIZE);
+      const batch = writeBatch(db);
+      chunk.forEach((q) => batch.set(doc(db, 'questions', q.id), sanitizeForFirestore(q)));
+      await batch.commit();
+    }
+
+    await setDoc(
+      doc(db, 'config', 'seedMeta'),
+      { questionsInitialized: true, lastUpdated: new Date().toISOString(), count: nextAllQuestions.length },
+      { merge: true }
+    );
+
+    removeStored(QUESTIONS_PENDING_SYNC_KEY);
+    recordFirestoreWrite(sanitizedIncoming.length, 'SAVE_SUBJECT_QUESTIONS', 'questions', `Menyimpan ${sanitizedIncoming.length} butir soal untuk slot ${subjectId}`);
+    saveQuestionCheckpoint(nextAllQuestions, 'AUTO_WRITEBACK', getExamSubjects()).catch(() => {});
+    return true;
+  } catch (err) {
+    handleFirestoreError(err, OperationType.WRITE, 'questions');
+    return false;
+  }
 }
 
 // Reset/Update entire bank of questions
-export async function saveQuestions(questions: Question[], broadcast = true): Promise<void> {
+export async function saveQuestions(questions: Question[], broadcast = true): Promise<boolean> {
+  if (!hasHydratedQuestionsFromServer && questions.length === 0) {
+    console.warn('Blocked full question wipe before cloud hydration completed.');
+    return false;
+  }
+
   const sanitized = questions.map((q, idx) => sanitizeQuestionItem(q, `q_${Date.now()}_${idx}`));
   localQuestions = sanitized;
   setStored(QUESTIONS_PENDING_SYNC_KEY, true);
@@ -990,22 +1435,26 @@ export async function saveQuestions(questions: Question[], broadcast = true): Pr
 
     removeStored(QUESTIONS_PENDING_SYNC_KEY);
     recordFirestoreWrite(sanitized.length, 'SAVE_QUESTIONS', 'questions', `Menyimpan ${sanitized.length} butir bank soal ke cloud`);
-    
-    // Automatically trigger non-blocking Checkpoint & Write-Back to Cloud
-    saveQuestionCheckpoint(sanitized, 'AUTO_WRITEBACK').catch((e) => console.warn('Silent checkpoint save warning:', e));
+
+    // Automatically trigger non-blocking Checkpoint & Write-Back to Cloud (including subjects!)
+    saveQuestionCheckpoint(sanitized, 'AUTO_WRITEBACK', getExamSubjects()).catch((e) => console.warn('Silent checkpoint save warning:', e));
+    return true;
   } catch (err) {
     handleFirestoreError(err, OperationType.WRITE, 'questions');
+    return false;
   }
 }
 
 // -------------------------------------------------------------
-// QUESTION BANK CHECKPOINT & WRITE-BACK DRAFT SYSTEM
+// QUESTION BANK & SUBJECTS CHECKPOINT & WRITE-BACK DRAFT SYSTEM
 // -------------------------------------------------------------
 const CHECKPOINT_KEY = 'proktor_questions_checkpoint';
 const CHECKPOINT_META_KEY = 'proktor_questions_checkpoint_meta';
+const CHECKPOINT_SUBJECTS_KEY = 'proktor_subjects_checkpoint';
 
 export interface QuestionCheckpointMeta {
   count: number;
+  subjectCount?: number;
   timestamp: string;
   formattedTime: string;
   source: 'MANUAL' | 'AUTO_WRITEBACK' | 'IMPORT';
@@ -1017,16 +1466,21 @@ export function getQuestionCheckpointMeta(): QuestionCheckpointMeta | null {
   return memoryCheckpointMeta;
 }
 
-// 1. Instant local checkpoint save + background cloud write-back
+// 1. Instant local checkpoint save + background cloud write-back (Includes BOTH Questions & Subjects)
 export async function saveQuestionCheckpoint(
   questions: Question[],
-  source: 'MANUAL' | 'AUTO_WRITEBACK' | 'IMPORT' = 'AUTO_WRITEBACK'
+  source: 'MANUAL' | 'AUTO_WRITEBACK' | 'IMPORT' = 'AUTO_WRITEBACK',
+  subjectsOverride?: ExamSubject[]
 ): Promise<void> {
   if (!questions) return;
   const sanitized = questions.map((q, idx) => sanitizeQuestionItem(q, `q_cp_${idx}`));
+  const currentSubjects = subjectsOverride && subjectsOverride.length > 0 ? subjectsOverride : getExamSubjects();
+  const shouldStoreSubjects = currentSubjects.length > 0 && !isLikelyDefaultSubjects(currentSubjects);
+
   const now = new Date();
   const meta: QuestionCheckpointMeta = {
     count: sanitized.length,
+    subjectCount: currentSubjects.length,
     timestamp: now.toISOString(),
     formattedTime: now.toLocaleTimeString('id-ID', { hour12: false }) + ' WIB',
     source
@@ -1038,6 +1492,9 @@ export async function saveQuestionCheckpoint(
   try {
     localStorage.setItem(CHECKPOINT_KEY, JSON.stringify(sanitized));
     localStorage.setItem(CHECKPOINT_META_KEY, JSON.stringify(meta));
+    if (shouldStoreSubjects) {
+      localStorage.setItem(CHECKPOINT_SUBJECTS_KEY, JSON.stringify(currentSubjects));
+    }
   } catch (e) {
     console.warn('LocalStorage error saving question checkpoint:', e);
   }
@@ -1046,13 +1503,23 @@ export async function saveQuestionCheckpoint(
 
   // Background Cloud Write-Back to Firestore
   try {
+    // Preserve previously backed-up custom subjects in checkpoint if current call didn't have custom subjects
+    let subjectsToPersist: ExamSubject[] | undefined = shouldStoreSubjects ? currentSubjects : undefined;
+    if (!subjectsToPersist) {
+      const localBackedUp = getStored<ExamSubject[] | null>(CHECKPOINT_SUBJECTS_KEY, null);
+      if (localBackedUp && localBackedUp.length > 0 && !isLikelyDefaultSubjects(localBackedUp)) {
+        subjectsToPersist = localBackedUp;
+      }
+    }
+
     const safeData = sanitizeForFirestore({
       questions: sanitized,
+      subjects: subjectsToPersist,
       meta,
       updatedAt: now.toISOString()
     });
 
-    await setDoc(doc(db, 'config', 'questionCheckpoint'), safeData);
+    await setDoc(doc(db, 'config', 'questionCheckpoint'), safeData, { merge: true });
     recordFirestoreWrite(1, 'SAVE_QUESTION_CHECKPOINT', 'config/questionCheckpoint', `Checkpoint write-back (${sanitized.length} soal)`);
   } catch (err) {
     console.warn('Cloud write-back of question checkpoint failed:', err);
@@ -1069,13 +1536,18 @@ export function debounceWriteBackQuestionCheckpoint(
 ): void {
   if (!questions) return;
   const sanitized = questions.map((q, idx) => sanitizeQuestionItem(q, `q_cp_${idx}`));
-  
+  const currentSubjects = getExamSubjects();
+
   // 1. Save locally in 0ms
   try {
     localStorage.setItem(CHECKPOINT_KEY, JSON.stringify(sanitized));
+    if (currentSubjects.length > 0 && !isLikelyDefaultSubjects(currentSubjects)) {
+      localStorage.setItem(CHECKPOINT_SUBJECTS_KEY, JSON.stringify(currentSubjects));
+    }
     const now = new Date();
     const meta: QuestionCheckpointMeta = {
       count: sanitized.length,
+      subjectCount: currentSubjects.length,
       timestamp: now.toISOString(),
       formattedTime: now.toLocaleTimeString('id-ID', { hour12: false }) + ' WIB',
       source
@@ -1089,46 +1561,58 @@ export function debounceWriteBackQuestionCheckpoint(
   // 2. Debounce cloud write-back
   if (writeBackTimer) clearTimeout(writeBackTimer);
   writeBackTimer = setTimeout(() => {
-    saveQuestionCheckpoint(sanitized, source).catch(e => console.warn('Debounced write-back error:', e));
+    saveQuestionCheckpoint(sanitized, source, currentSubjects).catch(e => console.warn('Debounced write-back error:', e));
   }, delayMs);
 }
 
-// 2. Restore questions from Checkpoint (Tries Local first, falls back to Cloud)
+// 2. Restore questions AND subjects from Checkpoint (Checks Cloud & Local intelligently)
 export async function restoreQuestionsFromCheckpoint(): Promise<{ success: boolean; count: number; message: string; source: 'LOCAL' | 'CLOUD' }> {
-  // A. Check local checkpoint first
+  // Check Cloud Checkpoint first for subjects & freshest questions
+  let cloudQuestions: Question[] = [];
+  let cloudSubjects: ExamSubject[] = [];
   try {
-    const localCp = getStored<Question[]>(CHECKPOINT_KEY, []);
-    if (localCp.length > 0) {
-      const restored = localCp.map((q, idx) => sanitizeQuestionItem(q, `q_restored_${idx}`));
-      await saveQuestions(restored, true);
-      return {
-        success: true,
-        count: restored.length,
-        message: `Berhasil memulihkan ${restored.length} butir soal dari Checkpoint Lokal!`,
-        source: 'LOCAL'
-      };
-    }
-  } catch (e) {}
-
-  // B. Fallback to Cloud Checkpoint
-  try {
-    const snap = await getDoc(doc(db, 'config', 'questionCheckpoint'));
-    if (snap.exists()) {
+    const snap = await getDocFromServer(doc(db, 'config', 'questionCheckpoint')).catch(() => getDoc(doc(db, 'config', 'questionCheckpoint')));
+    if (snap && snap.exists()) {
       recordFirestoreRead(1, 'FETCH_CHECKPOINT', 'config/questionCheckpoint', 'Mengunduh checkpoint naskah soal dari cloud');
       const data = snap.data();
-      if (Array.isArray(data?.questions) && data.questions.length > 0) {
-        const restored = (data.questions as Question[]).map((q, idx) => sanitizeQuestionItem(q, `q_cloud_cp_${idx}`));
-        await saveQuestions(restored, true);
-        return {
-          success: true,
-          count: restored.length,
-          message: `Berhasil memulihkan ${restored.length} butir soal dari Checkpoint Cloud Firestore!`,
-          source: 'CLOUD'
-        };
+      if (Array.isArray(data?.questions)) {
+        cloudQuestions = (data.questions as Question[]).map((q, idx) => sanitizeQuestionItem(q, `q_cloud_cp_${idx}`));
+      }
+      if (Array.isArray(data?.subjects)) {
+        cloudSubjects = data.subjects as ExamSubject[];
       }
     }
   } catch (err) {
     console.warn('Error fetching checkpoint from cloud:', err);
+  }
+
+  const localCp = getStored<Question[]>(CHECKPOINT_KEY, []).map((q, idx) => sanitizeQuestionItem(q, `q_restored_${idx}`));
+  const localCpSubjects = getStored<ExamSubject[]>(CHECKPOINT_SUBJECTS_KEY, []);
+
+  // Prefer whichever checkpoint has more questions (or cloud if equal)
+  const useCloud = cloudQuestions.length > 0 && cloudQuestions.length >= localCp.length;
+  const chosenQuestions = useCloud ? cloudQuestions : localCp;
+  const chosenSubjects = cloudSubjects.length > 0 && !isLikelyDefaultSubjects(cloudSubjects)
+    ? cloudSubjects
+    : (localCpSubjects.length > 0 && !isLikelyDefaultSubjects(localCpSubjects) ? localCpSubjects : []);
+
+  if (chosenSubjects.length > 0) {
+    await patchExamConfig({
+      subjects: chosenSubjects,
+      subject1Name: chosenSubjects[0]?.name,
+      subject2Name: chosenSubjects[1]?.name
+    }, true);
+  }
+
+  if (chosenQuestions.length > 0) {
+    await saveQuestions(chosenQuestions, true);
+    const srcLabel = useCloud ? 'Checkpoint Cloud Firestore' : 'Checkpoint Lokal';
+    return {
+      success: true,
+      count: chosenQuestions.length,
+      message: `Berhasil memulihkan ${chosenQuestions.length} butir soal${chosenSubjects.length > 0 ? ` dan ${chosenSubjects.length} slot naskah` : ''} dari ${srcLabel}!`,
+      source: useCloud ? 'CLOUD' : 'LOCAL'
+    };
   }
 
   return {
@@ -1137,6 +1621,155 @@ export async function restoreQuestionsFromCheckpoint(): Promise<{ success: boole
     message: 'Tidak ditemukan berkas checkpoint di lokal maupun cloud.',
     source: 'CLOUD'
   };
+}
+
+// -------------------------------------------------------------
+// ORPHANED QUESTION-SUBJECT DETECTION & RECOVERY HELPERS
+// -------------------------------------------------------------
+export interface OrphanedSubjectInfo {
+  subjectId: string;
+  count: number;
+  sampleTexts: string[];
+  suggestedName: string;
+  suggestedCode: string;
+  isLegacySampleOnly: boolean;
+}
+
+export interface MismatchedDefaultSlotInfo {
+  subject: ExamSubject;
+  count: number;
+  suggestedName: string;
+  sampleText: string;
+}
+
+export function inferSubjectTopicFromQuestions(qs: Question[], fallbackLabel = 'Naskah Pulihan'): { name: string; code: string } {
+  const combined = qs.slice(0, 10).map(q => (q.questionText || '').toLowerCase()).join(' ');
+  if (/(komputasional|algoritm|informatika|biner|komputer|pemrograman|perangkat lunak|hardware|software|jaringan)/.test(combined)) {
+    return { name: 'Informatika', code: 'INF' };
+  }
+  if (/(nada|musik|birama|notasi|harmoni|melodi|seni|tari|lukis|rupa|klasik|orkestra|ritme|tempo)/.test(combined)) {
+    return { name: 'Seni Budaya', code: 'SB' };
+  }
+  if (/(matematika|aljabar|persamaan|segitiga|geometri|trigonometri|pecahan|integral)/.test(combined)) {
+    return { name: 'Matematika', code: 'MTK' };
+  }
+  if (/(paragraf|kalimat utama|puisi|cerpen|ejaan|antonim|sinonim|teks prosedur|bahasa indonesia)/.test(combined)) {
+    return { name: 'Bahasa Indonesia', code: 'IND' };
+  }
+  if (/(grammar|english|tense|vocabulary|paragraph|choose the best)/.test(combined)) {
+    return { name: 'Bahasa Inggris', code: 'ENG' };
+  }
+  return { name: fallbackLabel, code: 'REC' };
+}
+
+export function findOrphanedQuestionSubjects(
+  questionsList: Question[] = localQuestions,
+  subjectsList: ExamSubject[] = getExamSubjects()
+): OrphanedSubjectInfo[] {
+  const knownIds = new Set(subjectsList.map(s => s.id));
+  const grouped = new Map<string, Question[]>();
+
+  questionsList.forEach(q => {
+    const sid = q.subjectId || 'sub1';
+    if (!knownIds.has(sid)) {
+      const arr = grouped.get(sid) || [];
+      arr.push(q);
+      grouped.set(sid, arr);
+    }
+  });
+
+  const results: OrphanedSubjectInfo[] = [];
+  Array.from(grouped.entries())
+    .sort((a, b) => a[0].localeCompare(b[0]))
+    .forEach(([subjectId, qs]) => {
+      const isLegacySampleOnly = qs.every(q => DEFAULT_SAMPLE_QUESTION_IDS.has(q.id));
+      const inferred = inferSubjectTopicFromQuestions(qs, `Naskah ${subjectId.toUpperCase()}`);
+      results.push({
+        subjectId,
+        count: qs.length,
+        sampleTexts: qs.slice(0, 2).map(q => q.questionText),
+        suggestedName: isLegacySampleOnly ? `Contoh Soal Bawaan (${subjectId})` : `${inferred.name} (${subjectId.toUpperCase()})`,
+        suggestedCode: `${inferred.code}-${subjectId.replace(/[^0-9a-zA-Z]/g, '').toUpperCase()}`,
+        isLegacySampleOnly
+      });
+    });
+
+  return results;
+}
+
+export function detectMismatchedDefaultSubjectSlots(
+  questionsList: Question[] = localQuestions,
+  subjectsList: ExamSubject[] = getExamSubjects()
+): MismatchedDefaultSlotInfo[] {
+  const mismatched: MismatchedDefaultSlotInfo[] = [];
+
+  subjectsList.forEach(sub => {
+    const isDefaultMtK = sub.id === 'sub2' && sub.name === 'Matematika TKA';
+    const isDefaultInd = sub.id === 'sub3' && sub.name === 'Bahasa Indonesia TKA';
+    if (!isDefaultMtK && !isDefaultInd) return;
+
+    const subQs = questionsList.filter(q => q.subjectId === sub.id);
+    if (subQs.length === 0) return;
+
+    const hasNonSampleQuestions = subQs.some(q => !DEFAULT_SAMPLE_QUESTION_IDS.has(q.id));
+    if (!hasNonSampleQuestions) return;
+
+    const inferred = inferSubjectTopicFromQuestions(subQs, sub.name);
+    // Flag when slot name is still default "Matematika TKA" / "Bahasa Indonesia TKA" while questions clearly are not!
+    if (
+      (isDefaultMtK && inferred.name !== 'Matematika') ||
+      (isDefaultInd && inferred.name !== 'Bahasa Indonesia')
+    ) {
+      mismatched.push({
+        subject: sub,
+        count: subQs.length,
+        suggestedName: inferred.name,
+        sampleText: subQs[0]?.questionText || ''
+      });
+    }
+  });
+
+  return mismatched;
+}
+
+export async function recoverSubjectsToConfig(
+  orphansToAdd: OrphanedSubjectInfo[],
+  renames?: Record<string, { name: string; code?: string }>
+): Promise<boolean> {
+  const current = [...getExamSubjects(getExamConfig())];
+
+  const updated = current.map(sub => {
+    const r = renames?.[sub.id];
+    if (r && r.name.trim()) {
+      return {
+        ...sub,
+        name: r.name.trim(),
+        code: r.code?.trim() || sub.code
+      };
+    }
+    return sub;
+  });
+
+  orphansToAdd.forEach(orphan => {
+    if (!updated.some(s => s.id === orphan.subjectId)) {
+      updated.push({
+        id: orphan.subjectId,
+        name: orphan.suggestedName,
+        code: orphan.suggestedCode,
+        isActive: true,
+        targetGrade: 'ALL'
+      });
+    }
+  });
+
+  return await patchExamConfig(
+    {
+      subjects: updated,
+      subject1Name: updated[0]?.name,
+      subject2Name: updated[1]?.name
+    },
+    true
+  );
 }
 
 // Save/Synchronize student user database in chunks of 200 users (handles 1,200+ accounts in ~6 fast doc writes)
