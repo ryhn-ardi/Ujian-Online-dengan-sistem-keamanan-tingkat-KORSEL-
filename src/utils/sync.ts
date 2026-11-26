@@ -1086,6 +1086,14 @@ export async function patchExamConfig(partial: Partial<ExamConfig>, broadcast = 
 
   const baseConfig = getExamConfig();
 
+  // Critical Safety Guard:
+  // If we STILL haven't hydrated from server (e.g. offline/network error) and baseConfig is still default,
+  // NEVER write `subjects` to Firestore (prevents an unhydrated client from overwriting cloud subjects)!
+  if (partial.subjects && !hasHydratedConfigFromServer && isLikelyDefaultSubjects(baseConfig.subjects)) {
+    console.warn('Blocked attempt to write subjects before server hydration completed.');
+    return false;
+  }
+
   // Protect against accidental downgrade of custom subjects back to DEFAULT_SUBJECTS
   if (
     partial.subjects &&
@@ -1167,6 +1175,41 @@ export async function patchExamConfig(partial: Partial<ExamConfig>, broadcast = 
   }
 
   return writeOk;
+}
+
+/**
+ * Atomic, server-hydrated subject list mutator.
+ * Always reads fresh server-synced subjects BEFORE applying the mutation function,
+ * eliminating stale-closure or pre-hydration overwrites when adding, editing, duplicating,
+ * toggling, or deleting subject slots.
+ */
+export async function mutateExamSubjects(
+  mutator: (currentSubjects: ExamSubject[]) => ExamSubject[] | null,
+  broadcast = true
+): Promise<boolean> {
+  if (!hasHydratedConfigFromServer) {
+    await refreshExamConfigFromServer();
+  }
+
+  const latestSubjects = getExamSubjects(getExamConfig());
+  if (!hasHydratedConfigFromServer && isLikelyDefaultSubjects(latestSubjects)) {
+    console.warn('Aborted subject mutation: server config has not hydrated yet.');
+    return false;
+  }
+
+  const updated = mutator([...latestSubjects]);
+  if (!updated) {
+    return false;
+  }
+
+  return patchExamConfig(
+    {
+      subjects: updated,
+      subject1Name: updated[0]?.name,
+      subject2Name: updated[1]?.name
+    },
+    broadcast
+  );
 }
 
 // Save global config parameters (Hardened with server hydration check & anti-default-downgrade protection)
@@ -1736,40 +1779,33 @@ export async function recoverSubjectsToConfig(
   orphansToAdd: OrphanedSubjectInfo[],
   renames?: Record<string, { name: string; code?: string }>
 ): Promise<boolean> {
-  const current = [...getExamSubjects(getExamConfig())];
+  return await mutateExamSubjects((current) => {
+    const updated = current.map(sub => {
+      const r = renames?.[sub.id];
+      if (r && r.name.trim()) {
+        return {
+          ...sub,
+          name: r.name.trim(),
+          code: r.code?.trim() || sub.code
+        };
+      }
+      return sub;
+    });
 
-  const updated = current.map(sub => {
-    const r = renames?.[sub.id];
-    if (r && r.name.trim()) {
-      return {
-        ...sub,
-        name: r.name.trim(),
-        code: r.code?.trim() || sub.code
-      };
-    }
-    return sub;
-  });
+    orphansToAdd.forEach(orphan => {
+      if (!updated.some(s => s.id === orphan.subjectId)) {
+        updated.push({
+          id: orphan.subjectId,
+          name: orphan.suggestedName,
+          code: orphan.suggestedCode,
+          isActive: true,
+          targetGrade: 'ALL'
+        });
+      }
+    });
 
-  orphansToAdd.forEach(orphan => {
-    if (!updated.some(s => s.id === orphan.subjectId)) {
-      updated.push({
-        id: orphan.subjectId,
-        name: orphan.suggestedName,
-        code: orphan.suggestedCode,
-        isActive: true,
-        targetGrade: 'ALL'
-      });
-    }
-  });
-
-  return await patchExamConfig(
-    {
-      subjects: updated,
-      subject1Name: updated[0]?.name,
-      subject2Name: updated[1]?.name
-    },
-    true
-  );
+    return updated;
+  }, true);
 }
 
 // Save/Synchronize student user database in chunks of 200 users (handles 1,200+ accounts in ~6 fast doc writes)

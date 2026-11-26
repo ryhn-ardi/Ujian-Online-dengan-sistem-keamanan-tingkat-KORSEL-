@@ -8,6 +8,7 @@ import {
   getExamSubjects,
   getExamConfig,
   patchExamConfig,
+  mutateExamSubjects,
   upsertSingleQuestion,
   deleteSingleQuestion,
   replaceQuestionsForSubject,
@@ -744,54 +745,55 @@ export default function AdminPanel({
   const [importAccountMsg, setImportAccountMsg] = useState<{ text: string; success: boolean } | null>(null);
 
   // --- ACTIONS: SUBJECT SLOT MANAGEMENT (MAX 50 SLOTS) ---
-  const handleAddSubjectSlot = (e: React.FormEvent) => {
+  const handleAddSubjectSlot = async (e: React.FormEvent) => {
     e.preventDefault();
-    const latestSubjects = getExamSubjects(getExamConfig());
-    const baseSubjects = latestSubjects.length > 0 ? latestSubjects : subjects;
-    if (baseSubjects.length >= 50) {
-      alert('Batas maksimal 50 slot mata pelajaran telah tercapai!');
-      return;
-    }
     if (!newSubjectName.trim()) {
       alert('Nama mata pelajaran wajib diisi!');
       return;
     }
 
-    const usedIds = new Set<string>([
-      ...baseSubjects.map(s => s.id),
-      ...questions.map(q => q.subjectId).filter(Boolean) as string[]
-    ]);
-    let counter = baseSubjects.length + 1;
-    let nextId = `sub${counter}`;
-    while (usedIds.has(nextId)) {
-      counter++;
-      nextId = `sub${counter}`;
-    }
+    let createdSub: ExamSubject | null = null;
+    const ok = await mutateExamSubjects((baseSubjects) => {
+      if (baseSubjects.length >= 50) {
+        alert('Batas maksimal 50 slot mata pelajaran telah tercapai!');
+        return null;
+      }
 
-    const newSub: ExamSubject = {
-      id: nextId,
-      name: newSubjectName.trim(),
-      code: newSubjectCode.trim() || `MAPEL-${baseSubjects.length + 1}`,
-      isActive: newSubjectIsActive,
-      targetGrade: newSubjectTargetGrade || 'ALL'
-    };
+      const usedIds = new Set<string>([
+        ...baseSubjects.map(s => s.id),
+        ...questions.map(q => q.subjectId).filter(Boolean) as string[]
+      ]);
+      let counter = baseSubjects.length + 1;
+      let nextId = `sub${counter}`;
+      while (usedIds.has(nextId)) {
+        counter++;
+        nextId = `sub${counter}`;
+      }
 
-    const updated = [...baseSubjects, newSub];
-    applyConfigPatch({
-      subjects: updated,
-      subject1Name: updated[0]?.name,
-      subject2Name: updated[1]?.name
+      createdSub = {
+        id: nextId,
+        name: newSubjectName.trim(),
+        code: newSubjectCode.trim() || `MAPEL-${baseSubjects.length + 1}`,
+        isActive: newSubjectIsActive,
+        targetGrade: newSubjectTargetGrade || 'ALL'
+      };
+
+      return [...baseSubjects, createdSub];
     });
 
-    setActiveSubjectId(newSub.id);
-    setIsAddingSubjectModal(false);
-    setNewSubjectName('');
-    setNewSubjectCode('');
-    setNewSubjectIsActive(true);
-    setNewSubjectTargetGrade('ALL');
+    if (ok && createdSub) {
+      setActiveSubjectId((createdSub as ExamSubject).id);
+      setIsAddingSubjectModal(false);
+      setNewSubjectName('');
+      setNewSubjectCode('');
+      setNewSubjectIsActive(true);
+      setNewSubjectTargetGrade('ALL');
+    } else if (!ok) {
+      alert('Gagal menyimpan slot mata pelajaran baru ke cloud. Pastikan koneksi internet stabil dan coba lagi.');
+    }
   };
 
-  const handleUpdateSubjectSlot = (e: React.FormEvent) => {
+  const handleUpdateSubjectSlot = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!editingSubjectModal) return;
     if (!editSubjectName.trim()) {
@@ -799,13 +801,10 @@ export default function AdminPanel({
       return;
     }
 
-    const latestSubjects = getExamSubjects(getExamConfig());
-    const baseSubjects = latestSubjects.length > 0 ? latestSubjects : subjects;
-
-    const existsInSubjects = baseSubjects.some(s => s.id === editingSubjectModal.id);
+    const targetModal = editingSubjectModal;
     const updatedFields = {
       name: editSubjectName.trim(),
-      code: editSubjectCode.trim() || editingSubjectModal.code,
+      code: editSubjectCode.trim() || targetModal.code,
       isActive: editSubjectIsActive,
       targetGrade: editSubjectTargetGrade || 'ALL',
       enableRandomSampling: editSubjectEnableSampling,
@@ -817,17 +816,18 @@ export default function AdminPanel({
       scheduleExamEnd: editSubjectScheduleExamEnd ? parseWIBInputValueToISO(editSubjectScheduleExamEnd) : undefined
     };
 
-    const updated = existsInSubjects
-      ? baseSubjects.map(s => (s.id === editingSubjectModal.id ? { ...s, ...updatedFields } : s))
-      : [...baseSubjects, { ...editingSubjectModal, ...updatedFields }];
-
-    applyConfigPatch({
-      subjects: updated,
-      subject1Name: updated[0]?.name,
-      subject2Name: updated[1]?.name
+    const ok = await mutateExamSubjects((baseSubjects) => {
+      const existsInSubjects = baseSubjects.some(s => s.id === targetModal.id);
+      return existsInSubjects
+        ? baseSubjects.map(s => (s.id === targetModal.id ? { ...s, ...updatedFields } : s))
+        : [...baseSubjects, { ...targetModal, ...updatedFields }];
     });
 
-    setEditingSubjectModal(null);
+    if (ok) {
+      setEditingSubjectModal(null);
+    } else {
+      alert('Gagal menyimpan perubahan mapel ke cloud. Pastikan koneksi internet stabil dan coba lagi.');
+    }
   };
 
   // Handler for duplicating an Exam Subject (Remidi / Susulan)
@@ -846,58 +846,63 @@ export default function AdminPanel({
     setDuplicateSubjectModal(sub);
   };
 
-  const handleExecuteDuplicate = (e: React.FormEvent) => {
+  const handleExecuteDuplicate = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!duplicateSubjectModal) return;
-    const latestSubjects = getExamSubjects(getExamConfig());
-    const baseSubjects = latestSubjects.length > 0 ? latestSubjects : subjects;
-    if (baseSubjects.length >= 50) {
-      alert('Batas maksimal 50 slot mata pelajaran telah tercapai!');
-      return;
-    }
     if (!dupNewName.trim()) {
       alert('Nama naskah mata pelajaran baru wajib diisi!');
       return;
     }
 
-    const usedIds = new Set<string>([
-      ...baseSubjects.map(s => s.id),
-      ...questions.map(q => q.subjectId).filter(Boolean) as string[]
-    ]);
-    let counter = baseSubjects.length + 1;
-    let nextId = `sub${counter}`;
-    while (usedIds.has(nextId)) {
-      counter++;
-      nextId = `sub${counter}`;
-    }
+    const sourceModal = duplicateSubjectModal;
+    let createdDup: ExamSubject | null = null;
 
-    const newSub: ExamSubject = {
-      ...duplicateSubjectModal,
-      id: nextId,
-      name: dupNewName.trim(),
-      code: dupNewCode.trim() || `MP-${baseSubjects.length + 1}`,
-      targetGrade: dupTargetGrade || 'ALL',
-      isActive: true,
-      enableRandomSampling: duplicateSubjectModal.enableRandomSampling,
-      sampleQuestionCount: duplicateSubjectModal.sampleQuestionCount,
-      scheduleEnabled: duplicateSubjectModal.scheduleEnabled,
-      scheduleDisplayStart: duplicateSubjectModal.scheduleDisplayStart,
-      scheduleDisplayEnd: duplicateSubjectModal.scheduleDisplayEnd,
-      scheduleExamStart: duplicateSubjectModal.scheduleExamStart,
-      scheduleExamEnd: duplicateSubjectModal.scheduleExamEnd,
-    };
+    const ok = await mutateExamSubjects((baseSubjects) => {
+      if (baseSubjects.length >= 50) {
+        alert('Batas maksimal 50 slot mata pelajaran telah tercapai!');
+        return null;
+      }
 
-    const updatedSubjects = [...baseSubjects, newSub];
-    applyConfigPatch({
-      subjects: updatedSubjects,
-      subject1Name: updatedSubjects[0]?.name,
-      subject2Name: updatedSubjects[1]?.name,
+      const usedIds = new Set<string>([
+        ...baseSubjects.map(s => s.id),
+        ...questions.map(q => q.subjectId).filter(Boolean) as string[]
+      ]);
+      let counter = baseSubjects.length + 1;
+      let nextId = `sub${counter}`;
+      while (usedIds.has(nextId)) {
+        counter++;
+        nextId = `sub${counter}`;
+      }
+
+      createdDup = {
+        ...sourceModal,
+        id: nextId,
+        name: dupNewName.trim(),
+        code: dupNewCode.trim() || `MP-${baseSubjects.length + 1}`,
+        targetGrade: dupTargetGrade || 'ALL',
+        isActive: true,
+        enableRandomSampling: sourceModal.enableRandomSampling,
+        sampleQuestionCount: sourceModal.sampleQuestionCount,
+        scheduleEnabled: sourceModal.scheduleEnabled,
+        scheduleDisplayStart: sourceModal.scheduleDisplayStart,
+        scheduleDisplayEnd: sourceModal.scheduleDisplayEnd,
+        scheduleExamStart: sourceModal.scheduleExamStart,
+        scheduleExamEnd: sourceModal.scheduleExamEnd,
+      };
+
+      return [...baseSubjects, createdDup];
     });
 
+    if (!ok || !createdDup) {
+      if (!ok) alert('Gagal menduplikasi naskah ke cloud. Pastikan koneksi internet stabil dan coba lagi.');
+      return;
+    }
+
+    const newSub = createdDup as ExamSubject;
     let copiedQuestionsCount = 0;
     if (dupCopyQuestions) {
       const sourceQuestions = questions.filter(
-        q => (!q.subjectId && duplicateSubjectModal.id === 'sub1') || q.subjectId === duplicateSubjectModal.id
+        q => (!q.subjectId && sourceModal.id === 'sub1') || q.subjectId === sourceModal.id
       );
 
       const clonedQuestions: Question[] = sourceQuestions.map((q, idx) => ({
@@ -906,35 +911,29 @@ export default function AdminPanel({
         subjectId: newSub.id,
       }));
 
-      replaceQuestionsForSubject(newSub.id, clonedQuestions, 'OVERWRITE');
+      await replaceQuestionsForSubject(newSub.id, clonedQuestions, 'OVERWRITE');
       copiedQuestionsCount = clonedQuestions.length;
     }
 
     setActiveSubjectId(newSub.id);
     setQSubjectId(newSub.id);
     setDuplicateSubjectModal(null);
-    alert(`✨ Berhasil menduplikasi naskah "${duplicateSubjectModal.name}" menjadi "${newSub.name}"${copiedQuestionsCount > 0 ? ` bersama ${copiedQuestionsCount} butir soal` : ''}!`);
+    alert(`✨ Berhasil menduplikasi naskah "${sourceModal.name}" menjadi "${newSub.name}"${copiedQuestionsCount > 0 ? ` bersama ${copiedQuestionsCount} butir soal` : ''}!`);
   };
 
   const handleUpdateSubjectSampling = (subId: string, enabled: boolean, count?: number) => {
-    const latestSubjects = getExamSubjects(getExamConfig());
-    const baseSubjects = latestSubjects.length > 0 ? latestSubjects : subjects;
-    const updated = baseSubjects.map(s => {
-      if (s.id === subId) {
-        return {
-          ...s,
-          enableRandomSampling: enabled,
-          sampleQuestionCount: count !== undefined ? Math.max(1, count) : (s.sampleQuestionCount || 40)
-        };
-      }
-      return s;
-    });
-
-    applyConfigPatch({
-      subjects: updated,
-      subject1Name: updated[0]?.name,
-      subject2Name: updated[1]?.name
-    });
+    mutateExamSubjects((baseSubjects) =>
+      baseSubjects.map(s => {
+        if (s.id === subId) {
+          return {
+            ...s,
+            enableRandomSampling: enabled,
+            sampleQuestionCount: count !== undefined ? Math.max(1, count) : (s.sampleQuestionCount || 40)
+          };
+        }
+        return s;
+      })
+    );
   };
 
   const handleAddMonitorStudent = (e: React.FormEvent) => {
@@ -965,42 +964,22 @@ export default function AdminPanel({
   };
 
   const handleToggleSubjectActive = (subId: string) => {
-    const latestSubjects = getExamSubjects(getExamConfig());
-    const baseSubjects = latestSubjects.length > 0 ? latestSubjects : subjects;
-    const updated = baseSubjects.map(s => {
-      if (s.id === subId) {
-        return { ...s, isActive: s.isActive === false ? true : false };
-      }
-      return s;
-    });
-
-    applyConfigPatch({
-      subjects: updated,
-      subject1Name: updated[0]?.name,
-      subject2Name: updated[1]?.name
-    });
+    mutateExamSubjects((baseSubjects) =>
+      baseSubjects.map(s => {
+        if (s.id === subId) {
+          return { ...s, isActive: s.isActive === false ? true : false };
+        }
+        return s;
+      })
+    );
   };
 
   const handleSetAllSubjectsActive = (active: boolean) => {
-    const latestSubjects = getExamSubjects(getExamConfig());
-    const baseSubjects = latestSubjects.length > 0 ? latestSubjects : subjects;
-    const updated = baseSubjects.map(s => ({ ...s, isActive: active }));
-    applyConfigPatch({
-      subjects: updated,
-      subject1Name: updated[0]?.name,
-      subject2Name: updated[1]?.name
-    });
+    mutateExamSubjects((baseSubjects) => baseSubjects.map(s => ({ ...s, isActive: active })));
   };
 
-  const handleDeleteSubjectSlot = (subId: string) => {
-    const latestSubjects = getExamSubjects(getExamConfig());
-    const baseSubjects = latestSubjects.length > 0 ? latestSubjects : subjects;
-    if (baseSubjects.length <= 1) {
-      alert('Minimal harus ada 1 slot mata pelajaran dalam sistem!');
-      return;
-    }
-
-    const targetSub = baseSubjects.find(s => s.id === subId);
+  const handleDeleteSubjectSlot = async (subId: string) => {
+    const targetSub = subjects.find(s => s.id === subId);
     const subName = targetSub?.name || subId;
     const subQCount = questions.filter(q => (!q.subjectId && subId === 'sub1') || q.subjectId === subId).length;
 
@@ -1009,19 +988,24 @@ export default function AdminPanel({
       : `Hapus slot mata pelajaran "${subName}"?`;
 
     if (window.confirm(confirmMsg)) {
-      if (subQCount > 0) {
-        replaceQuestionsForSubject(subId, [], 'OVERWRITE');
-      }
-
-      const updated = baseSubjects.filter(s => s.id !== subId);
-      applyConfigPatch({
-        subjects: updated,
-        subject1Name: updated[0]?.name,
-        subject2Name: updated[1]?.name
+      let nextFallbackId = 'sub1';
+      const ok = await mutateExamSubjects((baseSubjects) => {
+        if (baseSubjects.length <= 1) {
+          alert('Minimal harus ada 1 slot mata pelajaran dalam sistem!');
+          return null;
+        }
+        const filtered = baseSubjects.filter(s => s.id !== subId);
+        nextFallbackId = filtered[0]?.id || 'sub1';
+        return filtered;
       });
 
-      if (activeSubjectId === subId) {
-        setActiveSubjectId(updated[0]?.id || 'sub1');
+      if (ok) {
+        if (subQCount > 0) {
+          replaceQuestionsForSubject(subId, [], 'OVERWRITE');
+        }
+        if (activeSubjectId === subId) {
+          setActiveSubjectId(nextFallbackId);
+        }
       }
     }
   };
