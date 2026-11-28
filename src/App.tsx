@@ -480,6 +480,11 @@ export default function App() {
           };
 
           await saveSingleStudent(remedialStudent);
+          try {
+            localStorage.removeItem(`exam_answers_${existing.id}`);
+            localStorage.removeItem(`exam_answers_${existing.id}_att${currentAttempt}`);
+            localStorage.removeItem(`exam_answers_${existing.id}_att${nextAttemptNum}`);
+          } catch (e) {}
           setCurrentStudentId(existing.id);
           localStorage.setItem('active_student_id', existing.id);
           setRole('STUDENT_EXAM');
@@ -531,6 +536,8 @@ export default function App() {
       status: 'BELUM_MULAI',
       violationCount: 0,
       answers: {},
+      usedTokens: [],
+      tokenUnlockCount: 0,
       lastActive: new Date().toISOString(),
       subjectId: targetSubjectId,
       assignedQuestionIds: sampledQuestionIds && sampledQuestionIds.length > 0 ? sampledQuestionIds : undefined
@@ -679,7 +686,7 @@ export default function App() {
     if (currentUsedTokens.includes(normalizedInput)) {
       return {
         success: false,
-        message: `Token "${tokenCode.trim()}" sudah TERPAKAI pada akun ini! Setiap token hanya dapat digunakan 1 kali per akun. Harap minta kode token lain yang belum terpakai kepada Pengawas/Proktor.`
+        message: `Token "${tokenCode.trim()}" sudah TERPAKAI pada naskah soal ini! Setiap token hanya dapat digunakan 1 kali per naskah soal. Harap minta kode token lain yang belum terpakai kepada Pengawas/Proktor.`
       };
     }
 
@@ -757,6 +764,10 @@ export default function App() {
     };
 
     await saveSingleStudent(updatedActive);
+    try {
+      localStorage.removeItem(`exam_answers_${active.id}`);
+      localStorage.removeItem(`exam_answers_${active.id}_att${currentAttemptNum}`);
+    } catch (e) {}
     setRole('STUDENT_FINISHED');
   };
 

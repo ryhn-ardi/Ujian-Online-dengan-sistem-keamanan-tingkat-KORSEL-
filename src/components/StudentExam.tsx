@@ -68,9 +68,24 @@ export default function StudentExam({
     };
   }, []);
 
+  const currentAttempt = student.attemptNumber || 1;
+  const answerStorageKey = `exam_answers_${student.id}_att${currentAttempt}`;
+  const legacyAnswerStorageKey = `exam_answers_${student.id}`;
+  const prevAttemptRef = useRef<number>(currentAttempt);
+
   const [selectedAnswers, setSelectedAnswers] = useState<Record<string, number | number[]>>(() => {
+    const serverAnswersEmpty = !student.answers || Object.keys(student.answers).length === 0;
+    if (student.status === 'BELUM_MULAI' && serverAnswersEmpty) {
+      try {
+        localStorage.removeItem(answerStorageKey);
+        localStorage.removeItem(legacyAnswerStorageKey);
+      } catch (e) {}
+      return {};
+    }
     try {
-      const local = localStorage.getItem(`exam_answers_${student.id}`);
+      const localAttempt = localStorage.getItem(answerStorageKey);
+      const localLegacy = currentAttempt === 1 ? localStorage.getItem(legacyAnswerStorageKey) : null;
+      const local = localAttempt || localLegacy;
       if (local) {
         const parsed = JSON.parse(local);
         if (parsed && typeof parsed === 'object') {
@@ -366,21 +381,35 @@ export default function StudentExam({
     return () => clearInterval(interval);
   }, [examStatus, student.id]);
 
-  // Synchronize local answers state: safely merge with server without clobbering locally selected answers
+  // Synchronize local answers state: reset cleanly on remedial/admin reset, otherwise safely merge with server
   useEffect(() => {
+    const serverAnswersEmpty = !student.answers || Object.keys(student.answers).length === 0;
+    const attemptChanged = currentAttempt !== prevAttemptRef.current;
+
+    if (attemptChanged || (student.status === 'BELUM_MULAI' && serverAnswersEmpty)) {
+      prevAttemptRef.current = currentAttempt;
+      try {
+        localStorage.removeItem(legacyAnswerStorageKey);
+        localStorage.removeItem(answerStorageKey);
+      } catch (e) {}
+      setSelectedAnswers(student.answers || {});
+      setCurrentQuestionIndex(0);
+      return;
+    }
+
     if (student.answers && Object.keys(student.answers).length > 0) {
       setSelectedAnswers((prev) => {
         const merged = {
           ...student.answers,
-          ...prev // Local choices take precedence
+          ...prev // Local choices take precedence during active attempt
         };
         try {
-          localStorage.setItem(`exam_answers_${student.id}`, JSON.stringify(merged));
+          localStorage.setItem(answerStorageKey, JSON.stringify(merged));
         } catch (e) {}
         return merged;
       });
     }
-  }, [student.answers, student.id]);
+  }, [student.answers, student.id, student.status, currentAttempt, answerStorageKey, legacyAnswerStorageKey]);
 
   const initialWidth = useRef(window.innerWidth);
   const initialHeight = useRef(window.innerHeight);
@@ -957,11 +986,10 @@ export default function StudentExam({
     }
 
     setSelectedAnswers(updated);
-    // Silent background sync and persistent local backup
+    // Silent background sync and persistent per-attempt local backup
     try {
-      localStorage.setItem(`exam_answers_${student.id}`, JSON.stringify(updated));
+      localStorage.setItem(answerStorageKey, JSON.stringify(updated));
     } catch (e) {}
-    student.answers = updated;
     if (onAnswersUpdate) {
       onAnswersUpdate(updated);
     }
@@ -973,10 +1001,10 @@ export default function StudentExam({
     if (document.fullscreenElement) {
       document.exitFullscreen().catch(() => {});
     }
-    // Read directly from localStorage backup to ensure all answers are included
+    // Read directly from per-attempt localStorage backup to ensure all answers are included
     let finalAnswers = selectedAnswers;
     try {
-      const local = localStorage.getItem(`exam_answers_${student.id}`);
+      const local = localStorage.getItem(answerStorageKey);
       if (local) {
         const parsed = JSON.parse(local);
         if (parsed && typeof parsed === 'object') {
@@ -992,10 +1020,10 @@ export default function StudentExam({
     if (document.fullscreenElement) {
       document.exitFullscreen().catch(() => {});
     }
-    // Read directly from localStorage backup to ensure all answers are included
+    // Read directly from per-attempt localStorage backup to ensure all answers are included
     let finalAnswers = selectedAnswers;
     try {
-      const local = localStorage.getItem(`exam_answers_${student.id}`);
+      const local = localStorage.getItem(answerStorageKey);
       if (local) {
         const parsed = JSON.parse(local);
         if (parsed && typeof parsed === 'object') {
@@ -1033,7 +1061,7 @@ export default function StudentExam({
     const usedUpper = (student.usedTokens || []).map(t => t.trim().toUpperCase());
     
     if (usedUpper.includes(normalized)) {
-      setTokenError(`Token "${tokenInput.trim()}" sudah TERPAKAI pada akun ini! Harap minta token berikutnya dari Pengawas.`);
+      setTokenError(`Token "${tokenInput.trim()}" sudah TERPAKAI pada naskah soal ini! Harap minta token berikutnya dari Pengawas.`);
       return;
     }
 
@@ -1270,7 +1298,7 @@ export default function StudentExam({
                   )}
 
                   <p className="text-[10px] text-slate-400 leading-normal italic">
-                    *Masing-masing token hanya berlaku 1 kali per akun/username. Jika Token 1 sudah pernah dipakai, Anda wajib memasukkan Token 2.
+                    *Masing-masing token hanya berlaku 1 kali per naskah soal. Jika Token 1 sudah pernah dipakai di naskah ini, Anda wajib memasukkan Token 2.
                   </p>
                 </form>
               ) : (

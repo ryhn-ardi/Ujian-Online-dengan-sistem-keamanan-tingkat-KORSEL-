@@ -31,6 +31,10 @@ import {
   FirestoreStats,
   FirestoreLogEntry,
   subscribeToSync,
+  saveExamConfig,
+  saveQuestions,
+  saveStudentUsers,
+  saveStudents,
   saveQuestionCheckpoint,
   restoreQuestionsFromCheckpoint,
   getQuestionCheckpointMeta,
@@ -42,7 +46,15 @@ import { useRealtimeWIB, formatWIBDateTime, formatWIBShort, formatWIBTimeOnly, e
 import { parseDocxExamFile, WordImportResult } from '../utils/wordImporter';
 import AnalyticsCharts from './AnalyticsCharts';
 import ItemAnalysisTab from './ItemAnalysisTab';
-import { playAlarmSound, stopAllAlarmSounds, playAnnouncementSound, setCustomAlarmAudioData, getCustomAlarmAudioData } from '../utils/alarmAudio';
+import {
+  playAlarmSound,
+  stopAllAlarmSounds,
+  playAnnouncementSound,
+  setCustomAlarmAudioData,
+  getCustomAlarmAudioData,
+  setCustomAnnouncementAudioData,
+  getCustomAnnouncementAudioData
+} from '../utils/alarmAudio';
 import { verifyUltimateCode, ULTIMATE_AUTHORIZATION_CODE } from '../utils/securityAuth';
 import { GRADE_PRESETS, getGradeBadge, getStudentScoreBreakdown, buildAttemptHistoryOnSubmit } from '../utils/gradeHelper';
 import { getViolationCategoryMeta, formatViolationTime, formatViolationLogsForExport } from '../utils/violationHelper';
@@ -343,7 +355,190 @@ export default function AdminPanel({
   const wibClock = useRealtimeWIB();
 
   // Vertical Navigation Tab in CONFIG tab
-  const [configSectionTab, setConfigSectionTab] = useState<'GENERAL' | 'SECURITY' | 'ALARM' | 'TOKENS' | 'STUDENT_ACCESS' | 'STAFF_PASSWORDS' | 'PROCTOR_PERMISSIONS' | 'REMEDI_MODE'>('GENERAL');
+  const [configSectionTab, setConfigSectionTab] = useState<'GENERAL' | 'SECURITY' | 'ALARM' | 'TOKENS' | 'STUDENT_ACCESS' | 'STAFF_PASSWORDS' | 'PROCTOR_PERMISSIONS' | 'REMEDI_MODE' | 'BACKUP_RESTORE'>('GENERAL');
+
+  // Full JSON Backup & Restore State
+  const [backupPreviewData, setBackupPreviewData] = useState<{
+    fileName: string;
+    exportedAt?: string;
+    config?: ExamConfig;
+    questions?: Question[];
+    studentUsers?: StudentUser[];
+    students?: Student[];
+  } | null>(null);
+  const [restoreIncludeConfig, setRestoreIncludeConfig] = useState(true);
+  const [restoreIncludeQuestions, setRestoreIncludeQuestions] = useState(true);
+  const [restoreIncludeAccounts, setRestoreIncludeAccounts] = useState(true);
+  const [restoreIncludeStudents, setRestoreIncludeStudents] = useState(true);
+  const [isRestoringBackupJson, setIsRestoringBackupJson] = useState(false);
+  const [backupRestoreStatus, setBackupRestoreStatus] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
+
+  const handleExportFullBackupJson = () => {
+    const latestConfig = getExamConfig();
+    const customAlarmData = latestConfig.customAlarmAudioUrl || getCustomAlarmAudioData() || undefined;
+    const customAnnouncementData = latestConfig.customAnnouncementAudioUrl || getCustomAnnouncementAudioData() || undefined;
+
+    const payload = {
+      format: 'PROKTOR_UJIAN_FULL_BACKUP_V1',
+      exportedAt: new Date().toISOString(),
+      summary: {
+        subjectsCount: getExamSubjects(latestConfig).length,
+        questionsCount: questions.length,
+        studentAccountsCount: (studentUsers || []).length,
+        studentSessionsCount: students.length
+      },
+      config: {
+        ...latestConfig,
+        ...(customAlarmData ? { customAlarmAudioUrl: customAlarmData } : {}),
+        ...(customAnnouncementData ? { customAnnouncementAudioUrl: customAnnouncementData } : {})
+      },
+      questions,
+      studentUsers: studentUsers || [],
+      students
+    };
+
+    const jsonString = JSON.stringify(payload, null, 2);
+    const blob = new Blob([jsonString], { type: 'application/json;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const now = new Date();
+    const pad = (n: number) => String(n).padStart(2, '0');
+    const dateSlug = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}_${pad(now.getHours())}${pad(now.getMinutes())}`;
+
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `backup-proktor-ujian-${dateSlug}.json`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+
+    setBackupRestoreStatus({
+      type: 'success',
+      message: `File backup JSON berhasil diunduh! (${getExamSubjects(latestConfig).length} Mapel, ${questions.length} Soal, ${(studentUsers || []).length} Akun Siswa, ${students.length} Sesi Nilai).`
+    });
+  };
+
+  const handleSelectBackupJsonFile = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file) return;
+
+    const reader = new FileReader();
+    reader.onload = () => {
+      try {
+        const raw = String(reader.result || '');
+        const parsed = JSON.parse(raw);
+        if (!parsed || typeof parsed !== 'object') {
+          throw new Error('Struktur JSON tidak valid.');
+        }
+
+        const hasConfig = Boolean(parsed.config && typeof parsed.config === 'object');
+        const hasQuestions = Array.isArray(parsed.questions);
+        const hasAccounts = Array.isArray(parsed.studentUsers);
+        const hasStudents = Array.isArray(parsed.students);
+
+        if (!hasConfig && !hasQuestions && !hasAccounts && !hasStudents) {
+          throw new Error('File JSON ini tidak berisi data backup aplikasi ujian (config, questions, studentUsers, atau students).');
+        }
+
+        setBackupPreviewData({
+          fileName: file.name,
+          exportedAt: typeof parsed.exportedAt === 'string' ? parsed.exportedAt : undefined,
+          config: hasConfig ? parsed.config : undefined,
+          questions: hasQuestions ? parsed.questions : undefined,
+          studentUsers: hasAccounts ? parsed.studentUsers : undefined,
+          students: hasStudents ? parsed.students : undefined
+        });
+        setRestoreIncludeConfig(hasConfig);
+        setRestoreIncludeQuestions(hasQuestions);
+        setRestoreIncludeAccounts(hasAccounts);
+        setRestoreIncludeStudents(hasStudents);
+        setBackupRestoreStatus(null);
+      } catch (err: any) {
+        setBackupPreviewData(null);
+        setBackupRestoreStatus({
+          type: 'error',
+          message: `Gagal membaca file JSON: ${err?.message || 'Format berkas tidak dikenali.'}`
+        });
+      }
+    };
+    reader.readAsText(file);
+  };
+
+  const handleConfirmRestoreBackupJson = async () => {
+    if (!backupPreviewData) return;
+
+    const selectedParts: string[] = [];
+    if (restoreIncludeConfig && backupPreviewData.config) {
+      selectedParts.push(`Konfigurasi & ${getExamSubjects(backupPreviewData.config).length} Mapel`);
+    }
+    if (restoreIncludeQuestions && backupPreviewData.questions) {
+      selectedParts.push(`${backupPreviewData.questions.length} Butir Soal`);
+    }
+    if (restoreIncludeAccounts && backupPreviewData.studentUsers) {
+      selectedParts.push(`${backupPreviewData.studentUsers.length} Akun Siswa`);
+    }
+    if (restoreIncludeStudents && backupPreviewData.students) {
+      selectedParts.push(`${backupPreviewData.students.length} Data Sesi/Nilai Siswa`);
+    }
+
+    if (selectedParts.length === 0) {
+      alert('Pilih minimal 1 bagian data yang ingin dipulihkan terlebih dahulu.');
+      return;
+    }
+
+    if (!window.confirm(`Pulihkan dan simpan data berikut ke database sekarang?\n\n• ${selectedParts.join('\n• ')}\n\nData yang dipilih akan ditulis ke penyimpanan lokal dan Cloud Firestore aktif.`)) {
+      return;
+    }
+
+    setIsRestoringBackupJson(true);
+    setBackupRestoreStatus(null);
+    try {
+      if (restoreIncludeConfig && backupPreviewData.config) {
+        const cfg = backupPreviewData.config;
+        if (cfg.customAlarmAudioUrl && cfg.customAlarmAudioUrl.startsWith('data:')) {
+          setCustomAlarmAudioData(cfg.customAlarmAudioUrl);
+        }
+        if (cfg.customAnnouncementAudioUrl && cfg.customAnnouncementAudioUrl.startsWith('data:')) {
+          setCustomAnnouncementAudioData(cfg.customAnnouncementAudioUrl);
+        }
+        await saveExamConfig(cfg);
+        onUpdateConfig(cfg);
+      }
+
+      if (restoreIncludeQuestions && backupPreviewData.questions) {
+        if (backupPreviewData.questions.length > 0) {
+          await saveQuestions(backupPreviewData.questions);
+        }
+        onUpdateQuestions(backupPreviewData.questions);
+      }
+
+      if (restoreIncludeAccounts && backupPreviewData.studentUsers) {
+        await saveStudentUsers(backupPreviewData.studentUsers);
+        if (onUpdateStudentUsers) {
+          onUpdateStudentUsers(backupPreviewData.studentUsers);
+        }
+      }
+
+      if (restoreIncludeStudents && backupPreviewData.students) {
+        await saveStudents(backupPreviewData.students);
+        onUpdateStudents(backupPreviewData.students);
+      }
+
+      setBackupRestoreStatus({
+        type: 'success',
+        message: `Berhasil memulihkan ${selectedParts.join(', ')} ke database!`
+      });
+      setBackupPreviewData(null);
+    } catch (err: any) {
+      setBackupRestoreStatus({
+        type: 'error',
+        message: `Terjadi kendala saat memulihkan backup: ${err?.message || 'Silakan coba lagi.'}`
+      });
+    } finally {
+      setIsRestoringBackupJson(false);
+    }
+  };
 
   // Password Management with Ultimate Authorization Code
   const [authCodeInput, setAuthCodeInput] = useState('');
@@ -4396,6 +4591,19 @@ export default function AdminPanel({
                   <RotateCcw className="w-4 h-4" />
                   {isRestoringCheckpoint ? 'Memulihkan...' : 'Pulihkan Checkpoint'}
                 </button>
+                <button
+                  type="button"
+                  id="btn-jump-backup-json-from-questions"
+                  onClick={() => {
+                    setActiveTab('CONFIG');
+                    setConfigSectionTab('BACKUP_RESTORE');
+                  }}
+                  className="px-3.5 py-2.5 bg-emerald-600 hover:bg-emerald-500 text-white font-extrabold text-xs rounded-xl transition flex items-center gap-1.5 shadow-sm cursor-pointer"
+                  title="Ekspor atau Impor seluruh Bank Soal, Mapel, & Akun Siswa dalam format file JSON"
+                >
+                  <FileCode className="w-4 h-4" />
+                  Backup / Restore JSON
+                </button>
               </div>
             </div>
 
@@ -5434,6 +5642,7 @@ export default function AdminPanel({
                     { id: 'STAFF_PASSWORDS', label: 'Sandi Petugas', icon: KeyRound },
                     { id: 'PROCTOR_PERMISSIONS', label: 'Wewenang Pengawas', icon: SlidersHorizontal },
                     { id: 'REMEDI_MODE', label: 'Mode Remidi', icon: RefreshCw },
+                    { id: 'BACKUP_RESTORE', label: 'Backup & Restore JSON', icon: Database },
                   ].map((tab) => {
                     const TabIcon = tab.icon;
                     const isActive = configSectionTab === tab.id;
@@ -5459,7 +5668,7 @@ export default function AdminPanel({
                 <div className="hidden md:flex flex-col space-y-1.5 bg-white p-2.5 rounded-2xl border border-slate-200 shadow-xs">
                   <div className="px-3 py-2 text-[10px] font-mono font-bold text-slate-400 uppercase tracking-wider flex items-center justify-between">
                     <span>Menu Konfigurasi</span>
-                    <span className="text-indigo-600 font-bold">8 Bagian</span>
+                    <span className="text-indigo-600 font-bold">9 Bagian</span>
                   </div>
 
                   {[
@@ -5518,6 +5727,13 @@ export default function AdminPanel({
                       desc: `Status: ${config.enableRemedialMode ? 'Aktif' : 'Mati'} • Max ${config.maxRemedialAttempts || 2}x`,
                       icon: RefreshCw,
                       badge: config.enableRemedialMode ? 'ON' : 'OFF'
+                    },
+                    {
+                      id: 'BACKUP_RESTORE',
+                      name: 'Backup & Restore JSON',
+                      desc: `${questions.length} Soal • ${(studentUsers || []).length} Akun`,
+                      icon: Database,
+                      badge: 'Migrasi'
                     }
                   ].map((tab) => {
                     const TabIcon = tab.icon;
@@ -6840,8 +7056,8 @@ export default function AdminPanel({
                         </div>
                       </div>
                       <p className="text-xs text-slate-650 mt-2 leading-relaxed max-w-xl">
-                        Jumlah token yang Anda atur di sini menentukan berapa kali siswa berhak meng-unlock ujian secara mandiri.
-                        <strong> Setiap token hanya berlaku 1 kali per akun. Jika siswa sudah memakai Token 1, sistem otomatis menolaknya dan mewajibkan siswa memakai Token 2</strong>.
+                        Jumlah token yang Anda atur di sini menentukan berapa kali siswa berhak meng-unlock ujian secara mandiri pada masing-masing naskah soal.
+                        <strong> Setiap token berlaku 1 kali per naskah soal (bukan lintas naskah). Jika siswa pindah mengerjakan naskah soal lain, jatah tokennya kembali penuh</strong>.
                       </p>
                     </div>
 
@@ -7063,10 +7279,10 @@ export default function AdminPanel({
                       Aturan Validasi Token (Anti-Reuse & Username Lock):
                     </div>
                     <ul className="list-disc list-inside space-y-1 text-slate-700 pl-1">
-                      <li><strong>Pengaturan Fleksibel:</strong> Anda dapat mengatur berapa pun jumlah token (1x, 2x, 3x, dst). Jumlah token di atas langsung menjadi batas kesempatan buka kunci siswa.</li>
-                      <li><strong>Anti-Reuse per Siswa:</strong> Saat siswa memasukkan Token 1, token tersebut ditandai <em>Terpakai</em> di akun siswa tersebut.</li>
-                      <li><strong>Wajib Token Berikutnya:</strong> Jika siswa yang sama terkunci lagi, memasukkan Token 1 akan <strong>ditolak</strong> oleh sistem dengan pesan instruksi agar memasukkan Token 2.</li>
-                      <li><strong>Kuota Habis:</strong> Setelah semua token terpakai, formulir token terkunci total dan siswa harus meminta unlock remote (Channel 1) kepada Proktor.</li>
+                      <li><strong>Pengaturan Fleksibel:</strong> Anda dapat mengatur berapa pun jumlah token (1x, 2x, 3x, dst). Jumlah token di atas langsung menjadi batas kesempatan buka kunci siswa per naskah soal.</li>
+                      <li><strong>Anti-Reuse per Naskah Soal:</strong> Saat siswa memasukkan Token 1 di suatu naskah, token tersebut ditandai <em>Terpakai</em> hanya pada naskah soal itu saja. Jika siswa berpindah ke naskah soal lain, kuota tokennya tetap utuh.</li>
+                      <li><strong>Wajib Token Berikutnya:</strong> Jika siswa terkunci lagi di naskah soal yang sama, memasukkan Token 1 akan <strong>ditolak</strong> oleh sistem dan diwajibkan memakai Token 2.</li>
+                      <li><strong>Kuota Habis:</strong> Setelah semua token terpakai di naskah tersebut, formulir token terkunci dan siswa harus meminta unlock remote (Channel 1) kepada Proktor.</li>
                     </ul>
                   </div>
                 </div>
@@ -7741,6 +7957,196 @@ export default function AdminPanel({
                     </div>
                   )}
 
+                  {/* TAB 9: BACKUP & RESTORE DATABASE (EKSPOR / IMPOR JSON) */}
+                  {configSectionTab === 'BACKUP_RESTORE' && (
+                    <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-xs space-y-6 animate-fade-in">
+                      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-100 pb-4">
+                        <div className="flex items-center gap-3">
+                          <div className="w-10 h-10 rounded-xl bg-emerald-100 text-emerald-700 flex items-center justify-center font-bold shrink-0">
+                            <Database className="w-5 h-5" />
+                          </div>
+                          <div>
+                            <h3 className="text-base font-extrabold text-slate-900">Backup &amp; Restore Database Lengkap (.JSON)</h3>
+                            <p className="text-xs text-slate-500">
+                              Ekspor seluruh bank soal, daftar mata pelajaran, pengaturan ujian, akun siswa, dan data sesi/nilai ke satu file JSON—siap diimpor kapan saja ke database Firebase baru.
+                            </p>
+                          </div>
+                        </div>
+                        <span className="px-3 py-1 rounded-full text-xs font-mono font-bold border bg-emerald-50 text-emerald-800 border-emerald-200 self-start sm:self-auto">
+                          Siap Migrasi DB
+                        </span>
+                      </div>
+
+                      {backupRestoreStatus && (
+                        <div
+                          className={`p-4 rounded-xl border text-xs font-bold flex items-start gap-2.5 ${
+                            backupRestoreStatus.type === 'success'
+                              ? 'bg-emerald-50 border-emerald-300 text-emerald-900'
+                              : 'bg-rose-50 border-rose-300 text-rose-900'
+                          }`}
+                        >
+                          {backupRestoreStatus.type === 'success' ? (
+                            <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0 mt-0.5" />
+                          ) : (
+                            <AlertTriangle className="w-4 h-4 text-rose-600 shrink-0 mt-0.5" />
+                          )}
+                          <span>{backupRestoreStatus.message}</span>
+                        </div>
+                      )}
+
+                      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                        {/* EKSPOR JSON */}
+                        <div className="p-5 bg-slate-50 rounded-2xl border border-slate-200 flex flex-col justify-between space-y-4">
+                          <div className="space-y-3">
+                            <div className="flex items-center gap-2">
+                              <div className="p-2 rounded-xl bg-indigo-100 text-indigo-700">
+                                <Download className="w-4 h-4" />
+                              </div>
+                              <div>
+                                <h4 className="text-sm font-extrabold text-slate-900">1. Ekspor Backup ke File JSON</h4>
+                                <p className="text-[11px] text-slate-500">Unduh cadangan utuh dari database yang aktif sekarang.</p>
+                              </div>
+                            </div>
+
+                            <div className="grid grid-cols-2 gap-2 text-xs">
+                              <div className="p-2.5 bg-white rounded-xl border border-slate-200">
+                                <span className="text-[10px] font-mono text-slate-400 uppercase block">Naskah / Mapel</span>
+                                <span className="font-black text-slate-800">{subjects.length} Mapel</span>
+                              </div>
+                              <div className="p-2.5 bg-white rounded-xl border border-slate-200">
+                                <span className="text-[10px] font-mono text-slate-400 uppercase block">Bank Soal</span>
+                                <span className="font-black text-slate-800">{questions.length} Butir Soal</span>
+                              </div>
+                              <div className="p-2.5 bg-white rounded-xl border border-slate-200">
+                                <span className="text-[10px] font-mono text-slate-400 uppercase block">Akun Siswa</span>
+                                <span className="font-black text-slate-800">{(studentUsers || []).length} Akun</span>
+                              </div>
+                              <div className="p-2.5 bg-white rounded-xl border border-slate-200">
+                                <span className="text-[10px] font-mono text-slate-400 uppercase block">Sesi &amp; Nilai</span>
+                                <span className="font-black text-slate-800">{students.length} Data</span>
+                              </div>
+                            </div>
+                          </div>
+
+                          <button
+                            type="button"
+                            id="btn-export-full-json"
+                            onClick={handleExportFullBackupJson}
+                            className="w-full py-3 px-4 bg-indigo-600 hover:bg-indigo-500 text-white font-extrabold text-xs sm:text-sm rounded-xl transition flex items-center justify-center gap-2 shadow-sm cursor-pointer"
+                          >
+                            <Download className="w-4 h-4" />
+                            <span>Unduh Backup Lengkap (.JSON)</span>
+                          </button>
+                        </div>
+
+                        {/* IMPOR JSON */}
+                        <div className="p-5 bg-slate-50 rounded-2xl border border-slate-200 flex flex-col justify-between space-y-4">
+                          <div className="space-y-3">
+                            <div className="flex items-center gap-2">
+                              <div className="p-2 rounded-xl bg-emerald-100 text-emerald-700">
+                                <Upload className="w-4 h-4" />
+                              </div>
+                              <div>
+                                <h4 className="text-sm font-extrabold text-slate-900">2. Impor &amp; Pulihkan dari File JSON</h4>
+                                <p className="text-[11px] text-slate-500">Unggah file backup `.json` untuk memulihkan data ke database aktif.</p>
+                              </div>
+                            </div>
+
+                            <label className="w-full py-3 px-4 bg-white hover:bg-emerald-50 text-emerald-800 border-2 border-dashed border-emerald-300 rounded-xl text-xs font-extrabold cursor-pointer transition flex items-center justify-center gap-2">
+                              <Upload className="w-4 h-4 text-emerald-600" />
+                              <span>{backupPreviewData ? `Ganti File (${backupPreviewData.fileName})` : 'Pilih File Backup (.JSON)'}</span>
+                              <input
+                                type="file"
+                                accept=".json,application/json"
+                                onChange={handleSelectBackupJsonFile}
+                                className="hidden"
+                              />
+                            </label>
+
+                            {backupPreviewData && (
+                              <div className="p-3.5 bg-white rounded-xl border border-emerald-200 space-y-2.5 text-xs">
+                                <div className="flex items-center justify-between gap-2 border-b border-slate-100 pb-2">
+                                  <span className="font-bold text-slate-800 truncate">{backupPreviewData.fileName}</span>
+                                  {backupPreviewData.exportedAt && (
+                                    <span className="text-[10px] font-mono text-slate-400 shrink-0">
+                                      {formatWIBShort(backupPreviewData.exportedAt)}
+                                    </span>
+                                  )}
+                                </div>
+
+                                <div className="space-y-1.5">
+                                  {backupPreviewData.config && (
+                                    <label className="flex items-center gap-2 cursor-pointer">
+                                      <input
+                                        type="checkbox"
+                                        checked={restoreIncludeConfig}
+                                        onChange={(e) => setRestoreIncludeConfig(e.target.checked)}
+                                        className="rounded text-emerald-600 focus:ring-emerald-500 cursor-pointer"
+                                      />
+                                      <span className="text-slate-700 font-semibold">
+                                        Konfigurasi &amp; Mapel ({getExamSubjects(backupPreviewData.config).length} Mapel)
+                                      </span>
+                                    </label>
+                                  )}
+                                  {backupPreviewData.questions && (
+                                    <label className="flex items-center gap-2 cursor-pointer">
+                                      <input
+                                        type="checkbox"
+                                        checked={restoreIncludeQuestions}
+                                        onChange={(e) => setRestoreIncludeQuestions(e.target.checked)}
+                                        className="rounded text-emerald-600 focus:ring-emerald-500 cursor-pointer"
+                                      />
+                                      <span className="text-slate-700 font-semibold">
+                                        Bank Soal ({backupPreviewData.questions.length} Butir Soal)
+                                      </span>
+                                    </label>
+                                  )}
+                                  {backupPreviewData.studentUsers && (
+                                    <label className="flex items-center gap-2 cursor-pointer">
+                                      <input
+                                        type="checkbox"
+                                        checked={restoreIncludeAccounts}
+                                        onChange={(e) => setRestoreIncludeAccounts(e.target.checked)}
+                                        className="rounded text-emerald-600 focus:ring-emerald-500 cursor-pointer"
+                                      />
+                                      <span className="text-slate-700 font-semibold">
+                                        Data Akun Siswa ({backupPreviewData.studentUsers.length} Akun)
+                                      </span>
+                                    </label>
+                                  )}
+                                  {backupPreviewData.students && (
+                                    <label className="flex items-center gap-2 cursor-pointer">
+                                      <input
+                                        type="checkbox"
+                                        checked={restoreIncludeStudents}
+                                        onChange={(e) => setRestoreIncludeStudents(e.target.checked)}
+                                        className="rounded text-emerald-600 focus:ring-emerald-500 cursor-pointer"
+                                      />
+                                      <span className="text-slate-700 font-semibold">
+                                        Data Sesi &amp; Nilai Siswa ({backupPreviewData.students.length} Data)
+                                      </span>
+                                    </label>
+                                  )}
+                                </div>
+                              </div>
+                            )}
+                          </div>
+
+                          <button
+                            type="button"
+                            id="btn-confirm-restore-json"
+                            disabled={!backupPreviewData || isRestoringBackupJson}
+                            onClick={handleConfirmRestoreBackupJson}
+                            className="w-full py-3 px-4 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-40 disabled:cursor-not-allowed text-white font-extrabold text-xs sm:text-sm rounded-xl transition flex items-center justify-center gap-2 shadow-sm cursor-pointer"
+                          >
+                            <RotateCcw className={`w-4 h-4 ${isRestoringBackupJson ? 'animate-spin' : ''}`} />
+                            <span>{isRestoringBackupJson ? 'Memulihkan ke Cloud...' : 'Pulihkan Data ke Database'}</span>
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+
                   {/* Action Button: Save & Broadcast Refresh */}
                   <div className="flex flex-col sm:flex-row items-center justify-between gap-4 p-5 bg-white rounded-2xl border border-slate-200 shadow-sm">
                     <div className="text-xs">
@@ -8163,6 +8569,18 @@ export default function AdminPanel({
 
               {/* Action Buttons */}
               <div className="flex flex-wrap items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setActiveTab('CONFIG');
+                    setConfigSectionTab('BACKUP_RESTORE');
+                  }}
+                  className="px-3.5 py-2 bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs rounded-xl transition flex items-center gap-1.5 cursor-pointer shadow-xs"
+                  title="Ekspor / Impor cadangan lengkap database dalam format JSON"
+                >
+                  <FileCode className="w-3.5 h-3.5" />
+                  Backup / Restore JSON
+                </button>
                 <button
                   type="button"
                   onClick={() => {
@@ -10825,6 +11243,7 @@ export default function AdminPanel({
                       { id: 'STAFF_PASSWORDS', label: '6. Kata Sandi Petugas', icon: KeyRound },
                       { id: 'PROCTOR_PERMISSIONS', label: '7. Wewenang Pengawas', icon: SlidersHorizontal },
                       { id: 'REMEDI_MODE', label: '8. Mode Remidi & Percobaan', icon: RefreshCw },
+                      { id: 'BACKUP_RESTORE', label: '9. Backup & Restore JSON', icon: Database },
                     ].map((subItem) => {
                       const SubIcon = subItem.icon;
                       const isSubActive = activeTab === 'CONFIG' && configSectionTab === subItem.id;
